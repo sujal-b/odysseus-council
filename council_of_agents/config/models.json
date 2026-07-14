@@ -1,0 +1,12 @@
+{
+  "roles": {
+    "chair":                { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "nemotron-3-ultra-free",     "temperature": 0.0, "max_tokens": 1024 },
+    "strategist":           { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "deepseek-v4-flash-free",    "temperature": 0.0, "max_tokens": 8192 },
+    "manager":              { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "deepseek-v4-flash-free",    "temperature": 0.0, "max_tokens": 4096 },
+    "implementer":          { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "north-mini-code-free",      "temperature": 0.0, "max_tokens": 8192 },
+    "perspective_analyzer": { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "deepseek-v4-flash-free",    "temperature": 0.0, "max_tokens": 4096 },
+    "debate_response":      { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "deepseek-v4-flash-free",    "temperature": 0.0, "max_tokens": 4096 },
+    "chair_arbitration":    { "endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "nemotron-3-ultra-free",     "temperature": 0.0, "max_tokens": 1024 }
+  },
+  "escalation": { "max_loops": 3, "conflict_threshold": 0.7 }
+}

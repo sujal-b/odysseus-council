@@ -90,3 +90,49 @@ compound.config.json
 *.error.log
 _scratch/
 /odysseus/
+
+# Graphify — generated knowledge graph (large, local tooling artifact)
+graphify-out/
+
+# Local AI tool state & config (opencode, etc.)
+.opencode/
+opencode.json
+
+# ── NEVER COMMIT THESE ────────────────────────────────────────────────────────
+
+# Launcher/runner scripts — contain live API keys
+*.bat
+*.ps1
+
+# Implementation plans, design docs, session strategy notes
+plans/
+docs/superpowers/
+docs/windows-port/
+*_PLAN.md
+*_SELF_HEALING*.md
+*plan*.md
+
+# AI assistant session logs, grill logs, conversation exports
+.gemini/
+.claude/
+.agents/
+**/grill-logs/
+**/.system_generated/
+
+# Skills / agent config directories (local tool customizations)
+skills/
+AGENTS.md
+.opencode/
+
+# Benchmark outputs / run results (not reproducible source)
+bench_results.txt
+*.bench.txt
+benchmark_results/
+
+# Scratch / reference files
+code.html
+reference.html
+odys.ps1
+
+# ─────────────────────────────────────────────────────────────────────────────
+

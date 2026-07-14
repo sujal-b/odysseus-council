@@ -667,6 +667,12 @@ function initializeEventListeners() {
     if (chatModule && chatModule.showWelcomeScreen) {
       chatModule.showWelcomeScreen();
     }
+    if (window.councilController) {
+      if (window.councilController.session) {
+        try { window.councilController.session.close(); } catch (e) {}
+      }
+      window.councilController.ui.reset();
+    }
     // Close document panel if open
     if (documentModule && documentModule.closePanel) documentModule.closePanel();
     if (researchPanelModule && researchPanelModule.isOpen()) researchPanelModule.closePanel();
@@ -1625,7 +1631,33 @@ function initializeEventListeners() {
       chatBtn.setAttribute('aria-pressed', String(mode === 'chat'));
       // Slide the pill to the active button
       const toggle = agentBtn.closest('.mode-toggle');
-      if (toggle) toggle.classList.toggle('mode-chat', mode === 'chat');
+      if (toggle) {
+        toggle.classList.remove('mode-agent', 'mode-council', 'mode-chat');
+        if (mode === 'agent') toggle.classList.add('mode-agent');
+        else if (mode === 'chat') toggle.classList.add('mode-chat');
+      }
+      // Deactivate Council mode if switching to normal agent/chat mode
+      var councilBtn = el('mode-council-btn');
+      if (councilBtn && councilBtn.getAttribute('aria-pressed') === 'true') {
+        if (window._councilDeactivate) {
+          window._councilDeactivate();
+        }
+
+        var currentId = sessionModule.getCurrentSessionId();
+        var sessions = sessionModule.getSessions();
+        var currentMeta = sessions.find(s => s.id === currentId);
+        if (currentMeta && currentMeta.mode === 'council') {
+          var lastNormal = sessions.slice().reverse().find(s => s.mode !== 'council');
+          if (lastNormal) {
+            sessionModule.selectSession(lastNormal.id);
+          } else {
+            sessionModule.setCurrentSessionId(null);
+            if (window.chatModule && window.chatModule.showWelcomeScreen) {
+              window.chatModule.showWelcomeScreen();
+            }
+          }
+        }
+      }
       // Delay tool glow-up for a staggered effect
       setTimeout(() => applyModeToToggles(mode), 500);
     }
@@ -3065,6 +3097,12 @@ function initializeEventListeners() {
   const brandBtn = el('sidebar-brand-btn');
   if (brandBtn) {
     brandBtn.addEventListener('click', async () => {
+      // If Council mode is active, switch back to normal mode
+      const councilBtn = el('mode-council-btn');
+      if (councilBtn && councilBtn.getAttribute('aria-pressed') === 'true') {
+        const agentBtn = el('mode-agent-btn');
+        if (agentBtn) agentBtn.click();
+      }
       if (!sessionModule) return;
       if (_closeCompareIfActive()) return;
       _deactivateIncognito();
@@ -3656,9 +3694,26 @@ function startOdysseusApp() {
     sendBtn.dataset.mode = newMode;
   }
 
+  function _handleCouncilSend() {
+    var textarea = document.getElementById('message');
+    var text = textarea ? textarea.value.trim() : '';
+    if (!text) return;
+    if (!window.councilController) {
+      console.warn('[Council] Controller not ready yet — try again in a moment');
+      return;
+    }
+    textarea.value = '';
+    window.councilController.startFromInput(text);
+  }
+
   if (sendBtn) {
     sendBtn.addEventListener('click', (e) => {
       e.preventDefault();
+
+      if (document.getElementById('chat-container')?.classList.contains('council-mode')) {
+        _handleCouncilSend();
+        return;
+      }
 
       // If recording, stop recording
       if (sendBtn.dataset.mode === 'recording' || voiceRecorderModule.getIsRecording()) {
@@ -3709,6 +3764,11 @@ function startOdysseusApp() {
   if (messageInput) {
     messageInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+        if (document.getElementById('chat-container')?.classList.contains('council-mode')) {
+          e.preventDefault();
+          _handleCouncilSend();
+          return;
+        }
         e.preventDefault();
         // Flush the debounced icon update so dataset.mode reflects the current
         // text state. Without this, a fast type-and-Enter would still see the
@@ -4088,3 +4148,130 @@ if (document.readyState === 'loading') {
 } else {
   startOdysseusApp();
 }
+
+// Council of Agents mode toggle
+(function () {
+  var btn      = document.getElementById('mode-council-btn');
+  var panel    = document.getElementById('council-panel');
+  var chatArea = document.getElementById('chat-container');
+  var compass  = document.getElementById('sidebar-council-compass');
+  if (!btn || !panel) return;
+
+  var loaded = false;
+  var _compassHideTimer = null;
+  btn.addEventListener('click', function () {
+    var active = btn.getAttribute('aria-pressed') === 'true';
+    if (active) {
+      window._councilDeactivate();
+    } else {
+      var agentBtn = document.getElementById('mode-agent-btn');
+      var chatBtn = document.getElementById('mode-chat-btn');
+      if (agentBtn) { agentBtn.classList.remove('active'); agentBtn.setAttribute('aria-pressed', 'false'); }
+      if (chatBtn) { chatBtn.classList.remove('active'); chatBtn.setAttribute('aria-pressed', 'false'); }
+
+      btn.setAttribute('aria-pressed', 'true');
+      btn.classList.add('active');
+      if (chatArea) chatArea.classList.add('council-mode');
+      var toggle = btn.closest('.mode-toggle');
+      if (toggle) {
+        toggle.classList.remove('mode-agent', 'mode-chat');
+        toggle.classList.add('mode-council');
+      }
+      panel.hidden = false;
+      var sidebar = document.getElementById('sidebar');
+      if (sidebar && sidebar.classList.contains('hidden')) {
+        sidebar.classList.remove('hidden');
+        if (window.syncRailSide) window.syncRailSide();
+      }
+      if (compass) {
+        clearTimeout(_compassHideTimer);
+        compass.style.display = 'block';
+        requestAnimationFrame(function() {
+          compass.classList.add('compass-visible');
+        });
+      }
+
+      _transformInputBar();
+
+      var currentId = sessionModule.getCurrentSessionId();
+      var sessions = sessionModule.getSessions();
+      var currentMeta = sessions.find(s => s.id === currentId);
+      if (!currentMeta || currentMeta.mode !== 'council') {
+        sessionModule.setCurrentSessionId(null);
+        if (window.councilController) {
+          try { window.councilController.session.close(); } catch (e) {}
+          window.councilController.ui.reset();
+        }
+      }
+
+      if (!loaded) {
+        loaded = true;
+        import('./js/council/council.js')
+          .then(function (m) { (m.default || m).init(); })
+          .catch(function (e) { console.error('[Council] load failed:', e); });
+      }
+    }
+  });
+
+  var _savedPlaceholder = null;
+
+  function _transformInputBar() {
+    var textarea = document.getElementById('message');
+    var left     = document.querySelector('.chat-input-left');
+    var picker   = document.getElementById('model-picker-wrap');
+    var pinned   = document.getElementById('pinned-tools-bar');
+    var inputBar = document.querySelector('.chat-input-bar');
+    var councilCenter = document.querySelector('.council-center');
+
+    if (textarea) {
+      _savedPlaceholder = textarea.placeholder;
+      textarea.placeholder = 'Describe your task for the Council…';
+    }
+    if (left)   left.style.display = 'none';
+    if (picker) picker.style.display = 'none';
+    if (pinned) pinned.style.display = 'none';
+
+    if (inputBar && councilCenter) {
+      councilCenter.appendChild(inputBar);
+    }
+  }
+
+  function _restoreInputBar() {
+    var textarea = document.getElementById('message');
+    var left     = document.querySelector('.chat-input-left');
+    var picker   = document.getElementById('model-picker-wrap');
+    var pinned   = document.getElementById('pinned-tools-bar');
+    var inputBar = document.querySelector('.chat-input-bar');
+    var chatContainer = document.getElementById('chat-container');
+
+    if (textarea && _savedPlaceholder !== null) textarea.placeholder = _savedPlaceholder;
+    if (left)   left.style.display = '';
+    if (picker) picker.style.display = '';
+    if (pinned) pinned.style.display = '';
+
+    if (inputBar && chatContainer) {
+      chatContainer.appendChild(inputBar);
+    }
+  }
+
+  window._councilDeactivate = function() {
+    btn.setAttribute('aria-pressed', 'false');
+    btn.classList.remove('active');
+    panel.hidden = true;
+    if (chatArea) chatArea.classList.remove('council-mode');
+    var toggle = btn.closest('.mode-toggle');
+    if (toggle) toggle.classList.remove('mode-council');
+    var compass = document.getElementById('sidebar-council-compass');
+    if (compass) {
+      compass.classList.remove('compass-visible');
+      clearTimeout(_compassHideTimer);
+      _compassHideTimer = setTimeout(function() {
+        compass.style.display = 'none';
+      }, 400);
+    }
+    _restoreInputBar();
+    if (window.councilController && window.councilController.session) {
+      try { window.councilController.session.close(); } catch (e) {}
+    }
+  };
+})();

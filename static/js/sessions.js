@@ -68,6 +68,14 @@ function _deselectCurrentSession(sid) {
   if (window.chatModule && window.chatModule.showWelcomeScreen) {
     window.chatModule.showWelcomeScreen();
   }
+  if (window.councilController) {
+    try {
+      window.councilController.session.close();
+      window.councilController.ui.reset();
+    } catch (e) {
+      console.warn('Failed to reset council controller:', e);
+    }
+  }
   // Reset send button to idle state
   const submitBtn = document.querySelector('.send-btn');
   if (submitBtn) {
@@ -318,6 +326,8 @@ function createSessionItem(s) {
     icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>';
   } else if (s.mode === 'research') {
     icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>';
+  } else if (s.mode === 'council') {
+    icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><line x1="5" y1="7" x2="19" y2="7"/><path d="M5 7l3 10h8l3-10"/></svg>';
   } else {
     icon.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
   }
@@ -1494,6 +1504,13 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
     window.compareModule.deactivate(true);
     return; // deactivate does a page reload
   }
+  if (window.councilController && window.councilController.session) {
+    try {
+      window.councilController.session.close();
+    } catch (e) {
+      console.warn('Failed to close council session:', e);
+    }
+  }
   try {
     const navToken = ++_sessionNavToken;
     const prevSessionId = currentSessionId;
@@ -1575,8 +1592,36 @@ export async function selectSession(id, { keepSidebar = false } = {}) {
     if (currentMetaEl) {
       currentMetaEl.textContent = meta ? meta.name : 'Odysseus Chat';
     }
-    // Update model picker visibility
-    updateModelPicker();
+
+    const isCouncil = meta && meta.mode === 'council';
+    const councilBtn = document.getElementById('mode-council-btn');
+    if (councilBtn) {
+      const isCouncilActive = councilBtn.getAttribute('aria-pressed') === 'true';
+      if (isCouncil) {
+        if (!isCouncilActive) {
+          councilBtn.click();
+        }
+        if (window.councilController) {
+          window.councilController.session.load(id).catch(err => {
+            console.error('[Council] Load failed:', err);
+          });
+        } else {
+          const checkTimer = setInterval(() => {
+            if (window.councilController) {
+              clearInterval(checkTimer);
+              window.councilController.session.load(id).catch(err => {
+                console.error('[Council] Load failed:', err);
+              });
+            }
+          }, 50);
+          setTimeout(() => clearInterval(checkTimer), 2000);
+        }
+        return; // Skip normal chat hydration
+      } else if (isCouncilActive) {
+        const agentBtn = document.getElementById('mode-agent-btn');
+        if (agentBtn) agentBtn.click();
+      }
+    }
 
     // Refresh session cost badge for the newly selected session
     if (chatRenderer.updateSessionCostUI) chatRenderer.updateSessionCostUI();
@@ -1772,6 +1817,11 @@ export function createDirectChat(url, modelId, endpointId) {
   if (window.groupModule && window.groupModule.isActive && window.groupModule.isActive()) {
     try { window.groupModule.stopGroup(); } catch {}
     if (window._syncGroupIndicator) window._syncGroupIndicator(false);
+  }
+
+  // Clear Council state
+  if (window.councilController) {
+    window.councilController.ui.reset();
   }
 
   // Don't hit the API — just store the model info and prepare the UI
@@ -2146,6 +2196,8 @@ function _updateRailNotifs() {
  * and poll until done, then reload the session.
  */
 async function _checkServerStream(sessionId) {
+  const _sMeta = sessions.find(s => s.id === sessionId);
+  if (_sMeta && _sMeta.mode === 'council') return;
   try {
     // Skip if research is running — it has its own progress UI
     if (_researchingSessions.has(sessionId)) return;

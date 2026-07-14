@@ -4220,6 +4220,8 @@ import { wireArrowUpRecall, getLastUserMessageFromChatHistory } from './composer
    */
   export async function checkPendingResearch(sessionId) {
     if (!sessionId) return;
+    const _sMeta = window.sessionModule?.getSessions?.()?.find(s => s.id === sessionId);
+    if (_sMeta && _sMeta.mode === 'council') return;
     try {
       const res = await fetch(`${API_BASE}/api/research/status/${sessionId}`);
       if (!res.ok) return; // 404 = no research for this session

@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Odysseus Chat</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4L16 22L6 22Z' fill='%23e06c75'/%3E%3Cpath d='M16 8L16 22L24 22Z' fill='%23e06c75' opacity='0.6'/%3E%3Cpath d='M4 24Q10 20 16 24Q22 28 28 24' stroke='%23e06c75' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="manifest" href="/static/manifest.json">
@@ -213,6 +214,7 @@
       }, { once: true });
     })();
   </script>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="modulepreload" href="/static/app.js">
   <link rel="modulepreload" href="/static/js/chat.js">
@@ -917,6 +919,59 @@
         </div>
       </div>
     </div>
+    <!-- Council compass widget -->
+    <div id="sidebar-council-compass">
+      <div class="council-brand">COUNCIL</div>
+      <div class="council-complexity" id="council-complexity-badge"></div>
+
+      <div class="compass-wrap" id="compass-wrap">
+        <div class="compass-ambient-ring"></div>
+
+        <svg class="compass-svg" viewBox="0 0 100 100" aria-label="Agent workflow graph">
+          <defs>
+            <filter id="compass-glow" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="2" result="blur"/>
+              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+            </filter>
+          </defs>
+          <line class="compass-edge" id="compass-edge-chair-strat" x1="50" y1="12" x2="88" y2="50"/>
+          <line class="compass-edge" id="compass-edge-strat-manager" x1="88" y1="50" x2="50" y2="88"/>
+          <line class="compass-edge" id="compass-edge-manager-impl" x1="50" y1="88" x2="12" y2="50"/>
+          <line class="compass-edge" id="compass-edge-impl-chair" x1="12" y1="50" x2="50" y2="12"/>
+        </svg>
+
+        <!-- Chair: top -->
+        <button type="button" class="compass-node" data-role="chair" id="cnode-chair" title="Configure Chair" aria-label="Configure Chair">
+          <div class="compass-node-body">
+            <span class="compass-node-inner">C</span>
+          </div>
+        </button>
+        <!-- Strategist: right -->
+        <button type="button" class="compass-node" data-role="strategist" id="cnode-strategist" title="Configure Strategist" aria-label="Configure Strategist">
+          <div class="compass-node-body">
+            <span class="compass-node-inner">S</span>
+          </div>
+        </button>
+        <!-- Implementer: bottom -->
+        <button type="button" class="compass-node" data-role="implementer" id="cnode-implementer" title="Configure Implementer" aria-label="Configure Implementer">
+          <div class="compass-node-body">
+            <span class="compass-node-inner">I</span>
+          </div>
+        </button>
+        <!-- Manager: left -->
+        <button type="button" class="compass-node" data-role="manager" id="cnode-manager" title="Configure Manager" aria-label="Configure Manager">
+          <div class="compass-node-body">
+            <span class="compass-node-inner">M</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="compass-active-label" id="compass-active-label"></div>
+      <div class="council-workspace-row" style="display: flex; flex-direction: column; gap: 6px;">
+        <input type="text" id="council-workspace-input" placeholder="Workspace directory (optional)" title="Root directory for council project files" autocomplete="off" spellcheck="false" />
+        <input type="number" id="council-budget-input" placeholder="Token budget (optional)" title="Hard token budget limit for the session (0 = unlimited)" autocomplete="off" spellcheck="false" />
+      </div>
+    </div>
     <div class="sidebar-user-bar" id="sidebar-user-bar">
       <div class="user-bar-left" id="user-bar-profile">
         <div class="user-bar-avatar" id="user-bar-avatar"></div>
@@ -991,6 +1046,151 @@
     <input type="checkbox" id="rag-toggle" style="display:none;">
     <input type="checkbox" id="incognito-toggle" style="display:none;">
     <input type="file" id="file-input" class="hidden" multiple />
+
+  <div id="council-panel" class="council-panel" hidden>
+
+    <header class="council-runbar" aria-label="Council run summary">
+      <div class="council-run-identity">
+        <div class="council-run-kicker">Council run</div>
+        <div class="council-run-title-row">
+          <span id="council-run-status" class="council-run-status" role="status" aria-live="polite">Ready</span>
+          <span id="council-run-stage" class="council-run-stage">Waiting for a task</span>
+        </button>
+      </div>
+      <div class="council-run-progress" aria-label="Verified acceptance progress">
+        <div class="council-run-progress-label"><span>Verification</span><span id="council-run-progress-text">0 / 0</span></div>
+        <div class="council-progress-track"><span id="council-run-progress-bar"></span></div>
+      </div>
+      <dl class="council-run-metrics">
+        <div><dt>Route</dt><dd id="council-run-route">--</dd></div>
+        <div><dt>Tasks</dt><dd id="council-run-tasks">0 / 0</dd></div>
+        <div><dt>Context</dt><dd id="council-run-budget">0</dd></div>
+        <div><dt>Compacts</dt><dd id="council-run-compacts">0</dd></div>
+      </dl>
+      <button type="button" id="council-run-cancel-btn" class="council-run-stop" disabled aria-label="Stop Council run">Stop</button>
+    </header>
+
+    <!-- CENTER: Code Panel (left) + Ghost Editor (right) -->
+    <section class="council-center" aria-label="Council workspace">
+
+      <!-- Two panes share the available height -->
+      <div class="council-center-top">
+
+        <!-- Code output pane -->
+        <div class="council-code-pane">
+          <div class="council-pane-header">
+            <div class="council-pane-title-wrapper" id="council-code-header-container" style="display: flex; align-items: center; gap: 8px; flex: 1; height: 100%; overflow: hidden;">
+              <span class="council-pane-title" id="council-code-title">Changes</span>
+            </div>
+            <button id="council-promote-btn" class="council-promote-btn" hidden>Promote to Canvas ↗</button>
+          </div>
+          <div class="code-panel-container">
+            <div class="code-panel-linenos" id="council-code-linenos"><div>1</div></div>
+            <pre id="council-code-panel" class="code-panel"></pre>
+          </div>
+        </div>
+
+        <!-- RESIZER 1: Between Code Pane and Ghost Pane -->
+        <div class="council-resizer" id="council-resizer-code-ghost"></div>
+
+        <!-- Ghost Editor pane -->
+        <div class="council-ghost-pane">
+          <div class="council-pane-header">
+            <span class="council-pane-title" id="council-ghost-title">Execution stream</span>
+            <button type="button" class="council-disclosure-btn" id="council-thinking-toggle" hidden>Show thinking ▾</button>
+            <span class="council-pane-status" id="council-ghost-status">
+              <span class="council-pulse-dot"></span>
+              <span id="council-ghost-agent">IDLE</span>
+            </span>
+          </div>
+          <div id="council-dag-view" class="dag-view" style="display:none"></div>
+          <!-- New Ghost Editor Stream Workspace -->
+          <div id="council-ghost-editor" class="ghost-editor-stream idle">
+            <!-- Scrollable stream ledger -->
+            <div class="ghost-stream-ledger scroll-container" id="council-ghost-stream-ledger"></div>
+            <!-- Bottom Metric Status Bar Footer -->
+            <div class="ghost-editor-footer" id="council-ghost-footer">
+              <div class="ghost-footer-metrics">
+                <span>Speed <span id="council-stream-speed" style="color: var(--log-text-dim);">0 tok/s</span></span>
+                <span class="ghost-footer-separator">|</span>
+                <span>Buffer <span id="council-stream-buffer" style="color: var(--log-text-dim);">0 chars</span></span>
+                <span class="ghost-footer-separator">|</span>
+                <span>Last event <span id="council-last-response" style="color: var(--log-text-dim);">--</span></span>
+              </div>
+              <span class="ghost-footer-kill-hint">Esc stops the active run</span>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /.council-center-top -->
+
+      <!-- Manager review bar — copper bar, shown when BLOCKED -->
+      <div id="council-review-bar" class="review-bar" hidden>
+        <div class="review-left">
+          <span class="review-icon" aria-hidden="true">!</span>
+          <span class="review-label" id="council-review-text">Manager · reviewing…</span>
+          <span id="review-plan-body" style="font-size: 11px; color: var(--log-text-dim); margin-left: 10px; max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle;"></span>
+        </div>
+        <div class="review-actions">
+          <button id="council-override-btn" class="btn-override">Override</button>
+          <button id="council-approve-btn"  class="btn-approve">Approve</button>
+        </div>
+      </div>
+
+      <!-- Permission request bar — floating container or overlay, shown when state has pendingPermission -->
+      <div id="council-permission-bar" class="review-bar" style="background: linear-gradient(135deg, #1c2732, #243447); border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 16px;" hidden>
+         <div class="review-left" style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start; flex: 1;">
+           <div style="display: flex; align-items: center; gap: 8px;">
+             <span class="review-icon" aria-hidden="true">!</span>
+             <span class="review-label" id="council-permission-label" style="font-weight: 600; color: #e1e4e6;">Security Permission Request</span>
+           </div>
+           <div id="council-permission-cmd" style="font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06); color: #8ab4f8; width: 100%; max-width: 750px; white-space: pre-wrap; word-break: break-all; overflow-x: auto; box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);"></div>
+         </div>
+         <div class="review-actions" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-left: 16px;">
+           <button id="council-perm-allow-btn" class="btn-approve" style="background: #4eb870; border-color: #4eb870; padding: 6px 14px; font-size: 11px;">Allow Once</button>
+           <button id="council-perm-project-btn" class="btn-approve" style="background: #df8e45; border-color: #df8e45; padding: 6px 14px; font-size: 11px;">Always in Project</button>
+           <button id="council-perm-global-btn" class="btn-approve" style="background: #e74c3c; border-color: #e74c3c; padding: 6px 14px; font-size: 11px;">Always Global</button>
+           <button id="council-perm-deny-btn" class="btn-override" style="background: transparent; color: #9aa0a6; padding: 6px 14px; font-size: 11px; border: 1px solid rgba(255,255,255,0.15);">Deny</button>
+         </div>
+      </div>
+
+      <div id="council-decision-bar" class="review-bar" style="background: linear-gradient(135deg, #2d2432, #3a3644); border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 16px;" hidden>
+         <div class="review-left" style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start; flex: 1;">
+           <div style="display: flex; align-items: center; gap: 8px;">
+             <span class="review-icon" aria-hidden="true">?</span>
+             <span class="review-label" id="council-decision-label" style="font-weight: 600; color: #e1e4e6;">Critical Decision Required</span>
+           </div>
+         </div>
+         <div id="council-decision-body" class="review-actions" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-left: 16px;">
+         </div>
+      </div>
+
+    </section>
+
+    <!-- RESIZER 2: Between Left/Center Workspace and Captain's Log -->
+    <div class="council-resizer" id="council-resizer-center-log"></div>
+
+    <!-- RIGHT: Captain's Log -->
+    <aside class="council-log-sidebar">
+      <div class="council-log-header">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="log-status-dot" id="council-log-status-dot"></div>
+          <h2 class="council-log-title">Run events</h2>
+        </div>
+        <span class="council-log-sid" id="council-log-session-id">ID: PENDING</span>
+        <button type="button" class="council-log-close" id="council-cancel-btn" title="Stop run" aria-label="Stop run">&times;</button>
+      </div>
+      <div class="council-log-body" id="council-captains-log"></div>
+      <div class="council-log-footer">
+        <div class="log-footer-stats">
+          <span>Estimated context</span>
+          <span id="council-log-tokens">0 TOKENS</span>
+        </div>
+        <button class="council-revert-btn" id="council-revert-btn" disabled>Stop run</button>
+      </div>
+    </aside>
+
+  </div>
 
     <!-- Unified chat input bar -->
     <div class="chat-input-bar">
@@ -1109,6 +1309,7 @@
           <!-- Agent / Chat mode toggle -->
           <div class="mode-toggle">
             <button type="button" class="mode-toggle-btn active" id="mode-agent-btn" aria-pressed="true">Agent</button>
+            <button type="button" class="mode-toggle-btn" id="mode-council-btn" aria-pressed="false">⚖ Council</button>
             <button type="button" class="mode-toggle-btn" id="mode-chat-btn" aria-pressed="false">Chat</button>
           </div>
           <button type="submit" form="chat-form" class="send-btn newchat-mode" data-mode="newchat" aria-label="New chat">
@@ -1207,6 +1408,9 @@
 
 
   </main>
+
+
+
   <button id="scroll-bottom-btn" class="scroll-nav-btn" title="Scroll to bottom">▼</button>
   <script nonce="{{CSP_NONCE}}">
   (function(){
@@ -2317,7 +2521,15 @@
   <!-- Toast container (aria-live for screen readers) -->
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
-
+  <!-- Role popover (shared) at body level to prevent clipping by sidebar overflow -->
+  <div id="council-role-popover" class="role-popover" hidden>
+    <label>Model</label><select id="popover-model-select"></select>
+    <label>Endpoint</label><select id="popover-endpoint-select"></select>
+    <button id="popover-refresh-btn" type="button" style="background: transparent; border: 1px solid var(--council-copper); color: var(--council-copper); text-shadow: none;">Refresh Models</button>
+    <label>Temp <span id="popover-temp-val">0.4</span></label>
+    <input type="range" id="popover-temp-range" min="0" max="2" step="0.05"/>
+    <button id="popover-save-btn">Save for session</button>
+  </div>
 
 <!-- Load modules in this order -->
 <script type="module" src="/static/js/storage.js"></script>

@@ -247,7 +247,7 @@ function _initModelPickerDropdown() {
     'snowflake': 'Snowflake', 'stepfun': 'StepFun', 'stepfun-ai': 'StepFun',
     'stockmark': 'Stockmark', 'switchpoint': 'SwitchPoint', 'tencent': 'Tencent',
     'thedrummer': 'TheDrummer', 'undi95': 'Undi95', 'upstage': 'Upstage',
-    'writer': 'Writer', 'x-ai': 'xAI', 'xiaomi': 'Xiaomi',
+    'writer': 'Writer', 'x-ai': 'xAI',
     'z-ai': 'Zhipu', 'zyphra': 'Zyphra',
     '~anthropic': 'Anthropic', '~google': 'Google',
     '~moonshotai': 'Moonshot', '~openai': 'OpenAI',

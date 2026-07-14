@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "fragments": {
+    "shared/default_to_action": "shared/default_to_action.md",
+    "shared/investigate_before": "shared/investigate_before.md",
+    "shared/parallel_tools": "shared/parallel_tools.md",
+    "shared/tool_selection": "shared/tool_selection.md",
+    "shared/code_quality": "shared/code_quality.md",
+    "shared/self_verification": "shared/self_verification.md",
+    "shared/context_efficiency": "shared/context_efficiency.md"
+  },
+  "compositions": {
+    "chair": [
+      "chair/identity",
+      "chair/instructions",
+      "shared/context_efficiency",
+      "chair/output_format",
+      "chair/examples"
+    ],
+    "strategist": [
+      "strategist/identity",
+      "strategist/instructions",
+      "shared/context_efficiency",
+      "strategist/output_format",
+      "strategist/examples"
+    ],
+    "manager": [
+      "manager/identity",
+      "manager/instructions",
+      "manager/verdict_guidance",
+      "shared/context_efficiency",
+      "manager/output_format",
+      "manager/examples"
+    ],
+    "implementer": [
+      "implementer/identity",
+      "shared/default_to_action",
+      "shared/investigate_before",
+      "shared/parallel_tools",
+      "implementer/instructions",
+      "shared/tool_selection",
+      "shared/context_efficiency",
+      "shared/code_quality",
+      "shared/self_verification",
+      "implementer/output_format",
+      "implementer/examples"
+    ],
+    "implementer_direct": [
+      "implementer_direct/identity",
+      "implementer_direct/instructions",
+      "implementer_direct/tool_selection",
+      "shared/context_efficiency",
+      "implementer_direct/execution_flow",
+      "implementer_direct/permission_handling",
+      "implementer_direct/output_format"
+    ],
+    "validator": [
+      "validator/identity",
+      "validator/instructions",
+      "validator/verdict_definitions",
+      "validator/output_format",
+      "validator/examples"
+    ],
+    "perspective_analyzer": [
+      "perspective_analyzer/identity",
+      "perspective_analyzer/instructions",
+      "perspective_analyzer/output_format"
+    ],
+    "validator_task": [
+      "validator_task/identity",
+      "validator_task/instructions",
+      "shared/context_efficiency",
+      "validator_task/issue_format",
+      "validator_task/output_format",
+      "validator_task/examples"
+    ]
+  }
+}
