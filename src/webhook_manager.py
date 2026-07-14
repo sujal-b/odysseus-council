@@ -22,6 +22,9 @@ ALLOWED_EVENTS = frozenset({
     "chat.completed",
     "chat.message",
     "webhook.test",
+    "council.created",
+    "council.completed",
+    "council.cancelled",
 })
 
 # Block requests to private/internal networks

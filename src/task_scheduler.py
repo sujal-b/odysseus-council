@@ -1643,6 +1643,7 @@ class TaskScheduler:
             disabled_tools=disabled_tools,
             relevant_tools=relevant_tools,
             fallbacks=_task_fallbacks,
+            raise_on_error=True,
         ):
             if event_str.startswith("data: ") and not event_str.startswith("data: [DONE]"):
                 try:

@@ -143,7 +143,7 @@ class TaskCreate(BaseModel):
     scheduled_day: Optional[int] = None           # day-of-week (0=Mon) or day-of-month
     scheduled_date: Optional[str] = None          # ISO datetime for "once"
     cron_expression: Optional[str] = None         # cron string e.g. "*/5 * * * *"
-    trigger_type: str = "schedule"                # "schedule" | "event" | "webhook"
+    trigger_type: str = "schedule"                # "schedule" | "event" | "webhook" | "council"
     trigger_event: Optional[str] = None           # e.g. "session_created"
     trigger_count: Optional[int] = None           # fire every N events
     output_target: str = "session"
@@ -474,10 +474,10 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 croniter(req.cron_expression)
             except Exception:
                 raise HTTPException(400, "Invalid cron expression")
-        if req.trigger_type == "event" and not req.trigger_event:
-            raise HTTPException(400, "Event name is required for event-triggered tasks")
-        if req.trigger_type == "event" and not req.trigger_count:
-            raise HTTPException(400, "Trigger count is required for event-triggered tasks")
+        if req.trigger_type in ("event", "council") and not req.trigger_event:
+            raise HTTPException(400, "Event name is required for event/council-triggered tasks")
+        if req.trigger_type in ("event", "council") and not req.trigger_count:
+            raise HTTPException(400, "Trigger count is required for event/council-triggered tasks")
 
         # Auto-generate name
         name = req.name
@@ -545,7 +545,7 @@ def setup_task_routes(task_scheduler) -> APIRouter:
                 trigger_count=req.trigger_count,
                 trigger_counter=0,
                 next_run=next_run,
-                status="active" if (req.trigger_type in ("event", "webhook") or next_run) else "completed",
+                status="active" if (req.trigger_type in ("event", "webhook", "council") or next_run) else "completed",
                 output_target=req.output_target,
                 model=req.model or None,
                 endpoint_url=req.endpoint_url or None,
@@ -1024,6 +1024,9 @@ def setup_task_routes(task_scheduler) -> APIRouter:
             {"name": "research_completed", "description": "Fires when a research report completes"},
             {"name": "email_received", "description": "Fires when new inbox mail is observed"},
             {"name": "skill_added", "description": "Fires when a new skill is created"},
+            {"name": "council_created", "description": "Fires when a council session is created"},
+            {"name": "council_completed", "description": "Fires when a council session completes"},
+            {"name": "council_cancelled", "description": "Fires when a council session is cancelled"},
         ]}
 
     @router.post("/{task_id}/webhook/{token}")

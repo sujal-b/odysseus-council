@@ -554,7 +554,7 @@ class ScheduledTask(TimestampMixin, Base):
     scheduled_time = Column(String, nullable=True)            # "HH:MM" (24h, stored UTC)
     scheduled_day  = Column(Integer, nullable=True)           # day-of-week 0=Mon for weekly, day-of-month for monthly
     scheduled_date = Column(DateTime, nullable=True)          # exact datetime for "once"
-    trigger_type   = Column(String, default="schedule")       # "schedule" | "event"
+    trigger_type   = Column(String, default="schedule")       # "schedule" | "event" | "council"
     trigger_event  = Column(String, nullable=True)            # e.g. "session_created", "message_sent"
     trigger_count  = Column(Integer, nullable=True)           # fire every N events
     trigger_counter = Column(Integer, default=0)              # current count toward trigger_count

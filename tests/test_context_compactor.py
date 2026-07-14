@@ -22,6 +22,7 @@ from src.context_compactor import (
     COMPACT_THRESHOLD,
     SELF_SUMMARY_SYSTEM_PROMPT,
     SUMMARY_MAX_TOKENS,
+    ProtectedContextOverflowError,
     _content_as_text,
     maybe_compact,
     trim_for_context,
@@ -63,6 +64,43 @@ class TestSelfSummaryPrompt:
 
 
 class TestTrimForContext:
+    def test_primary_system_prompt_is_never_truncated(self):
+        system = "POLICY:" + (" preserve exactly" * 500)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": "continue"},
+        ]
+
+        with pytest.raises(ProtectedContextOverflowError, match="system prompt"):
+            trim_for_context(messages, context_length=512, reserve_tokens=128)
+
+        assert messages[0]["content"] == system
+
+    def test_oversized_protected_context_fails_explicitly(self):
+        messages = [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "active packet " * 1000, "_protected": True},
+            {"role": "user", "content": "continue"},
+        ]
+
+        with pytest.raises(ProtectedContextOverflowError, match="protected context"):
+            trim_for_context(messages, context_length=512, reserve_tokens=128)
+
+    def test_drops_lower_priority_context_and_preserves_system_bytes(self):
+        system = "immutable policy bytes"
+        messages = [{"role": "system", "content": system}]
+        messages.extend(
+            {"role": "user", "content": f"old-{i} " + ("x" * 1500)}
+            for i in range(8)
+        )
+        messages.append({"role": "user", "content": "current request"})
+
+        trimmed = trim_for_context(messages, context_length=1024, reserve_tokens=256)
+
+        assert trimmed[0]["content"] == system
+        assert trimmed[-1]["content"] == "current request"
+        assert cc.estimate_tokens(trimmed) <= 768
+
     def test_keeps_current_large_user_message_by_truncating(self):
         huge = "A" * 20000
         messages = [

@@ -78,7 +78,7 @@ class SessionManager:
         try:
             db_sessions = db.query(DbSession).filter(
                 DbSession.archived == False,
-                DbSession.message_count > 0,
+                (DbSession.message_count > 0) | (DbSession.mode == 'council'),
             ).order_by(DbSession.last_accessed.desc()).limit(100).all()
 
             loaded_count = 0
@@ -120,6 +120,7 @@ class SessionManager:
             history=[],
             owner=getattr(db_session, "owner", None),
             is_important=getattr(db_session, "is_important", False) or False,
+            mode=getattr(db_session, "mode", None),
         )
         session.message_count = getattr(db_session, "message_count", 0) or 0
         return session
@@ -178,6 +179,7 @@ class SessionManager:
             history=history,
             owner=getattr(db_session, 'owner', None),
             is_important=getattr(db_session, 'is_important', False) or False,
+            mode=getattr(db_session, 'mode', None),
         )
 
         session.message_count = getattr(db_session, 'message_count', len(history))
@@ -408,6 +410,7 @@ class SessionManager:
             session.owner = getattr(db_session, "owner", None)
             session.is_important = getattr(db_session, "is_important", False) or False
             session.message_count = getattr(db_session, "message_count", session.message_count) or 0
+            session.mode = getattr(db_session, "mode", None)
             return True
         except Exception as e:
             logger.error(f"Error syncing session metadata {session_id}: {e}")
@@ -463,7 +466,8 @@ class SessionManager:
         endpoint_url: str,
         model: str,
         rag: bool = False,
-        owner: str = None
+        owner: str = None,
+        mode: str = None
     ) -> Session:
         """Create a new session and save to database."""
         db = SessionLocal()
@@ -476,6 +480,7 @@ class SessionManager:
                 rag=rag,
                 headers={},
                 owner=owner,
+                mode=mode,
                 created_at=datetime.now(timezone.utc),
                 updated_at=datetime.now(timezone.utc)
             )
@@ -490,6 +495,7 @@ class SessionManager:
                 rag=rag,
                 headers={},
                 owner=owner,
+                mode=mode,
             )
 
             self.sessions[session_id] = session
@@ -660,7 +666,7 @@ class SessionManager:
                 stats['total_checked'] += 1
 
                 # Delete empty sessions only if older than min_age_hours
-                if db_session.message_count == 0:
+                if db_session.message_count == 0 and db_session.mode != 'council':
                     if db_session.created_at is not None:
                         created = db_session.created_at
                         if created.tzinfo is None:

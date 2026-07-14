@@ -61,6 +61,10 @@ FASTEMBED_CACHE_DIR = os.getenv("FASTEMBED_CACHE_PATH", os.path.join(DATA_DIR, "
 # tool_implementations.py, agent_tools.py, and any other module that needs them)
 MAX_OUTPUT_CHARS = 10_000       # cap for bash/python/web_search/web_fetch output
 MAX_READ_CHARS = 20_000         # cap for read_file / document preview
+MAX_READ_LINES = 240            # hard ceiling for one explicit file window
+DEFAULT_READ_LINES = 120        # window used when a caller supplies only an offset
+SMALL_FILE_READ_CHARS = 8_000   # only genuinely small files are returned wholesale
+SMALL_FILE_READ_LINES = 120
 MAX_DIFF_LINES = 400            # cap for edit_file unified-diff display
 
 # API Configuration

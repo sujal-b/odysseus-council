@@ -19,7 +19,7 @@ from src.llm_core import stream_llm, stream_llm_with_fallback, _is_ollama_native
 from src.model_context import estimate_tokens
 from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
-from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
+from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools, owner_is_admin_or_single_user, NON_ADMIN_BLOCKED_TOOLS
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, ToolPolicy
 from src.tool_utils import get_mcp_manager
 from src.agent_tools import (
@@ -330,9 +330,10 @@ Fetch and read the text content of a SPECIFIC URL the user names (e.g. "check ex
 
     "read_file": """\
 ```read_file
-<file path>
+{"path": "<file>", "offset": 1, "limit": 120}
 ```
-Read a file and return its contents.""",
+Read a bounded file window. For unknown/large files, grep first or use `query` for
+local relevant excerpts. A path-only large read returns an index, never the whole file.""",
 
     "write_file": """\
 ```write_file
@@ -1397,6 +1398,88 @@ def _resolve_tool_blocks(round_response: str, native_tool_calls: list, round_num
     return tool_blocks, used_native
 
 
+def _compact_tool_outputs(
+    messages: List[Dict],
+    context_length: int,
+    max_tokens: int,
+    keep_recent: int = 2,
+) -> int:
+    """Replace old tool-output messages with compact metadata summaries.
+
+    Called RIGHT BEFORE appending a new round's tool results, so the running
+    message list never grows unbounded over many tool-execution rounds.
+
+    Strategy:
+    - Keep the system prompt (index 0) and the last ``keep_recent`` tool/user
+      result messages intact — the model needs those to understand what just
+      happened.
+    - For all earlier tool result messages, replace their content with a short
+      metadata line: "[compacted — tool: <name>, chars: <N>, exit: <code>]".
+    - Only runs when the estimated token count exceeds the threshold.
+
+    Returns the number of messages that were compacted.
+    """
+    if not messages or context_length <= 0:
+        return 0
+
+    # Threshold: compact when we're within max_tokens + 20 % safety margin of
+    # the context window ceiling.  For most models max_tokens = 4096 and a
+    # 20 % margin gives headroom for the new round's output.
+    safety_tokens = max(max_tokens, 1024)
+    threshold = context_length - safety_tokens - int(context_length * 0.10)
+    if threshold <= 0:
+        return 0
+
+    try:
+        current_tokens = estimate_tokens(messages)
+    except Exception:
+        return 0
+
+    if current_tokens <= threshold:
+        return 0
+
+    # Identify compaction candidates: "user" messages whose content starts with
+    # "[Tool execution results]" (fenced path) OR "tool" role messages (native
+    # function-calling path).  Skip the last ``keep_recent`` such messages.
+    candidate_indices: List[int] = []
+    for i, msg in enumerate(messages):
+        role = msg.get("role", "")
+        content = msg.get("content") or ""
+        if role == "tool":
+            candidate_indices.append(i)
+        elif role == "user" and isinstance(content, str) and content.startswith("[Tool execution results]"):
+            candidate_indices.append(i)
+
+    # Always keep the most recent ``keep_recent`` candidates untouched.
+    to_compact = candidate_indices[: max(0, len(candidate_indices) - keep_recent)]
+
+    compacted = 0
+    for i in to_compact:
+        msg = messages[i]
+        content = msg.get("content") or ""
+        original_len = len(content)
+        if original_len == 0:
+            continue
+
+        # Extract a short summary from the content
+        first_line = content.split("\n", 1)[0].strip()[:120]
+        summary = f"[compacted — {original_len} chars] {first_line}"
+        messages[i] = {**msg, "content": summary}
+        compacted += 1
+
+    if compacted:
+        logger.info(
+            "[agent] progressive-compact: replaced %d old tool message(s) "
+            "(was ~%d tokens, threshold=%d, context_length=%d)",
+            compacted,
+            current_tokens,
+            threshold,
+            context_length,
+        )
+
+    return compacted
+
+
 def _append_tool_results(
     messages: List[Dict],
     round_response: str,
@@ -1647,6 +1730,23 @@ def _empty_response_fallback(
     return _error_msg, f'data: {json.dumps({"delta": _error_msg})}\n\n'
 
 
+def raise_for_error_chunk(chunk: str):
+    """Parse error details from SSE event: error chunk and raise a RuntimeError."""
+    if chunk.startswith("event: error"):
+        parts = chunk.split("data: ", 1)
+        if len(parts) > 1:
+            try:
+                err_data = json.loads(parts[1].strip())
+                err_msg = err_data.get("error") or err_data.get("text") or str(err_data)
+            except Exception:
+                err_msg = parts[1].strip()
+        else:
+            err_msg = chunk
+        raise RuntimeError(f"LLM streaming error: {err_msg}")
+
+
+
+
 PLAN_MODE_DIRECTIVE = (
     "## PLAN MODE — OVERRIDES EVERYTHING ELSE BELOW\n"
     "You are in PLAN MODE. Your ONLY job this turn is to PROPOSE a plan. You have "
@@ -1727,6 +1827,10 @@ async def stream_agent_loop(
     approved_plan: Optional[str] = None,
     tool_policy: Optional[ToolPolicy] = None,
     _is_teacher_run: bool = False,
+    workspace: Optional[str] = None,
+    force_enable_tools: Optional[Set[str]] = None,
+    raise_on_error: bool = False,
+    workspace_write_guard=None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1784,6 +1888,16 @@ async def stream_agent_loop(
         for _sid, _names in _mcp_block_map.items():
             _mcp_disabled_map.setdefault(_sid, set()).update(_names)
         disabled_tools.update(_mcp_block_q)
+
+    # Allow callers (e.g. Council orchestrator) to force-enable specific tools
+    # that are whitelisted for sandboxed agent roles. Only bypass for admin/single-user
+    # hosts to prevent privilege escalation for non-admin users.
+    if force_enable_tools:
+        if owner_is_admin_or_single_user(owner):
+            disabled_tools -= force_enable_tools
+        else:
+            disabled_tools -= (force_enable_tools - NON_ADMIN_BLOCKED_TOOLS)
+
     prep_timings["request_setup"] = time.time() - _t0
 
     # RAG-based tool selection: retrieve relevant tools for this query.
@@ -1870,6 +1984,15 @@ async def stream_agent_loop(
     if _relevant_tools is not None and active_document is not None:
         _relevant_tools.update({"edit_document", "update_document", "suggest_document"})
 
+    # Force-enable tools requested by callers (e.g. Council orchestrator) so
+    # they appear in both the system prompt and native tool schemas, even if
+    # RAG-based selection would otherwise exclude them.
+    if _relevant_tools is not None and force_enable_tools:
+        if owner_is_admin_or_single_user(owner):
+            _relevant_tools.update(force_enable_tools)
+        else:
+            _relevant_tools.update(force_enable_tools - NON_ADMIN_BLOCKED_TOOLS)
+
     if _relevant_tools is not None:
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 
@@ -1908,7 +2031,7 @@ async def stream_agent_loop(
         # Local-served models that follow OpenAI-style function calling
         # via vLLM's `--enable-auto-tool-choice`. Belt-and-suspenders
         # with the per-endpoint flag above.
-        "minimax", "kimi", "yi-", "phi-3", "phi-4", "command-r",
+        "minimax", "kimi", "mimo", "yi-", "phi-3", "phi-4", "command-r",
         "glm-4", "internlm", "hermes",
         # deepseek-v2/v3/chat support tools via the cloud API; deepseek-r1
         # (reasoning model) does not — handled by the blocklist below.
@@ -1980,7 +2103,7 @@ async def stream_agent_loop(
 
     _t3 = time.time()
     try:
-        from src.context_compactor import trim_for_context
+        from src.context_compactor import ProtectedContextOverflowError, trim_for_context
         from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX
         from src.settings import is_setting_overridden
 
@@ -2023,6 +2146,9 @@ async def stream_agent_loop(
                 )
                 messages = trimmed_messages
     except Exception as e:
+        if type(e).__name__ == "ProtectedContextOverflowError":
+            logger.error("[agent] Protected context overflow: %s", e)
+            raise
         logger.warning("[agent] Soft context trim skipped: %s", e)
     prep_timings["context_trim"] = time.time() - _t3
 
@@ -2052,6 +2178,7 @@ async def stream_agent_loop(
     requested_model = model
     actual_model = model
     total_tool_calls = 0  # for budget enforcement
+    _total_compacted = 0  # cumulative messages replaced by _compact_tool_outputs
 
     # Loop-breaker state. Small models (e.g. deepseek-v4-flash) can get
     # stuck firing the same tool call over and over with no text — burns
@@ -2179,6 +2306,8 @@ async def stream_agent_loop(
                 break
             # Forward error events from stream_llm to the frontend
             if chunk.startswith("event: error"):
+                if raise_on_error:
+                    raise_for_error_chunk(chunk)
                 yield chunk
                 continue
             if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
@@ -2613,6 +2742,28 @@ async def stream_agent_loop(
             else:
                 cmd_display = block.content.strip()
 
+            # Build a structured args dict for the ghost editor's expanded card view.
+            # Each branch mirrors how function_call_to_tool_block encodes content.
+            _content = block.content or ""
+            try:
+                if block.tool_type in ("bash",):
+                    args_display = {"command": _content}
+                elif block.tool_type in ("python",):
+                    args_display = {"code": _content}
+                elif block.tool_type == "write_file":
+                    # Content is "path\nbody" — extract only the path for display.
+                    args_display = {"path": _content.split("\n")[0]}
+                elif block.tool_type == "read_file":
+                    # Content is either a plain path or JSON {"path":…,"offset":…}.
+                    args_display = json.loads(_content) if _content.strip().startswith("{") else {"path": _content}
+                elif block.tool_type in ("glob", "grep", "ls", "edit_file") or block.tool_type.startswith("mcp__"):
+                    # Content is json.dumps(args).
+                    args_display = json.loads(_content) if _content.strip() else {}
+                else:
+                    args_display = {}
+            except Exception:
+                args_display = {}
+
             if tool_policy and tool_policy.blocks(block.tool_type):
                 desc = f"{block.tool_type}: BLOCKED"
                 result = {
@@ -2623,7 +2774,7 @@ async def stream_agent_loop(
                 logger.info("Tool blocked before start by policy: %s", block.tool_type)
             else:
                 yield (
-                    f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "round": round_num})}\n\n'
+                    f'data: {json.dumps({"type": "tool_start", "tool": block.tool_type, "command": cmd_display, "args": args_display, "round": round_num})}\n\n'
                 )
 
                 # Streaming progress for long-running tools (bash, python).
@@ -2637,29 +2788,64 @@ async def stream_agent_loop(
 
                 async def _run_tool():
                     try:
-                        return await execute_tool_block(
+                        if workspace_write_guard:
+                            workspace_write_guard.check_tool_channel(block.tool_type)
+                            if block.tool_type in ("write_file", "edit_file"):
+                                workspace_write_guard.check_before_write(block.tool_type, block.content)
+                        outcome = await execute_tool_block(
                             block,
                             session_id=session_id,
                             disabled_tools=disabled_tools,
                             tool_policy=tool_policy,
                             owner=owner,
                             progress_cb=_push_progress,
+                            workspace=workspace,
                         )
+                        if (
+                            workspace_write_guard
+                            and block.tool_type in ("write_file", "edit_file")
+                            and int((outcome[1] or {}).get("exit_code", 0) or 0) == 0
+                        ):
+                            workspace_write_guard.record_after_write(block.tool_type, block.content)
+                        return outcome
                     finally:
                         # Sentinel so the drainer knows to stop.
                         await _progress_q.put(None)
 
                 _tool_task = asyncio.create_task(_run_tool())
-                # Drain progress events as they arrive — block until the
-                # next event OR the tool finishes (sentinel = None).
-                while True:
-                    evt = await _progress_q.get()
-                    if evt is None:
-                        break
-                    yield (
-                        f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
-                    )
-                desc, result = await _tool_task
+                try:
+                    # Drain progress events as they arrive — block until the
+                    # next event OR the tool finishes (sentinel = None).
+                    while True:
+                        evt = await _progress_q.get()
+                        if evt is None:
+                            break
+                        yield (
+                            f'data: {json.dumps({"type": "tool_progress", "tool": block.tool_type, "round": round_num, **evt})}\n\n'
+                        )
+                except asyncio.CancelledError:
+                    _tool_task.cancel()
+                    raise
+                try:
+                    desc, result = await _tool_task
+                except Exception as e:
+                    try:
+                        from council_of_agents.scripts.permissions import PermissionCheckFailed, PermissionRequired
+                        if isinstance(e, PermissionCheckFailed):
+                            import uuid as _uuid
+                            raise PermissionRequired(
+                                action=e.action,
+                                target=e.target,
+                                tool_block=e.tool_block,
+                                permission_id=str(_uuid.uuid4()),
+                                round_response=round_response,
+                                native_tool_calls=native_tool_calls,
+                                round_num=round_num,
+                                round_reasoning=round_reasoning,
+                            )
+                    except ImportError:
+                        pass
+                    raise
 
             # Extract structured web sources from web_search tool output.
             # web_search returns {"output": ..., "exit_code": 0}; check "output"
@@ -2870,10 +3056,16 @@ async def stream_agent_loop(
         if _awaiting_user:
             break
 
-        # Feed results back to LLM for next round
+        # Feed results back to LLM for next round.
+        # First, progressively compact old tool outputs to prevent context bloat
+        # when a multi-round agentic task accumulates many large tool results.
+        # _compact_tool_outputs is a no-op when context_length is 0 or tokens
+        # are safely below the threshold, so it never harms short conversations.
+        _total_compacted += _compact_tool_outputs(messages, context_length, max_tokens)
         _append_tool_results(messages, round_response, native_tool_calls,
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
+
 
         # Emit agent_step event
         yield (
@@ -2903,6 +3095,8 @@ async def stream_agent_loop(
         full_response, round_reasoning, tool_events
     )
     if _fallback_chunk:
+        if raise_on_error:
+            raise RuntimeError("LLM streaming error: The model returned an empty response. Please try again or switch to a different model.")
         yield _fallback_chunk
 
     # --- Final metrics ---
@@ -2917,6 +3111,10 @@ async def stream_agent_loop(
         backend_prefill_tps=backend_prefill_tps,
     )
     metrics["requested_model"] = requested_model
+    # Include compaction count so council orchestrator can sync state.compact_count
+    # via tracker.increment_compact_count() when it reads the metrics event.
+    if _total_compacted:
+        metrics["compact_count"] = _total_compacted
     yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
 
     # Teacher-escalation: inline takeover visible in the chat stream.

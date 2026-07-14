@@ -3,21 +3,32 @@ import os
 import shutil
 import asyncio
 import tempfile
+import json
+from types import SimpleNamespace
 import pytest
 
 os.environ.setdefault("DATABASE_URL", "sqlite:////tmp/test_code_nav.db")
 
 from src.tool_execution import _direct_fallback
+import src.tool_execution as tool_execution
+from src.agent_tools.filesystem_tools import ReadFileTool
 
 
 def _run(tool, content):
     return asyncio.run(_direct_fallback(tool, content))
 
 
+def _run_read(content):
+    """Exercise the deterministic reader without the optional MCP transport."""
+    return asyncio.run(ReadFileTool().execute(content, {}))
+
+
 @pytest.fixture
 def repo():
-    # Built under /tmp, which is on the default tool-path allowlist.
-    root = tempfile.mkdtemp(dir="/tmp", prefix="codenav_")
+    # The platform temp directory is on the default tool-path allowlist.
+    # Avoid POSIX-rooted /tmp on Windows: resolving that synthetic path can
+    # block in some Python/drive configurations.
+    root = tempfile.mkdtemp(prefix="codenav_").replace("\\", "/")
     try:
         with open(os.path.join(root, "a.py"), "w") as f:
             f.write("import os\n# needle here\nprint('x')\n")
@@ -129,12 +140,85 @@ def test_read_file_offset_limit(repo):
     p = os.path.join(repo, "lines.txt")
     with open(p, "w") as f:
         f.write("\n".join(f"line{i}" for i in range(1, 11)) + "\n")
-    r = _run("read_file", f'{{"path": "{p}", "offset": 3, "limit": 2}}')
+    r = _run_read(json.dumps({"path": p, "offset": 3, "limit": 2}))
     assert r["exit_code"] == 0
     assert r["output"] == "line3\nline4\n"
 
 
 def test_read_file_plain_path_backcompat(repo):
-    r = _run("read_file", os.path.join(repo, "a.py"))
+    r = _run_read(os.path.join(repo, "a.py"))
     assert r["exit_code"] == 0
     assert "needle" in r["output"]
+    assert r["read_mode"] == "full"
+
+
+def test_read_file_large_path_returns_index_not_whole_file(repo):
+    p = os.path.join(repo, "large.py")
+    with open(p, "w") as f:
+        f.write("\n".join(["def first():", "    return 1"] + [f"value_{i} = {i}" for i in range(300)]) + "\n")
+    r = _run_read(p)
+    assert r["exit_code"] == 0
+    assert r["read_mode"] == "index"
+    assert "Full content withheld by context policy" in r["output"]
+    assert "def first():" in r["output"]
+    assert "value_299" not in r["output"]
+    assert r["total_lines"] == 302
+
+
+def test_read_file_query_returns_relevant_neighborhood_only(repo):
+    p = os.path.join(repo, "query.py")
+    with open(p, "w") as f:
+        f.write("\n".join([f"line_{i}" for i in range(200)] + ["def target_symbol():", "    return 42"] + [f"tail_{i}" for i in range(100)]) + "\n")
+    r = _run_read(json.dumps({"path": p, "query": "target_symbol"}))
+    assert r["read_mode"] == "retrieval"
+    assert "201: def target_symbol():" in r["output"]
+    assert "1: line_0" not in r["output"]
+    assert "tail_99" not in r["output"]
+
+
+def test_read_file_explicit_window_is_hard_capped(repo):
+    p = os.path.join(repo, "many.txt")
+    with open(p, "w") as f:
+        f.write("\n".join(f"line{i}" for i in range(1, 501)) + "\n")
+    r = _run_read(json.dumps({"path": p, "offset": 1, "limit": 9999}))
+    assert r["read_mode"] == "window"
+    assert "line240\n" in r["output"]
+    assert "line241\n" not in r["output"]
+    assert r["next_offset"] == 241
+
+
+def test_legacy_read_route_cannot_bypass_policy_gate(monkeypatch):
+    async def fake_direct(tool, content, **kwargs):
+        return {"output": "bounded", "exit_code": 0, "read_mode": "index"}
+
+    monkeypatch.setattr(tool_execution, "_direct_fallback", fake_direct)
+    monkeypatch.setattr(
+        tool_execution,
+        "get_mcp_manager",
+        lambda: (_ for _ in ()).throw(AssertionError("MCP must not receive file reads")),
+    )
+    result = asyncio.run(tool_execution._call_mcp_tool("read_file", '{"path":"large.py"}'))
+    assert result["read_mode"] == "index"
+
+
+def test_native_mcp_read_route_cannot_bypass_policy_gate(monkeypatch):
+    async def fake_direct(tool, content, **kwargs):
+        assert tool == "read_file"
+        return {"output": "bounded", "exit_code": 0, "read_mode": "window"}
+
+    monkeypatch.setattr(tool_execution, "_direct_fallback", fake_direct)
+    monkeypatch.setattr(tool_execution, "is_public_blocked_tool", lambda tool: False)
+    block = SimpleNamespace(
+        tool_type="mcp__filesystem__read_file",
+        content='{"path":"large.py","offset":20,"limit":40}',
+    )
+    _, result = asyncio.run(tool_execution.execute_tool_block(block, skip_workspace_check=True))
+    assert result["read_mode"] == "window"
+
+
+def test_tool_feedback_has_a_final_context_boundary():
+    payload = "A" * 15000 + "TAIL_SENTINEL"
+    formatted = tool_execution.format_tool_result("untrusted tool", {"output": payload, "exit_code": 0})
+    assert "chars omitted by context policy" in formatted
+    assert "TAIL_SENTINEL" in formatted
+    assert len(formatted) < 11000

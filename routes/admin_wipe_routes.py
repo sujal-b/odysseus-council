@@ -69,7 +69,7 @@ def setup_admin_wipe_routes(session_manager):
     router = APIRouter(prefix="/api/admin")
 
     @router.delete("/wipe/{kind}")
-    def wipe(kind: str, request: Request):
+    async def wipe(kind: str, request: Request):
         require_admin(request)
         kind = (kind or "").strip().lower()
 
@@ -82,6 +82,19 @@ def setup_admin_wipe_routes(session_manager):
                 db.commit()
                 try:
                     session_manager.sessions.clear()
+                except Exception:
+                    pass
+                # Cancel all active standard runs
+                try:
+                    from src import agent_runs
+                    for session_id in list(agent_runs._RUNS.keys()):
+                        agent_runs.stop(session_id)
+                except Exception:
+                    pass
+                # Cancel all active Council runs
+                try:
+                    from routes.council_routes import cancel_all_active_council_sessions
+                    await cancel_all_active_council_sessions()
                 except Exception:
                     pass
                 return {"status": "deleted", "kind": kind, "count": count}

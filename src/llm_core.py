@@ -436,6 +436,7 @@ def _detect_provider(url: str) -> str:
         return "ollama"
     if _host_match(url, "anthropic.com"):
         return "anthropic"
+
     if _host_match(url, "opencode.ai/zen/go"):
         return "opencode-go"
     if _host_match(url, "opencode.ai/zen"):

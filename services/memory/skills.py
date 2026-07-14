@@ -647,9 +647,18 @@ class SkillsManager:
         threshold: float = 0.3,
         max_items: int = 5,
         min_confidence: float = 0.0,
+        complexity: Optional[str] = None,  # NEW
+        **kwargs,
     ) -> List[Dict]:
+        owner = kwargs.get("owner")
+        limit = kwargs.get("limit")
+        if limit is not None:
+            max_items = limit
         if skills is None:
-            skills = self.load_all()
+            if owner is not None:
+                skills = self.load(owner=owner)
+            else:
+                skills = self.load_all()
         if not skills or not query.strip():
             return []
         # Consider published AND draft skills for relevance retrieval.
@@ -708,6 +717,12 @@ class SkillsManager:
             score *= 1.0 + _to_float(sk.get("confidence"), 0.5) * 0.1
             if sk.get("uses", 0) > 0:
                 score *= 1.05
+            # Boost skills learned at the same complexity level
+            if complexity and sk.get("source") == "learned":
+                # Check if skill name or description hints at same complexity
+                sk_text = (sk.get("name", "") + " " + sk.get("description", "")).lower()
+                if complexity.lower() in sk_text:
+                    score *= 1.2
             if score >= threshold:
                 scored.append((score, sk))
         scored.sort(key=lambda x: x[0], reverse=True)

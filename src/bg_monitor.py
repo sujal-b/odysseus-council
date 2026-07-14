@@ -40,6 +40,7 @@ async def _drain_agent(sess, messages):
         session_id=sess.id,
         max_rounds=_FOLLOWUP_MAX_ROUNDS,
         owner=getattr(sess, "owner", None),
+        raise_on_error=True,
     ):
         if not chunk.startswith("data: "):
             continue

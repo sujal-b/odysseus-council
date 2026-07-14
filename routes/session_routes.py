@@ -326,6 +326,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         skip_validation: str = Form(None),
         api_key: str = Form(""),
         endpoint_id: str = Form(""),
+        mode: str = Form(None),
     ):
         skip_val = str(skip_validation).lower() == "true"
         user = get_current_user(request)
@@ -421,6 +422,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             model=model_to_use,
             rag=str(rag).lower() == "true" if rag else False,
             owner=user,
+            mode=mode,
         )
         # Set auth headers for custom API-key endpoints
         resolved_key = request_api_key
@@ -594,6 +596,19 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
 
             # Delete the session and all its messages
             if session_manager.delete_session(sid):
+                # Stop any active standard runs
+                try:
+                    from src import agent_runs
+                    if agent_runs.is_active(sid):
+                        agent_runs.stop(sid)
+                except Exception:
+                    pass
+                # Stop any active Council runs
+                try:
+                    from routes.council_routes import cancel_active_council_session
+                    cancel_active_council_session(sid)
+                except Exception:
+                    pass
                 return {"status": "deleted"}
             else:
                 raise HTTPException(404, "Session not found")
@@ -610,7 +625,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             )
     
     @router.delete("/sessions/all")
-    def delete_all_sessions(request: Request):
+    async def delete_all_sessions(request: Request):
         """Admin only: permanently delete ALL sessions and their messages."""
         from core.middleware import require_admin
         require_admin(request)
@@ -623,6 +638,22 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
             db.query(DbSession).delete()
             db.commit()
             session_manager.sessions.clear()
+            
+            # Stop all active standard runs
+            try:
+                from src import agent_runs
+                for session_id in list(agent_runs._RUNS.keys()):
+                    agent_runs.stop(session_id)
+            except Exception:
+                pass
+
+            # Stop all active Council runs
+            try:
+                from routes.council_routes import cancel_all_active_council_sessions
+                await cancel_all_active_council_sessions()
+            except Exception:
+                pass
+
             logger.info(f"Admin deleted all {count} sessions")
             return {"status": "deleted", "count": count}
         except Exception as e:

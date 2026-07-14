@@ -32,6 +32,8 @@ from src.tool_utils import _truncate, get_mcp_manager
 # in ephemeral container layers that are lost on the next rebuild.
 _AGENT_WORKDIR = DATA_DIR
 
+_pm_cache: dict[str, 'PermissionManager'] = {}
+
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +55,7 @@ _AGENT_WORKDIR = DATA_DIR
 # ---------------------------------------------------------------------------
 
 _SENSITIVE_BASENAMES: set[str] = {
-    ".ssh", ".gnupg", ".gitconfig",
+    ".ssh", ".gnupg", ".gitconfig", ".git",
     ".bashrc", ".bash_profile", ".bash_logout",
     ".zshrc", ".zprofile", ".zshenv",
     ".profile", ".tcshrc", ".cshrc",
@@ -70,7 +72,8 @@ def _is_sensitive_path(resolved: str) -> bool:
     """Return True if *resolved* falls under a sensitive directory or
     matches a sensitive filename — regardless of what root it sits under.
     """
-    parts = resolved.split(os.sep)
+    normalized = resolved.replace("/", os.sep).replace("\\", os.sep)
+    parts = normalized.split(os.sep)
     filenames: set[str] = {parts[-1]} if parts else set()
 
     # Check if any path component is a sensitive directory.
@@ -110,6 +113,10 @@ def _tool_path_roots() -> list[str]:
     tmpdir = os.environ.get("TMPDIR")
     if tmpdir:
         roots.append(tmpdir)
+
+    # Add standard Windows temp directory if on Windows
+    import tempfile
+    roots.append(tempfile.gettempdir())
 
     # Opt-in extra roots from settings.
     try:
@@ -321,11 +328,20 @@ async def _call_mcp_tool(
     tool: str,
     content: str,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
+    workspace: Optional[str] = None,
 ) -> Dict:
     """Route a legacy tool call through the MCP manager, with direct fallbacks."""
+    # File ingestion is a context-security boundary, not a transport concern.
+    # Always use the local policy-aware reader so a connected filesystem MCP
+    # cannot inject an unbounded file into persistent model history.
+    if tool == "read_file":
+        return await _direct_fallback(
+            tool, content, progress_cb=progress_cb, workspace=workspace
+        ) or {"error": "read_file policy gate unavailable", "exit_code": 1}
+
     mcp = get_mcp_manager()
     if not mcp:
-        return await _direct_fallback(tool, content, progress_cb=progress_cb) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
+        return await _direct_fallback(tool, content, progress_cb=progress_cb, workspace=workspace) or {"error": f"MCP manager not available for tool '{tool}'", "exit_code": 1}
 
     server_id, tool_name = _MCP_TOOL_MAP[tool]
     qualified = f"mcp__{server_id}__{tool_name}"
@@ -334,7 +350,7 @@ async def _call_mcp_tool(
 
     # If MCP server not connected, try direct fallback
     if isinstance(result, dict) and result.get("exit_code") == 1 and "not connected" in result.get("error", ""):
-        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb)
+        fallback = await _direct_fallback(tool, content, progress_cb=progress_cb, workspace=workspace)
         if fallback:
             return fallback
 
@@ -437,6 +453,22 @@ async def _document_tool_dispatch(
 # Dispatcher
 # ---------------------------------------------------------------------------
 
+def _extract_tool_path(tool: str, content: str) -> Optional[str]:
+    content_stripped = (content or "").strip()
+    if content_stripped.startswith("{"):
+        try:
+            import json as _json
+            data = _json.loads(content_stripped)
+            if isinstance(data, dict):
+                return data.get("path")
+        except Exception:
+            pass
+    # Fallback to first line
+    lines = content_stripped.split("\n", 1)
+    if lines:
+        return lines[0].strip()
+    return None
+
 async def execute_tool_block(
     block: Any,
     session_id: Optional[str] = None,
@@ -445,6 +477,7 @@ async def execute_tool_block(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
     tool_policy: Optional[Any] = None,
+    skip_workspace_check: bool = False,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -471,6 +504,55 @@ async def execute_tool_block(
 
     tool = block.tool_type
     content = block.content
+
+    # Intercept workspace permissions
+    if workspace and not skip_workspace_check:
+        from council_of_agents.scripts.permissions import PermissionManager, PermissionCheckFailed
+        from src.tool_security import owner_is_admin_or_single_user
+        
+        is_admin = owner_is_admin_or_single_user(owner)
+        pm_key = f"{workspace}:{owner}:{is_admin}"
+        pm = _pm_cache.get(pm_key)
+        if pm is None:
+            pm = PermissionManager(workspace, owner or "anonymous", is_admin)
+            _pm_cache[pm_key] = pm
+        
+        target = None
+        action = None
+        
+        if tool in ("write_file", "edit_file", "read_file", "ls", "glob", "grep"):
+            target = _extract_tool_path(tool, content)
+            action = tool
+        elif tool in ("bash", "python"):
+            target = content.strip()
+            action = tool
+            
+        if target and action:
+            if action in ("write_file", "edit_file", "read_file", "ls", "glob", "grep"):
+                allowed, reason = pm.check_path_allowed(target)
+                if not allowed:
+                    if reason == "non_admin_escaped_jail":
+                        raise PermissionError(f"Security block: path '{target}' is outside the workspace (non-admin).")
+                    elif reason == "sensitive_path":
+                        raise PermissionError(f"Security block: path '{target}' is inside a sensitive directory or filename.")
+                    else:
+                        raise PermissionCheckFailed(action=action, target=target, tool_block=block)
+            elif action in ("bash", "python"):
+                from src.agent_tools.subprocess_tools import BASH_READONLY_PREFIXES, _CHAIN_SPLIT_RE, _normalise
+                cmd_norm = _normalise(target)
+                is_readonly = False
+                # Split compound commands (&&, ||, ;, |) and check each sub-command
+                sub_cmds = _CHAIN_SPLIT_RE.split(cmd_norm)
+                for sub in sub_cmds:
+                    sub_norm = _normalise(sub)
+                    sub_readonly = False
+                    for prefix in BASH_READONLY_PREFIXES:
+                        if sub_norm.startswith(prefix):
+                            sub_readonly = True
+                            break
+                    if not sub_readonly:
+                        # At least one sub-command is non-read-only → require approval
+                        raise PermissionCheckFailed(action=action, target=target, tool_block=block)
 
     # Misformatted tool call detection: model put JSON inside ```python``` (or
     # similar) without naming the tool. Common with MiniMax-style outputs.
@@ -621,6 +703,11 @@ async def execute_tool_block(
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
+            from src.agent_tools.subprocess_tools import _validate_bash_command
+            block_reason = _validate_bash_command(_bg_cmd)
+            if block_reason:
+                desc = f"bash (background): {_bg_cmd.strip().split(chr(10))[0][:80]}"
+                return desc, {"error": block_reason, "exit_code": 1}
             rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_AGENT_WORKDIR)
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
@@ -643,7 +730,7 @@ async def execute_tool_block(
     if tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
+        result = await _call_mcp_tool(tool, content, progress_cb=progress_cb, workspace=workspace)
     elif tool in ("grep", "glob", "ls"):
         # Code-navigation tools — no MCP server; run the direct implementation.
         first_line = content.split(chr(10))[0][:80]
@@ -767,6 +854,13 @@ async def execute_tool_block(
     elif tool == "vault_unlock":
         desc = "vault_unlock"
         result = await do_vault_unlock(content, owner=owner)
+    elif tool == "mcp__filesystem__read_file":
+        # Native MCP calls must obey the same ingestion policy as the legacy
+        # read_file alias. Keep this before the generic MCP dispatch below.
+        desc = "read_file: policy-gated native request"
+        result = await _direct_fallback(
+            "read_file", content, progress_cb=progress_cb, workspace=workspace
+        ) or {"error": "read_file policy gate unavailable", "exit_code": 1}
     elif tool.startswith("mcp__"):
         # MCP tool dispatch
         mcp = get_mcp_manager()
@@ -801,23 +895,43 @@ _FORMATTER_HANDLED_KEYS = {
 }
 
 
+def _bound_feedback_text(value: Any, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """Final invariant before tool data enters persistent model history.
+
+    Individual tools should already budget their output, but MCP servers and
+    future tools are not trusted to remember that contract. Preserve both the
+    beginning and the diagnostic tail when enforcing the boundary here.
+    """
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    head = int(limit * 0.72)
+    tail = limit - head
+    omitted = len(text) - limit
+    return (
+        text[:head]
+        + f"\n... [{omitted} chars omitted by context policy] ...\n"
+        + text[-tail:]
+    )
+
+
 def format_tool_result(description: str, result: Dict) -> str:
     """Format a tool result into text for feeding back to the LLM."""
     parts = [f"### {description}"]
 
     if "stdout" in result:
         if result["stdout"]:
-            parts.append(f"**stdout:**\n```\n{result['stdout']}\n```")
+            parts.append(f"**stdout:**\n```\n{_bound_feedback_text(result['stdout'])}\n```")
         if result["stderr"]:
-            parts.append(f"**stderr:**\n```\n{result['stderr']}\n```")
+            parts.append(f"**stderr:**\n```\n{_bound_feedback_text(result['stderr'])}\n```")
         parts.append(f"**exit_code:** {result.get('exit_code', 'unknown')}")
     elif "output" in result:
         # bash / python canonical result shape: {"output": ..., "exit_code": ...}
-        parts.append(f"```\n{result['output']}\n```")
+        parts.append(f"```\n{_bound_feedback_text(result['output'])}\n```")
         if result.get("exit_code") not in (0, None):
             parts.append(f"**exit_code:** {result['exit_code']}")
     elif "content" in result:
-        parts.append(f"**content ({result.get('size', '?')} chars):**\n```\n{result['content']}\n```")
+        parts.append(f"**content ({result.get('size', '?')} chars):**\n```\n{_bound_feedback_text(result['content'])}\n```")
     elif "response" in result:
         model = result.get("model", result.get("session_name", ""))
         if model:

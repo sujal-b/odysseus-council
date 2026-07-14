@@ -1870,12 +1870,33 @@ def setup_model_routes(model_discovery):
         refresh_timeout: Optional[int] = Query(None, ge=1, le=60),
     ):
         """List all discovered models for an endpoint with hidden/visible state."""
-        require_admin(request)
         db = SessionLocal()
         try:
             ep = db.query(ModelEndpoint).filter(ModelEndpoint.id == ep_id).first()
             if not ep:
                 raise HTTPException(404, "Endpoint not found")
+
+            # Check authorization: owner, admin, or no owner (shared/legacy)
+            try:
+                from src.auth_helpers import get_current_user as _gcu
+                owner = _gcu(request) or ""
+            except Exception:
+                owner = ""
+
+            auth_mgr = getattr(request.app.state, "auth_manager", None) if hasattr(request, "app") else None
+            if not owner and not _auth_disabled() and auth_mgr is not None and getattr(auth_mgr, "is_configured", False):
+                raise HTTPException(401, "Not authenticated")
+
+            is_admin = False
+            if owner and auth_mgr is not None and getattr(auth_mgr, "is_admin", None):
+                try:
+                    is_admin = bool(auth_mgr.is_admin(owner))
+                except Exception:
+                    pass
+
+            if not is_admin and ep.owner and ep.owner != owner:
+                raise HTTPException(403, "Not authorized to access this endpoint")
+
             hidden = _hidden_model_ids(ep)
             all_models = _cached_model_ids(ep)
             if refresh:

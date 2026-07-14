@@ -17,6 +17,10 @@ from core.models import ChatMessage
 logger = logging.getLogger(__name__)
 
 
+class ProtectedContextOverflowError(RuntimeError):
+    """Pinned policy/context cannot fit without unsafe truncation."""
+
+
 def _content_as_text(content: Any) -> str:
     """Flatten a message's content to plain text.
 
@@ -213,7 +217,7 @@ def _truncate_message_to_token_budget(msg: Dict[str, Any], token_budget: int) ->
 
 
 def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: int = 512) -> List[Dict]:
-    """Trim system messages to fit within context_length.
+    """Trim lower-priority messages without altering pinned policy context.
 
     For small-context models, progressively strips:
     1. RAG/memory system messages (keep preset system prompt)
@@ -240,6 +244,11 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
         else:
             convo_msgs.append(msg)
 
+    if budget <= 0:
+        raise ProtectedContextOverflowError(
+            "Response reserve consumes the entire model context window."
+        )
+
     # Protected messages count toward budget but are never dropped
     protected_tokens = estimate_tokens(protected_msgs)
     budget -= protected_tokens
@@ -247,6 +256,12 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
     # Priority: keep first system msg (preset prompt), drop others (memory, RAG, memo)
     essential_system = system_msgs[:1] if system_msgs else []
     extra_system = system_msgs[1:]
+    pinned_tokens = estimate_tokens(essential_system)
+    if budget <= 0 or pinned_tokens > budget:
+        raise ProtectedContextOverflowError(
+            "Primary system prompt and protected context exceed the available "
+            f"input budget ({pinned_tokens + protected_tokens} tokens pinned)."
+        )
 
     # Try dropping extra system messages one by one (from the end)
     trimmed = essential_system + convo_msgs
@@ -262,14 +277,6 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
         return _sanitize_tool_messages(result + protected_msgs + convo_msgs)
 
     # Still too big — truncate the first system message (but keep more than 500 chars)
-    if essential_system:
-        sys_text = essential_system[0].get("content", "")
-        if len(sys_text) > 2000:
-            essential_system[0] = {"role": "system", "content": sys_text[:2000] + "\n[System prompt truncated for context limits]"}
-            trimmed = essential_system + convo_msgs
-            if estimate_tokens(trimmed) <= budget:
-                return _sanitize_tool_messages(essential_system + protected_msgs + convo_msgs)
-
     # Still too big — drop older conversation turns BUT always keep the current
     # user turn. If a pasted message alone exceeds the model context, truncate
     # that message with a visible notice instead of dropping it; otherwise the
@@ -297,6 +304,11 @@ def trim_for_context(messages: List[Dict], context_length: int, reserve_tokens: 
         convo_msgs[-1] = _truncate_message_to_token_budget(convo_msgs[-1], available_for_current)
 
     result = _sanitize_tool_messages(essential_system + protected_msgs + convo_msgs)
+    total_budget = context_length - reserve_tokens
+    if estimate_tokens(result) > total_budget:
+        raise ProtectedContextOverflowError(
+            "Protected context and current turn cannot fit the selected model context."
+        )
     logger.info(f"Trimmed to {estimate_tokens(result)} tokens ({len(result)} messages)")
     return result
 

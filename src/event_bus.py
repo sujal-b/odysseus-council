@@ -72,12 +72,16 @@ def _resolve_event_owner(owner: Optional[str]) -> Optional[str]:
 async def _handle_event(event_name: str, owner: Optional[str] = None):
     """Process an event: increment counters, fire tasks that hit their threshold."""
     from core.database import SessionLocal, ScheduledTask
+    from sqlalchemy import or_
 
     resolved_owner = _resolve_event_owner(owner)
     db = SessionLocal()
     try:
         filters = [
-            ScheduledTask.trigger_type == "event",
+            or_(
+                ScheduledTask.trigger_type == "event",
+                ScheduledTask.trigger_type == "council",
+            ),
             ScheduledTask.trigger_event == event_name,
             ScheduledTask.status == "active",
         ]

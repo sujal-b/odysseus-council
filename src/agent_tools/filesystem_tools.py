@@ -6,7 +6,15 @@ import fnmatch
 import shutil
 from typing import Optional, Dict, Any, Tuple
 
-from src.constants import MAX_READ_CHARS, MAX_DIFF_LINES, MAX_OUTPUT_CHARS
+from src.constants import (
+    DEFAULT_READ_LINES,
+    MAX_DIFF_LINES,
+    MAX_OUTPUT_CHARS,
+    MAX_READ_CHARS,
+    MAX_READ_LINES,
+    SMALL_FILE_READ_CHARS,
+    SMALL_FILE_READ_LINES,
+)
 
 _CODENAV_SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "__pycache__",
@@ -120,7 +128,7 @@ class ReadFileTool:
                     _truncate
                 )
         workspace = ctx.get("workspace")
-        raw_path, offset, limit = content.split("\n", 1)[0].strip(), 0, 0
+        raw_path, offset, limit, query = content.split("\n", 1)[0].strip(), 0, 0, ""
         _stripped = content.strip()
         if _stripped.startswith("{"):
             try:
@@ -128,6 +136,7 @@ class ReadFileTool:
                 raw_path = str(_a.get("path", "")).strip()
                 offset = int(_a.get("offset") or 0)
                 limit = int(_a.get("limit") or 0)
+                query = str(_a.get("query") or "").strip()
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         try:
@@ -137,25 +146,88 @@ class ReadFileTool:
             return {"error": f"read_file: {e}", "exit_code": 1}
         try:
             def _read():
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    lines = f.readlines()
+                total_chars = sum(len(line) for line in lines)
+                total_lines = len(lines)
+
+                # A query is a cheap local retrieval operation: return compact,
+                # line-numbered neighborhoods instead of shipping the corpus.
+                if query:
+                    terms = [term.casefold() for term in query.split() if len(term) > 1]
+                    scored_hits = []
+                    for i, line in enumerate(lines):
+                        folded = line.casefold()
+                        score = sum(term in folded for term in terms)
+                        if score:
+                            scored_hits.append((score, i))
+                    # Prefer lines covering more query terms; source order is
+                    # the deterministic tie-breaker.
+                    scored_hits.sort(key=lambda item: (-item[0], item[1]))
+                    hits = [i for _, i in scored_hits[:12]]
+                    if not hits:
+                        return (
+                            f"[read_file retrieval] {path} | {total_lines} lines | no matches for {query!r}\n"
+                            "Use grep for regex/broad discovery, then read_file with offset/limit."
+                        ), "retrieval", total_lines, total_chars, None
+                    selected = set()
+                    for i in hits:
+                        selected.update(range(max(0, i - 3), min(total_lines, i + 4)))
+                    rendered, budget, previous = [], MAX_READ_CHARS, None
+                    for i in sorted(selected):
+                        if previous is not None and i > previous + 1:
+                            rendered.append("...\n")
+                        item = f"{i + 1}: {lines[i]}"
+                        if len(item) > budget:
+                            break
+                        rendered.append(item)
+                        budget -= len(item)
+                        previous = i
+                    header = f"[read_file retrieval] {path} | {total_lines} lines | query={query!r}\n"
+                    return header + "".join(rendered), "retrieval", total_lines, total_chars, None
+
+                # Exact windows remain raw so edit_file can copy exact source.
                 if offset > 0 or limit > 0:
                     start = max(offset, 1)
-                    out, n, budget = [], 0, MAX_READ_CHARS
-                    with open(path, "r", encoding="utf-8", errors="replace") as f:
-                        for i, line in enumerate(f, 1):
-                            if i < start:
-                                continue
-                            if limit > 0 and n >= limit:
-                                break
-                            out.append(line)
-                            n += 1
-                            budget -= len(line)
-                            if budget <= 0:
-                                out.append(f"\n... [truncated at {MAX_READ_CHARS} chars]")
-                                break
-                    return "".join(out)
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    return f.read(MAX_READ_CHARS + 1)
-            data = await asyncio.to_thread(_read)
+                    requested = limit if limit > 0 else DEFAULT_READ_LINES
+                    window = min(requested, MAX_READ_LINES)
+                    chosen, budget = [], MAX_READ_CHARS
+                    for line in lines[start - 1:start - 1 + window]:
+                        if len(line) > budget:
+                            chosen.append(f"\n... [window truncated at {MAX_READ_CHARS} chars]")
+                            break
+                        chosen.append(line)
+                        budget -= len(line)
+                    next_offset = start + len(chosen) if start - 1 + len(chosen) < total_lines else None
+                    return "".join(chosen), "window", total_lines, total_chars, next_offset
+
+                # Preserve the convenient legacy behavior only for truly small files.
+                if total_lines <= SMALL_FILE_READ_LINES and total_chars <= SMALL_FILE_READ_CHARS:
+                    return "".join(lines), "full", total_lines, total_chars, None
+
+                # Blind large reads become a navigational index. Structural lines
+                # are enough to select a precise follow-up window without paying
+                # to inject every implementation line into every later LLM call.
+                import re
+                structural = re.compile(
+                    r"^\s*(?:class\s+|(?:async\s+)?def\s+|function\s+|"
+                    r"(?:export\s+)?(?:async\s+)?function\s+|#{1,4}\s+|"
+                    r"(?:public|private|protected)?\s*(?:static\s+)?[A-Za-z_$][\w$]*\s*\([^;]*\)\s*\{)"
+                )
+                entries = [f"{i}: {line.rstrip()}" for i, line in enumerate(lines, 1) if structural.match(line)][:100]
+                head = "".join(f"{i}: {line}" for i, line in enumerate(lines[:24], 1))
+                outline = "\n".join(entries) if entries else "(no structural markers detected)"
+                data = (
+                    f"[read_file index] {path} | {total_lines} lines | {total_chars} chars\n"
+                    "Full content withheld by context policy. Search first, then request one bounded window.\n\n"
+                    f"HEAD (lines 1-{min(24, total_lines)}):\n{head}\n"
+                    f"STRUCTURE:\n{outline}\n\n"
+                    f"Next: {{\"path\": {json.dumps(str(path))}, \"offset\": <line>, \"limit\": {DEFAULT_READ_LINES}}} "
+                    f"or add \"query\": \"symbol terms\". Maximum window: {MAX_READ_LINES} lines."
+                )
+                return data[:MAX_READ_CHARS], "index", total_lines, total_chars, None
+
+            data, read_mode, total_lines, total_chars, next_offset = await asyncio.to_thread(_read)
         except FileNotFoundError:
             return {"error": f"read_file: {path}: not found", "exit_code": 1}
         except PermissionError:
@@ -164,9 +236,16 @@ class ReadFileTool:
             return {"error": f"read_file: {path}: is a directory (use ls)", "exit_code": 1}
         except OSError as e:
             return {"error": f"read_file: {path}: {e}", "exit_code": 1}
-        if not (offset > 0 or limit > 0) and len(data) > MAX_READ_CHARS:
-            data = data[:MAX_READ_CHARS] + f"\n... [truncated at {MAX_READ_CHARS} chars]"
-        return {"output": data, "exit_code": 0}
+        result = {
+            "output": data,
+            "exit_code": 0,
+            "read_mode": read_mode,
+            "total_lines": total_lines,
+            "total_chars": total_chars,
+        }
+        if next_offset is not None:
+            result["next_offset"] = next_offset
+        return result
 
 class WriteFileTool:
     async def execute(self, content: str, ctx: dict) -> dict:
@@ -229,7 +308,10 @@ class LsTool:
         else:
             raw_path = _s.split("\n", 1)[0].strip()
         try:
-            root = _resolve_search_root(raw_path)
+            if workspace:
+                root = _resolve_tool_path_in_workspace(workspace, raw_path)
+            else:
+                root = _resolve_search_root(raw_path)
         except ValueError as e:
             return {"error": f"ls: {e}", "exit_code": 1}
 
@@ -287,7 +369,11 @@ class GlobTool:
         if not pattern:
             return {"error": "glob: pattern is required", "exit_code": 1}
         try:
-            root = _resolve_search_root(str(args.get("path", "")))
+            raw_path = str(args.get("path", ""))
+            if workspace:
+                root = _resolve_tool_path_in_workspace(workspace, raw_path)
+            else:
+                root = _resolve_search_root(raw_path)
         except ValueError as e:
             return {"error": f"glob: {e}", "exit_code": 1}
 
@@ -352,7 +438,11 @@ class GrepTool:
             max_hits = _CODENAV_MAX_HITS
         max_hits = max(1, min(max_hits, _CODENAV_MAX_HITS))
         try:
-            root = _resolve_search_root(str(args.get("path", "")))
+            raw_path = str(args.get("path", ""))
+            if workspace:
+                root = _resolve_tool_path_in_workspace(workspace, raw_path)
+            else:
+                root = _resolve_search_root(raw_path)
         except ValueError as e:
             return {"error": f"grep: {e}", "exit_code": 1}
 

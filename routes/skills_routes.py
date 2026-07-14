@@ -431,6 +431,7 @@ async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, s
         async for chunk in stream_agent_loop(
             url, model, messages, headers=headers,
             temperature=0.3, max_tokens=0, max_rounds=8, owner=owner,
+            raise_on_error=True,
         ):
             if not chunk.startswith("data: ") or chunk.strip() == "data: [DONE]":
                 continue
@@ -692,7 +693,8 @@ async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -
     ]
     try:
         async for chunk in stream_agent_loop(url, model, messages, headers=headers,
-                                             temperature=0.3, max_tokens=0, max_rounds=8, owner=owner):
+                                             temperature=0.3, max_tokens=0, max_rounds=8, owner=owner,
+                                             raise_on_error=True):
             if not chunk.startswith("data: ") or chunk.strip() == "data: [DONE]":
                 continue
             try:
