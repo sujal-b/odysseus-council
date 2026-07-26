@@ -2,17 +2,129 @@
 Handles schema validation, retry backoffs, context budgets, and streaming extracts.
 """
 import asyncio
+import copy
+import json
 import logging
+import time
 from typing import Any, List, Dict, Optional
-from council_of_agents.scripts.council_schemas import validate_agent_output
-from council_of_agents.scripts.council_retry import retry_with_backoff, SchemaValidationError
+from council_of_agents.scripts.council_schemas import SCHEMA_MAP, validate_agent_output
+from council_of_agents.scripts.council_retry import (
+    retry_with_backoff,
+    SchemaValidationError,
+    ErrorClass,
+    classify_error,
+)
 from council_of_agents.scripts.context_tracker import ContextBudgetExceededError
 from src.model_context import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
+_REPAIR_CONTRACTS = {
+    "chair": '{"complexity":"SIMPLE|MEDIUM|COMPLEX","route":"DIRECT|PIPELINE","action":"read|write|search|command|analyze|unknown","target":"...","reason":"..."}',
+    "strategist": '{"tasks":[{"id":"T1","description":"...","depends_on":[],"acceptance":"...","write_scope":["src/"]}],"risks":[]}',
+    "manager": '{"verdict":"APPROVED|REVISE|BLOCKED","confidence":0.0,"summary":"...","issues":[]}',
+    "perspective_analyzer": '{"security":{"score":0.0,"issues":[]},"performance":{"score":0.0,"issues":[]},"maintainability":{"score":0.0,"issues":[]},"overall_score":0.0,"synthesis":"..."}',
+    "completeness_auditor": '{"completeness":0.0,"done":false,"criteria":[]}',
+}
+
+
+def _repair_context(messages: List[Dict[str, str]], *, limit: int = 12000) -> str:
+    """Keep only bounded, non-tool context for a schema repair attempt."""
+    selected = []
+    used = 0
+    # The latest decision evidence is more useful than an old system prompt;
+    # the repair system message already supplies the output contract. Walk
+    # backwards, then restore chronological order for the model.
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "unknown")
+        if role == "system" or role == "tool" or message.get("tool_calls") or message.get("tool_call_id"):
+            continue
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        remaining = limit - used
+        if remaining <= 0:
+            break
+        text = content.strip()[:min(remaining, 4000)]
+        selected.append(f"[{role}]\n{text}")
+        used += len(text)
+    selected.reverse()
+    return "\n\n".join(selected)
+
+
+def _schema_repair_messages(
+    messages: List[Dict[str, str]],
+    validation_role: str,
+    error: str,
+    raw_text: str,
+) -> List[Dict[str, str]]:
+    schema_model = SCHEMA_MAP.get(validation_role)
+    schema_text = _REPAIR_CONTRACTS.get(validation_role)
+    if schema_text is None:
+        schema = schema_model.model_json_schema() if schema_model else {}
+        schema_text = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))[:6000]
+    context = _repair_context(messages, limit=6000)
+    scope_rule = (
+        " For Strategist plans, write_scope may contain only workspace-relative "
+        "directories ending in '/'. Never use './' or a filename there; use "
+        "workspace_root: true with write_scope: [] when a task writes at the workspace root."
+        if validation_role == "strategist" else ""
+    )
+    previous = str(raw_text or '')[:6000]
+    if validation_role == "strategist":
+        previous = "(omitted; rebuild the compact plan from the decision context)"
+    task_requirement = " with at least one task" if validation_role == "strategist" else ""
+    repair_instruction = (
+        "Rebuild the smallest complete plan from the user request and Chair decision. "
+        "The result must contain at least one valid task. Do not invent repository "
+        "facts, filenames, or dependencies not supported by the context."
+        if validation_role == "strategist" else
+        "Use only the non-tool decision context below. The previous response failed "
+        "validation. Correct it without inventing unsupported content."
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"Repair the {validation_role} response. Return ONLY one valid JSON object{task_requirement}; "
+                f"no markdown, prose, code fences, or tool calls.{scope_rule} "
+                "Follow this JSON Schema exactly:\n"
+                f"{schema_text}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"{repair_instruction}\n\n"
+                f"Decision context:\n{context}\n\n"
+                f"Validation error:\n{str(error or '')[:3000]}\n\n"
+                f"Previous response:\n{previous}"
+            ),
+        },
+    ]
+
+
+def _manager_blocked_fallback(error: str, raw_text: str) -> str:
+    """Return a valid Manager envelope that routes to the existing review gate."""
+    payload = {
+        "verdict": "BLOCKED",
+        "confidence": 0.0,
+        "summary": "Manager output could not be validated; manual review is required.",
+        "issues": [{
+            "severity": "critical",
+            "task_id": "ALL",
+            "description": str(error or "Manager response schema validation failed")[:1000],
+            "suggestion": "Retry Manager review with a corrected structured response.",
+            "evidence": str(raw_text or "")[:2000],
+        }],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
 
 class AgentRunner:
+    LIVENESS_INTERVAL_SECONDS = 15
     OUTPUT_RESERVE_BY_ROLE = {
         "chair": 1024,
         "strategist": 2048,
@@ -57,6 +169,16 @@ class AgentRunner:
         **kwargs
     ) -> str:
         """Invoke an agent with retry backoff, Pydantic validation, token tracking, and streaming JSON extraction."""
+        context_fallback_attempted = bool(kwargs.pop("_context_fallback_attempted", False))
+        active_context_fallback = kwargs.pop("_context_fallback", None)
+        recovery_fallback = active_context_fallback
+        if recovery_fallback is None and not context_fallback_attempted:
+            resolver = getattr(self.orchestrator, "_context_fallback_for", None)
+            if resolver:
+                candidate = resolver(role, self.state.role_overrides.get(role, {}))
+                if isinstance(candidate, dict):
+                    recovery_fallback = candidate
+
         # 1. Budget check
         if self.tracker and self.tracker.budget_tokens > 0 and self.tracker.over_budget():
             msg = (
@@ -70,59 +192,162 @@ class AgentRunner:
             raise ContextBudgetExceededError(msg)
 
         timeout = self.orchestrator.AGENT_TIMEOUTS.get(role, 300)
+        hard_timeouts = getattr(self.orchestrator, "AGENT_HARD_TIMEOUTS", {})
+        if not isinstance(hard_timeouts, dict):
+            hard_timeouts = {}
+        hard_timeout = max(float(timeout), float(hard_timeouts.get(role, timeout)))
         
         # Determine retry limit
         if max_retries is None:
             max_retries = self.orchestrator.AGENT_MAX_RETRIES.get(role, 1)
 
-        input_tokens = estimate_tokens(messages) if self.tracker else 0
         validation_role = schema_role or role
+        original_messages = copy.deepcopy(messages)
+        # Preserve the established first-attempt mutation semantics for normal
+        # tool-enabled roles. Only a schema-repair pass switches to the clean
+        # bounded copy, so existing task execution state is not disconnected.
+        attempt_messages = messages
+        schema_repair_used = False
+        attempt_number = 0
 
         async def operation():
+            nonlocal attempt_messages, schema_repair_used, attempt_number
+            attempt_number += 1
             reservation_id = None
             attempt_started = False
             result = None
+            last_progress = time.monotonic()
+            model_wait_started = last_progress
+            awaiting_model = True
+
+            async def emit_progress(**event):
+                nonlocal last_progress, model_wait_started, awaiting_model
+                extra = event.get("extra") if isinstance(event.get("extra"), dict) else {}
+                event_type = event.get("event")
+                now = time.monotonic()
+                if event_type == "tool_output":
+                    # The tool result starts a fresh, bounded model turn.
+                    # Some providers take over a minute before their first
+                    # streamed token, so the short idle timer is not valid yet.
+                    model_wait_started = now
+                    awaiting_model = True
+                if event_type != "heartbeat" or extra.get("phase") == "model_thinking":
+                    last_progress = now
+                if event_type == "thought_delta" or extra.get("phase") == "model_thinking":
+                    awaiting_model = False
+                if self.emit:
+                    await self.emit(**event)
+
+            async def liveness_pulse():
+                while True:
+                    await asyncio.sleep(self.LIVENESS_INTERVAL_SECONDS)
+                    idle_seconds = time.monotonic() - last_progress
+                    if idle_seconds >= self.LIVENESS_INTERVAL_SECONDS:
+                        await emit_progress(
+                            event="heartbeat", status="IN_PROGRESS", agent=role,
+                            text="Waiting for model response",
+                            extra={"phase": "awaiting_model", "idle_seconds": int(idle_seconds)},
+                        )
+
+            input_tokens = estimate_tokens(attempt_messages) if self.tracker else 0
             if self.tracker:
                 output_reserve = self.OUTPUT_RESERVE_BY_ROLE.get(validation_role, 1024)
-                reservation_id = self.tracker.reserve(
-                    role,
-                    input_tokens=input_tokens,
-                    output_tokens=output_reserve,
-                    allow_protected=validation_role in self.PROTECTED_RESERVE_ROLES,
-                )
+                allow_protected = validation_role in self.PROTECTED_RESERVE_ROLES
+                # A reservation can be temporarily unavailable while a
+                # parallel agent is reconciling its pessimistic allocation.
+                # Wait a bounded number of times; never spin indefinitely.
+                for wait_s in (0.0, 0.05, 0.15, 0.30):
+                    reservation_id = self.tracker.reserve(
+                        role,
+                        input_tokens=input_tokens,
+                        output_tokens=output_reserve,
+                        allow_protected=allow_protected,
+                        priority="verification" if allow_protected else "in_progress",
+                    )
+                    if reservation_id is not None:
+                        break
+                    if wait_s:
+                        await asyncio.sleep(wait_s)
                 if reservation_id is None:
+                    available = self.tracker.available_for(allow_protected=allow_protected)
+                    metadata = {
+                        "failure_kind": "CONTEXT_BUDGET_EXHAUSTED",
+                        "role": role,
+                        "priority": "verification" if allow_protected else "in_progress",
+                        "requested_tokens": input_tokens + output_reserve,
+                        "available_tokens": available,
+                        "budget_tokens": self.tracker.budget_tokens,
+                        "reserved_tokens": self.tracker.reserved_tokens,
+                    }
                     raise ContextBudgetExceededError(
                         f"[context-budget] {role} attempt blocked: requires about "
-                        f"{input_tokens + output_reserve} tokens, only "
-                        f"{self.tracker.available_for(allow_protected=validation_role in self.PROTECTED_RESERVE_ROLES)} "
-                        "are available."
+                        f"{input_tokens + output_reserve} tokens, only {available} are available.",
+                        metadata=metadata,
                     )
             extractor = self._get_extractor(validation_role)
             
             if extractor:
                 async def on_chunk(c):
                     clean = extractor.feed_chunk(c)
-                    if clean and self.emit:
-                        await self.emit(event="thought_delta", agent=role, status="IN_PROGRESS", text=clean)
+                    if clean:
+                        await emit_progress(event="thought_delta", agent=role, status="IN_PROGRESS", text=clean)
             else:
                 async def on_chunk(c):
-                    if self.emit:
-                        await self.emit(event="thought_delta", agent=role, status="IN_PROGRESS", text=c)
+                    await emit_progress(event="thought_delta", agent=role, status="IN_PROGRESS", text=c)
 
+            pulse_task = asyncio.create_task(liveness_pulse()) if self.emit else None
+            call_task = None
             try:
                 attempt_started = True
                 # Delegate low-level LLM call back to orchestrator
-                result = await asyncio.wait_for(
+                call_kwargs = dict(kwargs)
+                if active_context_fallback is not None:
+                    call_kwargs["context_fallback"] = active_context_fallback
+                if schema_repair_used:
+                    # A schema repair is a bounded correction pass, not a new
+                    # investigation. It must not create more tool output or
+                    # mutate the original failed conversation.
+                    call_kwargs["disable_tools"] = True
+                    # The repair formats an existing reply; it is not the
+                    # implementer execution call that must carry the packet.
+                    call_kwargs.pop("required_contract", None)
+                call_task = asyncio.create_task(
                     self.orchestrator._call_agent(
                         role, self.state.session_id, self.state.role_overrides.get(role, {}),
-                        messages, on_chunk=on_chunk, emit_cb=self.emit, **kwargs
-                    ),
-                    timeout=timeout,
+                        attempt_messages, on_chunk=on_chunk, emit_cb=emit_progress, **call_kwargs
+                    )
                 )
+                while not call_task.done():
+                    now = time.monotonic()
+                    response_age = now - model_wait_started
+                    remaining = hard_timeout - response_age
+                    if not awaiting_model:
+                        remaining = min(remaining, float(timeout) - (now - last_progress))
+                    await asyncio.wait({call_task}, timeout=max(0, remaining))
+                    if call_task.done():
+                        break
+                    now = time.monotonic()
+                    if now - model_wait_started >= hard_timeout:
+                        raise asyncio.TimeoutError(
+                            f"{role} received no complete model response within {hard_timeout:g}s"
+                        )
+                    if not awaiting_model and now - last_progress >= float(timeout):
+                        raise asyncio.TimeoutError(
+                            f"{role} made no progress for {float(timeout):g}s"
+                        )
+                result = call_task.result()
 
-                # Perform schema validation
+                # Perform schema validation. An empty response is also a
+                # contract failure for structured Council roles; otherwise a
+                # provider hiccup could silently reach the Manager gate.
+                if validation_role in SCHEMA_MAP and not result:
+                    raise SchemaValidationError(
+                        f"{validation_role} schema invalid: empty response",
+                        raw_text=result or "",
+                        validation_error="response was empty",
+                    )
                 if result:
-                    v = validate_agent_output(validation_role, result)
+                    v = validate_agent_output(validation_role, result, strict=True)
                     if not v.success:
                         raise SchemaValidationError(
                             f"{validation_role} schema invalid: {v.error}",
@@ -130,19 +355,36 @@ class AgentRunner:
                             validation_error=v.error
                         )
                 return result
+            except SchemaValidationError as error:
+                if not schema_repair_used:
+                    schema_repair_used = True
+                    attempt_messages = _schema_repair_messages(
+                        original_messages,
+                        validation_role,
+                        error.validation_error,
+                        error.raw_text,
+                    )
+                raise
             finally:
+                if call_task is not None and not call_task.done():
+                    call_task.cancel()
+                    await asyncio.gather(call_task, return_exceptions=True)
+                if pulse_task:
+                    pulse_task.cancel()
+                    await asyncio.gather(pulse_task, return_exceptions=True)
                 if self.tracker and reservation_id is not None:
-                    self.tracker.release(reservation_id)
                     if attempt_started:
                         output_tokens = (
                             estimate_tokens([{"role": "assistant", "content": result}])
                             if result else 0
                         )
-                        self.tracker.record(
-                            role,
+                        self.tracker.reconcile(
+                            reservation_id,
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                         )
+                    else:
+                        self.tracker.release(reservation_id)
 
         async def on_retry_fn(rs):
             if self.emit:
@@ -159,6 +401,7 @@ class AgentRunner:
                 role=role,
                 max_retries=max_retries,
                 on_retry=on_retry_fn,
+                schema_retries=1 if validation_role in SCHEMA_MAP else None,
             )
 
             # Save retry logs to state metadata for observability
@@ -170,6 +413,32 @@ class AgentRunner:
             return result
 
         except SchemaValidationError as e:
+            if hasattr(self.state, "metadata"):
+                if self.state.metadata is None:
+                    self.state.metadata = {}
+                self.state.metadata[f"{role}_schema_recovery"] = {
+                    "attempts": attempt_number,
+                    "failure_kind": "SCHEMA_VALIDATION",
+                    "repair_used": schema_repair_used,
+                    "safe_fallback": "MANAGER_BLOCKED" if validation_role == "manager" else "",
+                    "validation_error": str(e.validation_error or "")[:1000],
+                }
+            if validation_role == "manager":
+                fallback = _manager_blocked_fallback(e.validation_error, e.raw_text)
+                if self.emit:
+                    await self.emit(
+                        event="recovery_blocked",
+                        status="BLOCKED",
+                        text="Manager response could not be validated; routing to manual review.",
+                        agent=role,
+                        extra={
+                            "failure_kind": "SCHEMA_VALIDATION",
+                            "retryable": False,
+                            "safe_fallback": "MANAGER_BLOCKED",
+                            "attempts": attempt_number,
+                        },
+                    )
+                return fallback
             if self.emit:
                 await self.emit(
                     event="error",
@@ -178,16 +447,49 @@ class AgentRunner:
                     agent=role
                 )
             raise
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as error:
             if self.emit:
                 await self.emit(
                     event="error",
                     status="FAILED",
-                    text=f"{role} timed out after {timeout}s",
+                    text=str(error) or f"{role} timed out after {timeout}s",
                     agent=role
                 )
             raise
+        except ContextBudgetExceededError as e:
+            if self.emit:
+                await self.emit(
+                    event="error",
+                    status="FAILED",
+                    text="Context budget exhausted for this agent attempt.",
+                    agent=role,
+                    extra={"error_kind": "CONTEXT_BUDGET_EXHAUSTED", **getattr(e, "metadata", {})},
+                )
+            raise
         except Exception as e:
+            if classify_error(e) == ErrorClass.CONTEXT and not context_fallback_attempted and recovery_fallback:
+                fallback_model = recovery_fallback.get("model", "configured recovery model")
+                if self.emit:
+                    await self.emit(
+                        event="context_recovery",
+                        status="IN_PROGRESS",
+                        text=f"{role} context was too large; retrying once with {fallback_model}.",
+                        agent=role,
+                        extra={
+                            "error_kind": "context_overflow",
+                            "fallback_model": fallback_model,
+                        },
+                    )
+                retry_kwargs = dict(kwargs)
+                retry_kwargs["_context_fallback_attempted"] = True
+                retry_kwargs["_context_fallback"] = recovery_fallback
+                return await self.invoke(
+                    role,
+                    messages,
+                    schema_role=schema_role,
+                    max_retries=0,
+                    **retry_kwargs,
+                )
             if self.emit:
                 await self.emit(
                     event="error",

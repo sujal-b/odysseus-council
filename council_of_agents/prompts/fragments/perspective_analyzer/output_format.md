@@ -8,9 +8,11 @@ Your output must be a single, valid JSON block matching the schema below. Do not
     "issues": [
       {
         "severity": "critical | warning | info",
+        "disposition": "ADVISORY | MUST_FIX | BLOCK",
         "description": "Short description of the security issue",
         "task_id": "T1 | ALL",
-        "suggestion": "How to resolve it"
+        "suggestion": "How to resolve it",
+        "evidence": "Exact plan field, path, or acceptance gap supporting the finding"
       }
     ]
   },
@@ -23,9 +25,11 @@ Your output must be a single, valid JSON block matching the schema below. Do not
     "issues": [
       {
         "severity": "warning",
+        "disposition": "MUST_FIX",
         "description": "Lack of unit tests for the retry helper",
         "task_id": "T2",
-        "suggestion": "Add test_retry.py verifying backoff calculations"
+        "suggestion": "Add test_retry.py verifying backoff calculations",
+        "evidence": "T2 has no test or verification task"
       }
     ]
   },

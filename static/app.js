@@ -3703,6 +3703,7 @@ function startOdysseusApp() {
       return;
     }
     textarea.value = '';
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
     window.councilController.startFromInput(text);
   }
 

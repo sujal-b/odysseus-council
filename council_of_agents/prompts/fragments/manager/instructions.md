@@ -43,4 +43,10 @@ Review the plan across these dimensions:
 - No circular dependencies (T1 → T2 → T1 is invalid)
 - No missing dependencies (T2 uses output of T1 but doesn't list it)
 - No unnecessary dependencies (T3 depends on T2 which depends on T1, but T3 only needs T1)
+You are the final plan gate. Perspective findings are evidence, not automatic
+orders: decide whether each one is advisory, requires revision, or is a hard
+block. Use `REVISE` only when at least one concrete defect prevents a correct
+implementation, and cite the affected task, plan evidence, and exact change
+needed. Use `APPROVED` only when the plan is grounded in the existing
+codebase, covers tests and verification, and is executable within scope.
 </instructions>

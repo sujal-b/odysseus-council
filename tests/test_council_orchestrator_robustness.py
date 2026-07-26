@@ -151,6 +151,18 @@ def test_parse_manager_verdict_json():
     # Valid JSON
     assert orchestrator._parse_manager_verdict('```json\n{"verdict": "REVISE", "summary": "test"}\n```') == "REVISE"
     assert orchestrator._parse_manager_verdict('{"verdict": "APPROVED", "summary": "test"}') == "APPROVED"
+
+
+def test_manager_revision_is_explicit_not_confidence_driven():
+    mock_router = MagicMock()
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    assert orchestrator._parse_manager_verdict(
+        '{"verdict": "APPROVED", "confidence": 0.2}'
+    ) == "APPROVED"
+    assert orchestrator._parse_manager_verdict(
+        '{"verdict": "REVISE", "confidence": 0.9}'
+    ) == "REVISE"
     # Invalid JSON fallback
     assert orchestrator._parse_manager_verdict('REVISE the task please.') == "REVISE"
 
@@ -200,37 +212,20 @@ def test_extract_code_json(tmp_path):
         assert file_path == "routes/auth.py"
 
 
-@pytest.mark.asyncio
-async def test_revise_task_calls_strategist():
+def test_execution_retry_does_not_call_strategist_or_mutate_task_description():
     mock_router = MagicMock()
-    cfg = MagicMock()
-    cfg.escalation.max_loops = 3
-    cfg.escalation.conflict_threshold = 0.7
-    mock_router.get.return_value = cfg
     orchestrator = CouncilOrchestrator(mock_router)
+    from council_of_agents.scripts.task_dag import TaskNode
 
-    mock_state = MagicMock()
-    mock_state.session_id = "test-session"
-    mock_state.user_prompt = "build a REST API"
-    mock_state.role_overrides = {}
-    mock_state.owner = "test-user"
+    task = TaskNode(id="T1", description="Create REST API", max_retries=2)
+    task.error_history = ["SyntaxError on line 10"]
+    retry = orchestrator._build_execution_retry(
+        task, "SyntaxError on line 10", "tool_execution"
+    )
 
-    revised_json = '```tasks\n[{"id": "T1", "description": "Create REST API with error handling"}]\n```'
-    with patch.object(orchestrator, '_invoke_agent_safe', return_value=revised_json) as mock_invoke:
-        from council_of_agents.scripts.task_dag import TaskNode
-        task = TaskNode(id="T1", description="Create REST API", max_retries=2)
-        task.error_history = ["SyntaxError on line 10"]
-
-        result = await orchestrator._revise_task(
-            mock_state, task, "SyntaxError on line 10",
-            asyncio.Queue(), set(), owner="test-user"
-        )
-        assert result == "Create REST API with error handling"
-        # Verify the revision request was a user message, not assistant
-        call_args = mock_invoke.call_args
-        messages = call_args[0][2]  # positional arg: messages
-        last_msg = messages[-1]
-        assert last_msg["role"] == "user", "Revision request must be a user message"
+    assert task.description == "Create REST API"
+    assert retry["strategy"] == "write_immediately"
+    assert retry["failure_type"] == "tool_execution"
 
 
 def test_parse_verdict_accept_retry_escalate():
@@ -471,7 +466,7 @@ async def test_direct_fallback_to_pipeline():
                     return direct_impl_reply
                 return pipeline_impl_reply
             elif role == "strategist":
-                return "Plan: fix the bug"
+                return '```tasks\n[{"id":"T1","description":"Fix auth.py","write_scope":[]}]\n```'
             elif role == "manager":
                 return '{"verdict": "APPROVED", "summary": "good plan"}'
             return None
@@ -488,6 +483,75 @@ async def test_direct_fallback_to_pipeline():
     # Verify fallback occurred: strategist should have been called
     assert "strategist" in roles_called, "Fallback must invoke Strategist"
     assert roles_called.count("implementer") == 2, "Implementer called twice: once DIRECT, once PIPELINE"
+
+
+@pytest.mark.asyncio
+async def test_pipeline_rechecks_perspective_before_manager_revision_review(tmp_path, monkeypatch):
+    """A revised plan must not be approved using the original perspective evidence."""
+    monkeypatch.setenv("COUNCIL_PLAN_MAX_REVISIONS", "1")
+    mock_router = MagicMock()
+    cfg = MagicMock()
+    cfg.escalation.max_loops = 3
+    cfg.escalation.conflict_threshold = 0.7
+    mock_router.get.return_value = cfg
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    mock_state = MagicMock()
+    mock_state.session_id = "test-perspective-recheck"
+    mock_state.user_prompt = "Fix the existing session reload bug."
+    mock_state.role_overrides = {}
+    mock_state.owner = "test-user"
+    mock_state.workspace = str(tmp_path)
+
+    chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"session reload","reason":"existing-code fix"}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect the existing session loader","acceptance":"The failure path is identified","read_scope":["core/"],"write_scope":[]}]}'
+    revised_plan = '{"tasks":[{"id":"T1","description":"Inspect the existing session loader and tests","acceptance":"The failure path is identified with regression coverage","read_scope":["core/","tests/"],"write_scope":[]}]}'
+    perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Original plan evidence."}'
+    perspective_recheck = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Revised plan evidence."}'
+    manager_revise = '{"verdict":"REVISE","confidence":0.4,"summary":"Add regression coverage.","issues":[{"severity":"warning","task_id":"T1","description":"Tests are missing.","suggestion":"Inspect and cover the existing regression path.","evidence":"T1 read scope omits tests/."}]}'
+    manager_revise_again = '{"verdict":"REVISE","confidence":0.4,"summary":"Further review is needed.","issues":[{"severity":"warning","task_id":"T1","description":"Verification is still missing.","suggestion":"Add a focused verification command.","evidence":"The revised task has no verification."}]}'
+
+    responses = iter([
+        chair, plan, perspective, manager_revise,
+        revised_plan, perspective_recheck, manager_revise_again,
+    ])
+    calls = []
+
+    with patch.object(orchestrator, "_invoke_agent_safe") as mock_invoke, \
+         patch.object(orchestrator, "_load_prompt", return_value="test prompt"), \
+         patch("src.tool_security.blocked_tools_for_owner", return_value=set()), \
+         patch("src.tool_security.owner_is_admin_or_single_user", return_value=True), \
+         patch("services.memory.skills.SkillsManager") as mock_skills_manager_class, \
+         patch("council_of_agents.scripts.council_orchestrator.OutcomeStore") as mock_outcome_store_class, \
+         patch("council_of_agents.scripts.council_orchestrator.SessionLocal") as mock_session_local:
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+        mock_db.query.return_value.filter.return_value.first.return_value = MagicMock(owner="test-user")
+        mock_outcome_store_class.return_value = MagicMock()
+        mock_skills_manager_class.return_value.get_relevant_skills.return_value = []
+
+        async def side_effect(role, state, messages, emit, **kwargs):
+            calls.append((role, messages))
+            return next(responses)
+
+        mock_invoke.side_effect = side_effect
+        event_queue = asyncio.Queue()
+        resume_event = MagicMock(spec=asyncio.Event)
+
+        async def dummy_wait():
+            return None
+
+        resume_event.wait = dummy_wait
+        await orchestrator.run(mock_state, event_queue, resume_event)
+
+    roles = [role for role, _ in calls]
+    assert roles == [
+        "chair", "strategist", "perspective_analyzer", "manager",
+        "strategist", "perspective_analyzer", "manager",
+    ]
+    revised_manager_messages = "\n".join(message["content"] for role, messages in calls[-1:] for message in messages)
+    assert "Revised plan evidence." in revised_manager_messages
+    assert "Original plan evidence." not in revised_manager_messages
 
 @pytest.mark.asyncio
 async def test_direct_fallback_max_once():
@@ -537,7 +601,7 @@ async def test_direct_fallback_max_once():
                 call_count["implementer"] += 1
                 return fail_reply
             elif role == "strategist":
-                return "Plan: do something"
+                return '```tasks\n[{"id":"T1","description":"Fix the task","write_scope":[]}]\n```'
             elif role == "manager":
                 return '{"verdict": "APPROVED", "summary": "ok"}'
             return None
@@ -876,7 +940,63 @@ def test_quality_reason_split_handles_parenthetical_detail():
     assert reason.split(" ")[0] in _UNRECOVERABLE_REASONS
 
 
+def test_sanitize_council_event_adds_compact_build_presentation():
+    from routes.council_routes import sanitize_council_event
+    from council_of_agents.scripts.council_orchestrator import CouncilEvent
+
+    event = CouncilEvent(
+        event="tool_start",
+        status="IN_PROGRESS",
+        text='Executing `D:\\Projects\\odysseus1\\css\\style.css`',
+        agent="implementer",
+        extra={
+            "tool": "write_file",
+            "task_id": "T2",
+            "command": '{"path":"D:\\Projects\\odysseus1\\css\\style.css"}',
+        },
+    )
+    sanitized = sanitize_council_event(event)
+    presentation = sanitized["extra"]["presentation"]
+    assert presentation == {"kind": "BUILD", "summary": "Update files", "task_id": "T2"}
+    assert "Projects" not in presentation["summary"]
+    assert "{" not in presentation["summary"]
 
 
+def test_sanitize_council_event_compacts_failure_presentation():
+    from routes.council_routes import sanitize_council_event
+    from council_of_agents.scripts.council_orchestrator import CouncilEvent
 
+    event = CouncilEvent(
+        event="error",
+        status="FAILED",
+        text="implementer timed out after 600s while running a command",
+        agent="manager",
+    )
+    sanitized = sanitize_council_event(event)
+    assert sanitized["extra"]["presentation"] == {
+        "kind": "BLOCKED",
+        "summary": "timeout",
+        "code": "ERROR",
+    }
+
+
+def test_sanitize_council_event_prioritizes_schema_failure_over_timeout_setting():
+    from routes.council_routes import sanitize_council_event
+    from council_of_agents.scripts.council_orchestrator import CouncilEvent
+
+    event = CouncilEvent(
+        event="error",
+        status="FAILED",
+        text="strategist output format invalid after retries: write_scope validation errors; timeout_seconds=120",
+        agent="strategist",
+    )
+    sanitized = sanitize_council_event(event)
+    assert sanitized["extra"]["presentation"]["summary"] == "invalid plan schema"
+
+def test_orchestrator_detects_current_perspective_hard_block():
+    blocked = '{"security":{"score":0.2,"issues":[{"disposition":"BLOCK","evidence":"root write scope"}]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.5,"synthesis":"hard finding"}'
+    clear = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
+
+    assert CouncilOrchestrator._perspective_has_hard_block(blocked) is True
+    assert CouncilOrchestrator._perspective_has_hard_block(clear) is False
 

@@ -6,6 +6,7 @@ loop only acts when gaps exist (ablation). Also covers the needs_user gate and
 the pure helpers (_collect_criteria, _ground_audit).
 """
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -75,6 +76,23 @@ def test_ground_audit_recomputes_and_demotes_stub():
     assert grounded["criteria"][1]["gap_type"] == "broken"
     assert grounded["completeness"] == 0.5                    # recomputed, not trusted
     assert grounded["done"] is False
+
+
+@pytest.mark.asyncio
+async def test_completeness_audit_has_no_open_tool_loop():
+    o = _orch()
+    o._load_prompt = MagicMock(return_value="audit")
+    o._invoke_agent_safe = AsyncMock(return_value=json.dumps(_audit([
+        {"id": "T1", "met": True, "gap_type": "fillable", "detail": "done"},
+    ])))
+    _, emit = _events_collector()
+
+    await o._run_completeness_audit(
+        _State(), [{"id": "T1", "description": "a", "acceptance": "done"}],
+        "implemented", {"src/a.py"}, emit, "u",
+    )
+
+    assert o._invoke_agent_safe.await_args.kwargs["disable_tools"] is True
 
 
 # ── The loop (proof) ────────────────────────────────────────────────────────

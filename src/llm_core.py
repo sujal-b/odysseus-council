@@ -10,9 +10,41 @@ import re
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT
+from src.context_trace import record_model_request, record_model_response
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+class FinalContextContractError(RuntimeError):
+    """The provider-ready payload lost an approved Council work packet."""
+
+
+_JSON_OBJECT_ROLES = frozenset({
+    "chair", "chair_arbitration", "strategist", "manager",
+    "perspective_analyzer", "completeness_auditor",
+})
+
+
+def _requires_json_object(trace_context: Optional[Dict], tools: Optional[List[Dict]] = None) -> bool:
+    """Use provider JSON mode for a control response that cannot call tools."""
+    return not tools and isinstance(trace_context, dict) and trace_context.get("agent") in _JSON_OBJECT_ROLES
+
+
+def _assert_required_contract(payload: Dict, trace_context: Optional[Dict]) -> None:
+    """Reject only a Council call whose final provider payload lost its contract hash."""
+    required = (trace_context or {}).get("required_contract")
+    if not isinstance(required, dict):
+        return
+    contract_hash = str(required.get("contract_hash") or "")
+    if not contract_hash:
+        return
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    if contract_hash not in encoded:
+        raise FinalContextContractError(
+            "handoff_corruption: final model payload omitted the approved contract hash"
+        )
+
 
 class LLMConfig:
     """Configuration constants for LLM operations."""
@@ -437,10 +469,12 @@ def _detect_provider(url: str) -> str:
     if _host_match(url, "anthropic.com"):
         return "anthropic"
 
-    if _host_match(url, "opencode.ai/zen/go"):
-        return "opencode-go"
-    if _host_match(url, "opencode.ai/zen"):
-        return "opencode-zen"
+    if _host_match(url, "opencode.ai"):
+        path = (urlparse(str(url)).path or "").rstrip("/")
+        if path == "/zen/go" or path.startswith("/zen/go/"):
+            return "opencode-go"
+        if path == "/zen" or path.startswith("/zen/"):
+            return "opencode-zen"
     if _host_match(url, "openrouter.ai"):
         return "openrouter"
     if _host_match(url, "groq.com"):
@@ -520,8 +554,8 @@ def _provider_label(url: str) -> str:
     if _host_match(url, "x.ai"): return "xAI"
     if _host_match(url, "openai.com"): return "OpenAI"
     if _host_match(url, "openrouter.ai"): return "OpenRouter"
-    if _host_match(url, "opencode.ai/zen/go"): return "OpenCode Go"
-    if _host_match(url, "opencode.ai/zen"): return "OpenCode Zen"
+    if _detect_provider(url) == "opencode-go": return "OpenCode Go"
+    if _detect_provider(url) == "opencode-zen": return "OpenCode Zen"
     if _host_match(url, "groq.com"): return "Groq"
     from src.chatgpt_subscription import is_chatgpt_subscription_base
     if is_chatgpt_subscription_base(url): return "ChatGPT Subscription"
@@ -1309,6 +1343,7 @@ async def llm_call_async(
     max_retries: int = LLMConfig.MAX_RETRIES,
     prompt_type: Optional[str] = None,
     session_id: Optional[str] = None,
+    trace_context: Optional[Dict] = None,
 ) -> str:
     """Asynchronous LLM call using httpx with connection pooling, timeout, retry logic, and performance logging."""
     provider = _detect_provider(url)
@@ -1346,6 +1381,7 @@ async def llm_call_async(
             max_tokens=max_tokens,
             headers=headers,
             timeout=timeout,
+            trace_context=trace_context,
         ):
             event_is_error = False
             for line in str(chunk).splitlines():
@@ -1406,9 +1442,22 @@ async def llm_call_async(
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
+        if _requires_json_object(trace_context):
+            payload["response_format"] = {"type": "json_object"}
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
         _apply_local_cache_affinity(payload, url, session_id)
+
+    # Capture only after provider adaptation and message sanitization. This is
+    # the exact payload that will be sent, and the tracer is opt-in/fail-open.
+    record_model_request(
+        trace_context,
+        provider=provider,
+        endpoint=target_url,
+        model=model,
+        payload=payload,
+    )
+    _assert_required_contract(payload, trace_context)
 
     if _is_host_dead(target_url):
         raise HTTPException(503, f"Upstream {_host_key(target_url)} marked unreachable (cooldown active)")
@@ -1466,7 +1515,8 @@ async def llm_call_async(
 async def stream_llm(url: str, model: str, messages: List[Dict], temperature: float = LLMConfig.DEFAULT_TEMPERATURE,
                      max_tokens: int = LLMConfig.DEFAULT_MAX_TOKENS, headers: Optional[Dict] = None,
                      timeout: int = LLMConfig.STREAM_TIMEOUT, prompt_type: Optional[str] = None,
-                     tools: Optional[List[Dict]] = None, session_id: Optional[str] = None):
+                     tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
+                     trace_context: Optional[Dict] = None):
     """Stream LLM responses with improved error handling.
 
     Yields SSE chunks:
@@ -1524,6 +1574,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
         if max_tokens and max_tokens > 0:
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
+        if _requires_json_object(trace_context, tools):
+            payload["response_format"] = {"type": "json_object"}
         if tools:
             payload["tools"] = tools
         # For Ollama's OpenAI-compat /v1 endpoint with thinking models (qwen3,
@@ -1536,6 +1588,18 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
         if provider == "copilot":
             from src.copilot import apply_request_headers
             apply_request_headers(h, messages_copy)
+
+    # This is the first passive evaluation hook: the payload has already gone
+    # through provider conversion, system-message consolidation, tool-schema
+    # insertion, and context trimming in the caller.
+    record_model_request(
+        trace_context,
+        provider=provider,
+        endpoint=target_url,
+        model=model,
+        payload=payload,
+    )
+    _assert_required_contract(payload, trace_context)
 
     # Short connect timeout: a reachable peer answers SYN in <100ms even on
     # Tailscale. 3s is plenty; 30s let one dead upstream wedge the UI.
@@ -2086,44 +2150,78 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
         is_last = (i == len(cands) - 1)
         emitted = False
         retried = False
-        async for chunk in stream_llm(url, model, messages, headers=headers, **kwargs):
-            if chunk.startswith("event: error"):
-                if not emitted and not is_last:
-                    # Pre-content failure with fallbacks left — swallow and
-                    # move to the next candidate.
-                    last_error = chunk
-                    retried = True
-                    if i == 0:
-                        logger.warning(f"[fallback] primary {model} failed before output; trying fallback")
-                    else:
-                        logger.warning(f"[fallback] candidate {model} failed; trying next")
-                    break
-                yield chunk
-                continue
-            # Any data chunk other than the terminal [DONE] means real output.
-            if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
-                try:
-                    event_data = json.loads(chunk[6:])
-                except Exception:
-                    event_data = {}
-                if event_data.get("type") == "model_actual":
+        response_parts = []
+        response_error = ""
+        response_status = "completed"
+        call_kwargs = dict(kwargs)
+        trace_context = call_kwargs.get("trace_context")
+        if isinstance(trace_context, dict):
+            call_kwargs["trace_context"] = {**trace_context, "fallback_index": i}
+        try:
+            async for chunk in stream_llm(url, model, messages, headers=headers, **call_kwargs):
+                if chunk.startswith("event: error"):
+                    response_status = "error"
+                    response_error = _summarize_stream_error(chunk)
+                    if not emitted and not is_last:
+                        # Pre-content failure with fallbacks left — swallow and
+                        # move to the next candidate.
+                        last_error = chunk
+                        retried = True
+                        if i == 0:
+                            logger.warning(f"[fallback] primary {model} failed before output; trying fallback")
+                        else:
+                            logger.warning(f"[fallback] candidate {model} failed; trying next")
+                        break
                     yield chunk
                     continue
-                # First real output from a NON-primary candidate: tell the client
-                # the selected model failed and another answered. Without this the
-                # fallback is invisible — a misconfigured provider looks like it
-                # works because the reply is shown under the originally selected
-                # model's name (e.g. a Bedrock/Claude endpoint that 400s every
-                # request but appears fine because another model silently answered).
-                if not emitted and i > 0:
-                    yield ('data: ' + json.dumps({
-                        "type": "fallback",
-                        "selected_model": primary_model,
-                        "answered_by": model,
-                        "reason": _summarize_stream_error(last_error),
-                    }) + '\n\n')
-                emitted = True
-            yield chunk
+                # Any data chunk other than the terminal [DONE] means real output.
+                if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
+                    try:
+                        event_data = json.loads(chunk[6:])
+                    except Exception:
+                        event_data = {}
+                    if event_data.get("type") == "model_actual":
+                        yield chunk
+                        continue
+                    if isinstance(event_data.get("delta"), str):
+                        response_parts.append(event_data["delta"])
+                    if event_data.get("type") == "tool_call_delta":
+                        response_parts.append(event_data.get("arg_delta") or "")
+                    elif event_data.get("type") == "tool_calls":
+                        response_parts.append(json.dumps(event_data.get("calls") or {}, ensure_ascii=False))
+                    # First real output from a NON-primary candidate: tell the client
+                    # the selected model failed and another answered. Without this the
+                    # fallback is invisible — a misconfigured provider looks like it
+                    # works because another model silently answered.
+                    if not emitted and i > 0:
+                        yield ('data: ' + json.dumps({
+                            "type": "fallback",
+                            "selected_model": primary_model,
+                            "answered_by": model,
+                            "reason": _summarize_stream_error(last_error),
+                        }) + '\n\n')
+                    emitted = True
+                yield chunk
+        except asyncio.CancelledError:
+            response_status = "cancelled"
+            response_error = "stream cancelled"
+            raise
+        except Exception as error:
+            response_status = "error"
+            response_error = str(error)[:2000]
+            raise
+        finally:
+            if isinstance(trace_context, dict):
+                record_model_response(
+                    trace_context,
+                    provider="fallback_chain",
+                    endpoint=url,
+                    model=model,
+                    output="".join(response_parts),
+                    status=response_status,
+                    error=response_error,
+                    attempt=i + 1,
+                )
         if not retried:
             return  # candidate finished (success, or terminal error already sent)
     # Every candidate failed pre-content — surface the last error.

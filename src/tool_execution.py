@@ -16,6 +16,7 @@ import pathlib
 import re
 import sys
 import time
+import uuid
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 
@@ -188,9 +189,12 @@ def _resolve_tool_path_in_workspace(workspace: str, raw_path: str) -> str:
     inside it. When no workspace is set, callers use _resolve_tool_path (the
     default data/tmp allowlist) instead.
     """
-    if raw_path is None or not str(raw_path).strip():
-        raise ValueError("path is required")
     base = os.path.realpath(workspace)
+    # A blank path means the active workspace for code-navigation tools.
+    # Keeping this default in the canonical resolver prevents ls/glob/grep
+    # from disagreeing with the workspace permission boundary.
+    if raw_path is None or not str(raw_path).strip():
+        return base
     expanded = os.path.expanduser(str(raw_path).strip())
     candidate = expanded if os.path.isabs(expanded) else os.path.join(base, expanded)
     resolved = os.path.realpath(candidate)
@@ -404,6 +408,21 @@ def _split_bg_marker(content: str):
     return False, content
 
 
+def _preferred_workspace_tool(command: str) -> tuple[str, str] | None:
+    """Map only trivial discovery commands to their dedicated tools.
+
+    This is intentionally conservative: compound commands, flags, pipes, and
+    quoting stay on the shell path so the controller cannot change semantics.
+    """
+    raw = " ".join(str(command or "").strip().split())
+    if not raw or any(op in raw for op in ("&&", "||", ";", "|", ">", "<")):
+        return None
+    match = re.fullmatch(r"(?:ls|dir)(?:\s+(\.))?", raw, flags=re.IGNORECASE)
+    if match:
+        return "ls", json.dumps({"path": match.group(1) or ""})
+    return None
+
+
 async def _direct_fallback(
     tool: str,
     content: str,
@@ -469,7 +488,7 @@ def _extract_tool_path(tool: str, content: str) -> Optional[str]:
         return lines[0].strip()
     return None
 
-async def execute_tool_block(
+async def _execute_tool_block_raw(
     block: Any,
     session_id: Optional[str] = None,
     disabled_tools: Optional[set] = None,
@@ -695,6 +714,22 @@ async def execute_tool_block(
         logger.info("Tool executed: %s", desc)
         return desc, result
 
+    # Prefer the canonical workspace navigator for trivial shell discovery.
+    # This removes the Windows cmd.exe vs POSIX `ls` mismatch without
+    # translating arbitrary shell syntax or weakening the permission gate.
+    if tool == "bash" and workspace:
+        preferred = _preferred_workspace_tool(content)
+        if preferred:
+            preferred_tool, preferred_content = preferred
+            result = await _direct_fallback(
+                preferred_tool,
+                preferred_content,
+                progress_cb=progress_cb,
+                workspace=workspace,
+            ) or {"error": f"{preferred_tool}: execution failed", "exit_code": 1}
+            result["routing"] = f"bash->{preferred_tool}"
+            return f"{preferred_tool}: workspace discovery", result
+
     # Background execution: a `bash` block whose first line is the `#!bg`
     # marker runs DETACHED — returns a job id immediately so the chat stream
     # isn't held open for a multi-minute install/ffmpeg/download. The always-on
@@ -735,7 +770,12 @@ async def execute_tool_block(
         # Code-navigation tools — no MCP server; run the direct implementation.
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
-        result = await _direct_fallback(tool, content, progress_cb=progress_cb) \
+        # Preserve the canonical workspace used by the permission pre-check.
+        # Otherwise the direct implementation falls back to DATA_DIR and
+        # rejects an explicit project workspace as outside the allowlist.
+        result = await _direct_fallback(
+            tool, content, progress_cb=progress_cb, workspace=workspace
+        ) \
             or {"error": f"{tool}: execution failed", "exit_code": 1}
     elif tool in ("create_document", "update_document", "edit_document",
                   "suggest_document", "manage_documents"):
@@ -882,6 +922,23 @@ async def execute_tool_block(
     return desc, result
 
 
+async def execute_tool_block(*args, **kwargs) -> Tuple[str, Dict]:
+    """Execute one tool and attach a stable, bounded reliability contract.
+
+    Permission exceptions intentionally pass through unchanged: the Council
+    permission workflow needs the original tool block to resume it safely.
+    """
+    tool_block = kwargs.get("block") if "block" in kwargs else (args[0] if args else None)
+    tool_name = getattr(tool_block, "tool_type", "unknown")
+    desc, result = await _execute_tool_block_raw(*args, **kwargs)
+    from src.tool_reliability import annotate_tool_result
+    return desc, annotate_tool_result(
+        tool_name,
+        result,
+        attempt_id=f"tool-{uuid.uuid4().hex}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Result formatting
 # ---------------------------------------------------------------------------
@@ -891,7 +948,10 @@ _FORMATTER_HANDLED_KEYS = {
     "stdout", "stderr", "exit_code", "content", "size",
     "response", "results", "session_id", "name", "model", "session_name",
     "success", "path", "action", "title", "doc_id", "version", "applied",
-    "error", "output",
+    "error", "output", "attempt_id", "ok", "failure_kind", "retryable",
+    "remediation", "fingerprint", "diagnostic", "read_mode", "total_lines",
+    "total_chars", "file_hash", "expected_hash", "range_start", "range_end",
+    "range_count", "returned_lines", "next_offset", "truncated", "total_output_chars",
 }
 
 
@@ -957,6 +1017,27 @@ def format_tool_result(description: str, result: Dict) -> str:
             parts.append(f'Document edited: "{result.get("title", "")}" (v{result.get("version", "?")}, {result.get("applied", 0)} edit(s) applied)')
     elif "error" in result:
         parts.append(f"**Error:** {result['error']}")
+
+    if not result.get("ok", True) and result.get("failure_kind"):
+        parts.append(
+            f"**diagnostic:** {result['failure_kind']} — "
+            f"{result.get('diagnostic', 'tool failed')}"
+        )
+        if result.get("remediation"):
+            parts.append(f"**next:** {result['remediation']}")
+
+    if result.get("read_mode"):
+        range_text = ""
+        if result.get("range_start"):
+            range_text = f" lines {result['range_start']}-{result.get('range_end', result['range_start'])}"
+        parts.append(
+            f"**read_metadata:** {result['read_mode']}{range_text}; "
+            f"{result.get('total_lines', '?')} total lines, "
+            f"{result.get('total_chars', '?')} total chars, "
+            f"{result.get('range_count', 0)} range(s), "
+            f"hash {result.get('file_hash', 'unknown')}"
+            + (f"; next offset {result['next_offset']}" if result.get('next_offset') else "")
+        )
 
     # Surface any additional structured payload (events, tasks, notes, calendars,
     # documents, attachments, etc.) that the dedicated branches above don't show.

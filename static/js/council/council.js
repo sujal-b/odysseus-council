@@ -19,6 +19,7 @@ class CouncilState {
     this.log           = [];          // raw events for Captain's Log
     this.chairBrief    = null;        // first chair message
     this.pendingReview = false;
+    this.pendingReviewRequiresOverride = false;
     this.pendingPermission = null;
     this.pendingDecision = null;      // new: critical decision gate
     this.completeness    = null;      // new: completeness metric (e.g. 67)
@@ -37,6 +38,7 @@ class CouncilState {
     this.compactCount    = 0;
     this.actualTokens    = 0;
     this.lastResponseTime = null;
+    this.lastHeartbeatText = '';
     this._listeners    = new Set();
   }
 
@@ -47,11 +49,13 @@ class CouncilState {
 
     if (data.event === 'heartbeat') {
       if (data.status) this.status = String(data.status);
+      if (data.text) this.lastHeartbeatText = String(data.text);
       this._listeners.forEach(fn => {
         try { fn(this, 'heartbeat'); } catch(e) { console.error('[Council] Listener render error:', e); }
       });
       return;
     }
+    this.lastHeartbeatText = '';
 
     if (data.context_budget !== undefined) this.contextBudget = Number(data.context_budget);
     if (data.compact_count !== undefined) this.compactCount = Number(data.compact_count);
@@ -112,7 +116,7 @@ class CouncilState {
     }
 
     // Captain's log: record every meaningful event
-    if (['thought', 'active_agent', 'log', 'log_append', 'status_changed', 'code_update', 'complete', 'error', 'dag_update', 'task_status_update', 'tool_start', 'tool_output', 'tool_progress', 'permission_request', 'context_manifest', 'diagnostic_update', 'completeness_update', 'verification_update', 'checkpoint_update', 'metrics_update'].includes(data.event)) {
+    if (['thought', 'active_agent', 'log', 'log_append', 'status_changed', 'code_update', 'complete', 'error', 'dag_update', 'task_status_update', 'tool_start', 'tool_output', 'permission_request', 'context_recovery', 'context_manifest', 'diagnostic_update', 'completeness_update', 'verification_update', 'checkpoint_update', 'metrics_update'].includes(data.event)) {
       // Capture Chair's Brief separately for the card at the top
       if (data.agent === 'chair' && data.event === 'status_changed' && !this.chairBrief) {
         this.chairBrief = { ts: data.timestamp || new Date().toISOString(), text: typeof data.text === 'string' ? data.text : '' };
@@ -175,8 +179,16 @@ class CouncilState {
     }
 
     // Manager gate
-    if (data.event === 'review_required') this.pendingReview = true;
-    else if (data.status && data.status !== 'BLOCKED') this.pendingReview = false;
+    if (data.event === 'review_required') {
+      this.pendingReview = true;
+      this.pendingReviewRequiresOverride = Boolean(
+        data.extra?.requires_override ||
+        (data.extra?.manager_verdict && data.extra.manager_verdict !== 'APPROVED')
+      );
+    } else if (data.status && data.status !== 'BLOCKED') {
+      this.pendingReview = false;
+      this.pendingReviewRequiresOverride = false;
+    }
 
     // Permission request gate
     if (data.event === 'permission_request') {
@@ -271,20 +283,22 @@ class CouncilSession {
 
   async respond(choice, notes = '') {
     if (!this._state.sessionId) return;
-    await fetch(`/api/council/session/${this._state.sessionId}/respond`, {
+    const res = await fetch(`/api/council/session/${this._state.sessionId}/respond`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ choice, notes }),
     });
+    if (!res.ok) throw new Error(await res.text());
   }
 
   async respondPermission(choice, permissionId, target, persistLevel = 'once') {
     if (!this._state.sessionId) return;
-    await fetch(`/api/council/session/${this._state.sessionId}/respond`, {
+    const res = await fetch(`/api/council/session/${this._state.sessionId}/respond`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ choice, permission_id: permissionId, target, persist_level: persistLevel }),
     });
+    if (!res.ok) throw new Error(await res.text());
   }
 
   async respondDecision(answer) {
@@ -348,11 +362,35 @@ class CouncilSession {
       if (budgetInput) budgetInput.value = data.context_budget || '';
       this._state.compactCount = Number(data.compact_count || 0);
       this._state.pendingReview = (this._state.status === 'BLOCKED');
+      this._state.pendingReviewRequiresOverride = false;
       this._state.pendingPermission = null;
       this._state.pendingDecision = null;
       this._state.completeness = null;
       this._state.completenessCriteria = [];
-      if (Array.isArray(data.log)) {
+      const persistedGate = data.pending_gate && typeof data.pending_gate === 'object'
+        ? data.pending_gate : null;
+      if (persistedGate?.kind === 'permission') {
+        this._state.pendingReview = false;
+        this._state.pendingPermission = {
+          permissionId: persistedGate.permission_id,
+          action: persistedGate.action,
+          target: persistedGate.target,
+        };
+      } else if (persistedGate?.kind === 'review') {
+        this._state.pendingReview = true;
+        this._state.pendingReviewRequiresOverride = Boolean(
+          persistedGate.requires_override ||
+          (persistedGate.manager_verdict && persistedGate.manager_verdict !== 'APPROVED')
+        );
+      } else if (persistedGate?.kind === 'decision') {
+        this._state.pendingReview = false;
+        this._state.pendingDecision = {
+          question: persistedGate.question || '',
+          options: persistedGate.options || ['Proceed'],
+          criterionId: persistedGate.criterion_id || '',
+        };
+      }
+      if (!persistedGate && Array.isArray(data.log)) {
         // Find the last permission_request in the log and check whether it was
         // ever resolved. A permission is resolved once the run moved past the
         // BLOCKED gate after it: a later non-BLOCKED status change, or a
@@ -506,6 +544,7 @@ class CouncilSession {
       this._state.status = 'FAILED';
       this._state.roleOverrides = {};
       this._state.pendingReview = false;
+      this._state.pendingReviewRequiresOverride = false;
       this._state.pendingDecision = null;
       this._state.completeness = null;
       this._state.completenessCriteria = [];
@@ -531,6 +570,7 @@ class CouncilSession {
     if (this._state.pendingReview) {
       this._state.pendingReview = false;
     }
+    this._state.pendingReviewRequiresOverride = false;
   }
 }
 
@@ -546,14 +586,17 @@ class CouncilUI {
     this._particleRaf = null;
     this._prevCompassKey = null;
     // Tracks which burst groups the user has manually expanded.
-    // Keyed by `checkpoint::itemCount` — same stable key stamped onto
-    // data-burst-key. Using an instance Set avoids a DOM query on every
-    // thought_delta render (114 tok/s during streaming).
+    // Keys are stable for the lifetime of a logical task burst. The item count
+    // is deliberately excluded because it changes while a burst is running.
     this._openBurstKeys = new Set();
+    this._burstStatus = new Map();
     // Handle for the pending scroll-to-bottom rAF. Cancelled and replaced
     // on every render so only one rAF is ever queued at a time, preventing
     // accumulation at high event rates.
     this._scrollRaf = null;
+    this._renderRaf = null;
+    this._queuedState = null;
+    this._queuedEventType = null;
   }
 
   /* ── Particle engine: dots flowing along the active edge ── */
@@ -605,6 +648,10 @@ class CouncilUI {
     if (this._scrollRaf) { cancelAnimationFrame(this._scrollRaf); this._scrollRaf = null; }
     // Clear per-session open burst state so the new run starts fully collapsed.
     this._openBurstKeys.clear();
+    this._burstStatus.clear();
+    if (this._renderRaf) { cancelAnimationFrame(this._renderRaf); this._renderRaf = null; }
+    this._queuedState = null;
+    this._queuedEventType = null;
     this._state.sessionId = null;
     this._state.thoughts = '';
     this._state.activeTool = null;
@@ -618,6 +665,7 @@ class CouncilUI {
     this._state.status = 'PENDING';
     this._state.route = null;
     this._state.pendingReview = false;
+    this._state.pendingReviewRequiresOverride = false;
     this._state.pendingPermission = null;
     this._state.pendingDecision = null;
     this._state.completeness = null;
@@ -637,18 +685,36 @@ class CouncilUI {
     this.render(this._state);
   }
 
+  scheduleRender(state, eventType) {
+    const lightweight = type => type === 'thought_delta' || type === 'tool_progress' || type === 'heartbeat';
+    this._queuedState = state;
+    if (!this._queuedEventType || !lightweight(eventType) || lightweight(this._queuedEventType)) {
+      this._queuedEventType = eventType;
+    }
+    if (this._renderRaf) return;
+    this._renderRaf = requestAnimationFrame(() => {
+      const nextState = this._queuedState;
+      const nextEventType = this._queuedEventType;
+      this._renderRaf = null;
+      this._queuedState = null;
+      this._queuedEventType = null;
+      this.render(nextState, nextEventType);
+    });
+  }
+
   render(state, eventType) {
-    this._renderRunSummary(state);
     if (eventType === 'thought_delta') {
-      this._renderGhostEditor(state);
+      this._renderGhostEditor(state, eventType);
       return;
     }
+    if (eventType === 'tool_progress') return;
+    this._renderRunSummary(state);
     if (eventType === 'heartbeat') {
-      this._renderGhostEditor(state);
+      this._renderGhostEditor(state, eventType);
       return;
     }
     this._renderCompass(state);
-    this._renderGhostEditor(state);
+    this._renderGhostEditor(state, eventType);
     this._renderDAGView(state);
     this._renderCodePanel(state);
     this._renderCaptainsLog(state);
@@ -1087,11 +1153,12 @@ class CouncilUI {
     if (running && state.activeAgent && state.activeAgentSince) {
       base += ` · ${_fmtElapsed(Date.now() - state.activeAgentSince)}`;
     }
+    if (running && state.lastHeartbeatText) base += ` · ${state.lastHeartbeatText}`;
     return base;
   }
 
   /* Ghost Editor: stream text, toggle cursor blink */
-  _renderGhostEditor(state) {
+  _renderGhostEditor(state, eventType) {
     const el = document.getElementById('council-ghost-editor');
     const ledger = document.getElementById('council-ghost-stream-ledger');
     if (!el) return;
@@ -1150,6 +1217,10 @@ class CouncilUI {
       }
     }
 
+    // Once the live card exists, streamed tokens only change liveness state.
+    // Rebuilding expanded burst bodies for every token is needless.
+    if (eventType === 'thought_delta' && ledger.querySelector('[data-live-stream]')) return;
+
     // Parse blocks sequentially
     const blocks = [];
     let lastAgent = null;
@@ -1163,7 +1234,7 @@ class CouncilUI {
       try { const p = JSON.parse(trimmed); return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {}; } catch(e) { return {}; }
     };
 
-    state.log.forEach(e => {
+    state.log.forEach((e, eventIndex) => {
       if (!e) return;
       const agent = e.agent || 'system';
 
@@ -1178,34 +1249,29 @@ class CouncilUI {
         blocks.push({
           type: 'chair',
           complexity: e.complexity || 'SIMPLE',
-          reason: this._cleanThinkingText(e.text || '', 'chair')
+          reason: compactAgentActivity('chair')
         });
       }
       else if (e.event === 'thought') {
         let outcome = '';
         if (agent === 'strategist') {
-          const paths = [];
-          if (state.dag && Array.isArray(state.dag.nodes)) {
-            state.dag.nodes.forEach(n => {
-              const matches = this._extractPaths(n.description);
-              matches.forEach(p => { if (!paths.includes(p)) paths.push(p); });
-            });
-          }
-          if (paths.length > 0) outcome = `Decided on ${paths.join(' + ')}`;
+          outcome = 'Plan updated';
         } else if (agent === 'manager') {
           const review = this._parseManagerReview(e, state.log);
-          outcome = `Verdict: ${review.verdict}`;
+          outcome = `Review ${String(review.verdict || 'received').toLowerCase()}`;
         }
         blocks.push({
           type: 'think',
           agent: agent,
-          text: this._cleanThinkingText(e.text || '', agent),
+          text: compactAgentActivity(agent),
           outcome: outcome
         });
       }
       else if (e.event === 'dag_update' || e.event === 'task_status_update') {
         const tasks = (e.extra?.dag?.nodes || []).map(n => ({
-          i: n.id, t: n.description, dp: n.depends_on || []
+          i: n.id,
+          t: n.summary || compactTaskLabel(n.description, n.id),
+          dp: n.depends_on || []
         }));
         let lastStrat = [...blocks].reverse().find(b => b.type === 'strat');
         if (lastStrat) { lastStrat.tasks = tasks; }
@@ -1239,12 +1305,18 @@ class CouncilUI {
           tool: typeof e.extra?.tool === 'string' ? e.extra.tool : '',
           command: cmd,
           args: args,
-          status: 'RUNNING'
+          status: 'RUNNING',
+          taskId: typeof e.extra?.task_id === 'string' ? e.extra.task_id : '',
+          sourceIndex: eventIndex,
+          agent: agent
         });
       }
       else if (e.event === 'tool_output') {
         const toolName = typeof e.extra?.tool === 'string' ? e.extra.tool : '';
-        let lastTool = [...blocks].reverse().find(b => b.type === 'tool_call' && b.tool === toolName);
+        const taskId = typeof e.extra?.task_id === 'string' ? e.extra.task_id : '';
+        let lastTool = [...blocks].reverse().find(b =>
+          b.type === 'tool_call' && b.tool === toolName && b.taskId === taskId
+        );
         if (lastTool && lastTool.status === 'RUNNING') {
           lastTool.status = e.exit_code === 0 || e.exit_code === null ? 'SUCCESS' : 'FAILED';
           lastTool.output = typeof e.extra?.output === 'string' ? e.extra.output : '';
@@ -1258,7 +1330,10 @@ class CouncilUI {
             command: cmd,
             args: args,
             status: e.exit_code === 0 || e.exit_code === null ? 'SUCCESS' : 'FAILED',
-            output: typeof e.extra?.output === 'string' ? e.extra.output : ''
+            output: typeof e.extra?.output === 'string' ? e.extra.output : '',
+            taskId: taskId,
+            sourceIndex: eventIndex,
+            agent: agent
           });
         }
       }
@@ -1267,9 +1342,10 @@ class CouncilUI {
       else if (e.event === 'error') {
         blocks.push({
           type: 'sys',
-          code: e.code || 'EXCEPTION_BUSY',
-          msg: e.text || '',
-          detail: e.extra?.detail || ''
+          code: compactFailureCode(e.code, e.text),
+          msg: compactFailureReason(e.text, 'execution issue'),
+          detail: '',
+          count: 1
         });
       }
     });
@@ -1282,57 +1358,28 @@ class CouncilUI {
     let finalBlocks = blocks;
     try {
       const _burstCheckpoint = (items) => {
-        const reads  = items.filter(x => ['read_file','ls','grep','glob'].includes((x.tool||'').toLowerCase()));
-        const writes = items.filter(x => ['write_file','edit_file'].includes((x.tool||'').toLowerCase()));
-        const cmds   = items.filter(x => ['bash','python'].includes((x.tool||'').toLowerCase()));
-        // Extract a bare filename from a tool-call block, preferring structured
-        // args.path, then JSON-decoded command, then first line of raw command.
-        const _base  = (x) => {
-          let p = '';
-          if (x.args && typeof x.args.path === 'string') {
-            p = x.args.path;
-          } else if (typeof x.command === 'string' && x.command.trim().startsWith('{')) {
-            try { const j = JSON.parse(x.command); if (typeof j.path === 'string') p = j.path; } catch {}
-          }
-          if (!p && typeof x.command === 'string') p = x.command.split('\n')[0];
-          return String(p).replace(/\\/g, '/').split('/').pop() || '';
-        };
-        const parts = [];
-        if (writes.length) {
-          const names = [...new Set(writes.map(_base))].filter(Boolean);
-          if      (names.length === 0) parts.push(`Edited ${writes.length} files`);
-          else if (names.length === 1) parts.push(`Edited ${names[0]}`);
-          else if (names.length === 2) parts.push(`Edited ${names[0]} and ${names[1]}`);
-          else                         parts.push(`Edited ${names[0]} and ${names.length - 1} others`);
-        }
-        if (reads.length) {
-          if (!writes.length) {
-            const names = [...new Set(reads.map(_base))].filter(Boolean);
-            if      (names.length === 1) parts.push(`Read ${names[0]}`);
-            else                         parts.push(`Read ${reads.length} files`);
-          } else {
-            parts.push(`read ${reads.length} file${reads.length > 1 ? 's' : ''}`);
-          }
-        }
-        if (cmds.length) {
-          // _esc is a module-level function; safe to call here. Slice before escaping.
-          const raw  = (cmds[0].args?.command || cmds[0].args?.code ||
-                        (typeof cmds[0].command === 'string' ? cmds[0].command : '') || '')
-                        .split('\n')[0].trim().slice(0, 32);
-          const safe = raw.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          parts.push(cmds.length === 1 && safe ? `Ran <code>${safe}</code>` : `Ran ${cmds.length} commands`);
-        }
-        const rest = items.length - reads.length - writes.length - cmds.length;
-        if (rest > 0) parts.push(`${rest} tool${rest > 1 ? 's' : ''}`);
-        return parts.join(' · ') || `${items.length} operations`;
+        const counts = new Map();
+        items.forEach(item => {
+          const intent = compactToolIntent(item.tool, item.args || {}, item.command);
+          counts.set(intent, (counts.get(intent) || 0) + 1);
+        });
+        return [...counts.entries()]
+          .map(([intent, count]) => count > 1 ? `${intent} ×${count}` : intent)
+          .join(' · ') || `${items.length} actions`;
       };
 
       const processedBlocks = [];
+      const _burstScope = (item) => `${item.taskId || ''}|${item.agent || ''}`;
       let bi = 0;
       while (bi < blocks.length) {
         if (blocks[bi].type === 'tool_call') {
           let bj = bi + 1;
-          while (bj < blocks.length && blocks[bj].type === 'tool_call') bj++;
+          const scope = _burstScope(blocks[bi]);
+          while (
+            bj < blocks.length &&
+            blocks[bj].type === 'tool_call' &&
+            _burstScope(blocks[bj]) === scope
+          ) bj++;
           const run = blocks.slice(bi, bj);
           if (run.length >= 2) {
             const isRunning  = run.some(r => r.status === 'RUNNING');
@@ -1342,7 +1389,10 @@ class CouncilUI {
               items: run,
               running: isRunning,
               hasFailure,
-              checkpoint: _burstCheckpoint(run)
+              checkpoint: _burstCheckpoint(run),
+              taskId: run[0].taskId || '',
+              agent: run[0].agent || 'implementer',
+              sourceIndex: run[0].sourceIndex
             });
           } else {
             processedBlocks.push(...run);
@@ -1353,7 +1403,18 @@ class CouncilUI {
           bi++;
         }
       }
-      finalBlocks = processedBlocks;
+      const compactedBlocks = [];
+      processedBlocks.forEach(item => {
+        if (item.type === 'sys') {
+          const previous = compactedBlocks[compactedBlocks.length - 1];
+          if (previous && previous.type === 'sys' && previous.code === item.code && previous.msg === item.msg) {
+            previous.count = (previous.count || 1) + (item.count || 1);
+            return;
+          }
+        }
+        compactedBlocks.push(item);
+      });
+      finalBlocks = compactedBlocks;
     } catch (burstErr) {
       console.warn('[Council] Burst-group aggregation failed, using raw blocks:', burstErr);
       finalBlocks = blocks; // safe fallback: raw individual tool cards
@@ -1368,22 +1429,22 @@ class CouncilUI {
       if (state.activeAgent === 'chair') {
         blocks.push({
           type: 'chair', complexity: state.complexity || 'PENDING',
-          reason: this._cleanThinkingText(state.thoughts, 'chair'), streaming: true
+          reason: compactAgentActivity('chair'), streaming: true
         });
       } else if (state.activeAgent === 'strategist') {
         blocks.push({
           type: 'think', agent: 'strategist',
-          text: this._cleanThinkingText(state.thoughts, 'strategist'), streaming: true
+          text: compactAgentActivity('strategist'), streaming: true
         });
       } else if (state.activeAgent === 'implementer') {
         blocks.push({
           type: 'think', agent: 'implementer',
-          text: this._cleanThinkingText(state.thoughts, 'implementer'), streaming: true
+          text: compactAgentActivity('implementer', state.activeTool), streaming: true
         });
       } else if (state.activeAgent === 'manager') {
         blocks.push({
           type: 'think', agent: 'manager',
-          text: this._cleanThinkingText(state.thoughts, 'manager'), streaming: true
+          text: compactAgentActivity('manager'), streaming: true
         });
       }
     }
@@ -1396,6 +1457,7 @@ class CouncilUI {
     // in wireListeners. This avoids a DOM querySelectorAll on every
     // thought_delta render (which fires at ~114 tok/s during streaming).
     const _openBursts = this._openBurstKeys;
+    const _seenBurstKeys = new Set();
 
     // Snapshot scroll state before innerHTML wipes the DOM.
     // _wasAtBottom: auto-pin to bottom when user hasn't scrolled up.
@@ -1412,78 +1474,47 @@ class CouncilUI {
 
     // _parseArgs is declared above the block-building loop (see line ~886).
 
-    // Helper: shorten path to last 2 segments
+    // Helper: keep file identity useful without leaking directory context.
     const _shortPath = (p) => {
       if (!p) return '';
       const parts = String(p).replace(/\\/g, '/').split('/');
-      return parts.length > 2 ? parts.slice(-2).join('/') : parts.join('/');
+      return parts[parts.length - 1] || '';
     };
 
-    // Helper: build collapsed summary text
+    // Helper: build collapsed summary text. This is deliberately semantic:
+    // the primary stream must never expose raw commands, JSON, quotes, or
+    // absolute paths merely because a tool emitted them.
     const _toolSummary = (tool, args, cmd) => {
-      const t = (tool || '').toLowerCase();
-      let short = '';
-      if (t === 'glob') {
-        short = args.pattern || cmd || '';
-        if (args.path) short += '  in ' + _shortPath(args.path);
-      } else if (t === 'grep') {
-        const parts = [];
-        if (args.pattern) parts.push('"' + args.pattern + '"');
-        if (args.path) parts.push(_shortPath(args.path));
-        short = parts.join('  ') || cmd || '';
-      } else if (t === 'ls') {
-        short = args.path ? _shortPath(args.path) : cmd || '';
-      } else if (t === 'read_file') {
-        short = args.path ? _shortPath(args.path) : cmd || '';
-        if (args.offset) short += ' #L' + args.offset;
-      } else if (t === 'write_file' || t === 'edit_file') {
-        // write_file: block.content is "path\ncontent" (not JSON) so args.path may be absent;
-        // take only the first line (the path) rather than dumping the full file body.
-        short = args.path ? _shortPath(args.path) : _shortPath((cmd || '').split('\n')[0]);
-      } else if (t === 'bash' || t === 'python') {
-        short = (args.command || args.code || cmd || '').split('\n')[0];
-      } else {
-        short = cmd || JSON.stringify(args);
-      }
-      return short.slice(0, 120);
+      return compactToolIntent(tool, args, cmd);
     };
 
     // Helper: build expanded body HTML
     const _toolBody = (tool, args, cmd, output) => {
       const t = (tool || '').toLowerCase();
       let html = '';
-
-      if (t === 'glob' || t === 'grep' || t === 'ls' || t === 'read_file' || t === 'write_file' || t === 'edit_file') {
-        const entries = Object.entries(args).filter(([_, v]) => v != null && v !== '');
-        if (entries.length) {
-          html += '<div class="ghost-tool-section-label">args</div><div class="ghost-tool-args">';
-          entries.forEach(([k, v]) => {
-            const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
-            html += '<div class="ghost-tool-arg"><span class="ghost-tool-arg-key">' + _esc(k) + '</span><span class="ghost-tool-arg-val">' + _esc(val) + '</span></div>';
-          });
-          html += '</div>';
-        }
-      } else if (t === 'bash' || t === 'python') {
-        const code = args.command || args.code || cmd || '';
-        if (code) {
-          html += '<div class="ghost-tool-section-label">command</div>';
-          html += '<pre class="ghost-tool-cmd">' + (t === 'bash' ? '$ ' : '>>> ') + _esc(code) + '</pre>';
-        }
-      } else {
-        const entries = Object.entries(args).filter(([_, v]) => v != null && v !== '');
-        if (entries.length) {
-          html += '<div class="ghost-tool-section-label">args</div><div class="ghost-tool-args">';
-          entries.forEach(([k, v]) => {
-            const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
-            html += '<div class="ghost-tool-arg"><span class="ghost-tool-arg-key">' + _esc(k) + '</span><span class="ghost-tool-arg-val">' + _esc(val) + '</span></div>';
-          });
-          html += '</div>';
-        }
+      const scrub = value => String(value || '')
+        .replace(/\b[A-Za-z]:[\\/][^\s,;]+/g, '<file>')
+        .replace(/\b(?:projects|workspace|data|assets|src)[\\/][^\s,;]+/gi, '<file>')
+        .replace(/```/g, '')
+        .replace(/["'`{}\[\]]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 280);
+      const rawPath = args.path || (typeof cmd === 'string' ? cmd.split('\n')[0] : '');
+      const fileName = _shortPath(rawPath);
+      const detailLabel = t === 'read_file' ? 'Source read'
+        : (t === 'write_file' || t === 'edit_file') ? 'Files updated'
+        : t === 'bash' || t === 'python' ? _toolSummary(t, args, cmd)
+        : _toolSummary(t, args, cmd);
+      html += '<div class="ghost-tool-section-label">details</div><div class="ghost-tool-args">';
+      html += '<div class="ghost-tool-arg"><span class="ghost-tool-arg-key">operation</span><span class="ghost-tool-arg-val">' + _esc(detailLabel) + '</span></div>';
+      if (fileName) {
+        html += '<div class="ghost-tool-arg"><span class="ghost-tool-arg-key">file</span><span class="ghost-tool-arg-val">' + _esc(fileName) + '</span></div>';
       }
-
+      html += '</div>';
       if (output && output.trim()) {
-        html += '<div class="ghost-tool-section-label">output</div>';
-        html += '<pre class="ghost-tool-output">' + _esc(output) + '</pre>';
+        html += '<div class="ghost-tool-section-label">result</div>';
+        html += '<pre class="ghost-tool-output">' + _esc(scrub(output)) + '</pre>';
       }
 
       return html;
@@ -1557,7 +1588,7 @@ class CouncilUI {
         // burst_group also resets the label because it encapsulates tool cards.
         if (b.type !== 'tool_call') lastToolKindLabel = null;
         // Open card container for all non-handoff blocks
-        html += `<div class="ghost-stream-entry">`;
+        html += `<div class="ghost-stream-entry${b.streaming ? ' ghost-stream-entry--live' : ''}"${b.streaming ? ' data-live-stream' : ''}>`;
 
         if (b.type === 'chair') {
           const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--pass)';
@@ -1575,16 +1606,14 @@ class CouncilUI {
           ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}`;
         }
         else if (b.type === 'strat') {
+          const _taskCount = b.tasks.length;
+          const _waves = executionWaveCount(b.tasks);
+          const _planSummary = `${_taskCount} task${_taskCount === 1 ? '' : 's'} planned · ${_waves} execution wave${_waves === 1 ? '' : 's'}`;
+          const _labels = b.tasks.map(t => `${t.i} ${t.t}`).join(' · ');
           html += `
           ${_sectionHeader('Strategy Execution', 'var(--strat)')}
-          <div style="display:flex;flex-direction:column;gap:4px">
-            ${b.tasks.map(t => `
-              <div style="font-size:10px;font-family:var(--font);color:var(--text);display:flex;gap:6px;align-items:flex-start">
-                <span style="color:var(--strat);flex-shrink:0;font-weight:600">[${_esc(t.i)}]</span>
-                <span style="color:var(--dim)">${_esc(t.t)}</span>
-              </div>
-            `).join('')}
-          </div>`;
+          <div class="ghost-plan-summary">${_esc(_planSummary)}</div>
+          <div class="ghost-plan-labels">${_esc(_labels.slice(0, 220))}</div>`;
         }
         else if (b.type === 'impl') {
           html += `
@@ -1626,28 +1655,38 @@ class CouncilUI {
             return acc;
           }, {});
           const sorted = Object.keys(grouped).sort((a, b) => (sevOrder[a] ?? 99) - (sevOrder[b] ?? 99));
+          const issueCount = b.issues.length;
+          const criticalCount = (grouped.critical || []).length;
+          const issueThemes = b.issues
+            .slice(0, 3)
+            .map(iss => compactIssueTheme(iss))
+            .filter((value, index, values) => values.indexOf(value) === index)
+            .join(' · ');
           html += `
           ${_sectionHeader('Manager Review', 'var(--muted)')}
           <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
             <span style="padding:2px 7px;border-radius:3px;font-size:9px;font-weight:600;color:${m.c};background:${m.b};border:1px solid ${m.c}33;flex-shrink:0;letter-spacing:.08em">${_esc(b.verdict)}</span>
-            <span style="font-size:10px;color:var(--dim);flex:1">${_esc(b.summary)}</span>
+            <span style="font-size:10px;color:var(--dim);flex:1">${_esc(issueCount ? `${issueCount} issue${issueCount === 1 ? '' : 's'}${criticalCount ? ` · ${criticalCount} critical` : ''}` : 'No issues reported')}</span>
           </div>
-          ${sorted.map(sev => `
-            <div style="display:flex;flex-direction:column;gap:4px;margin-top:2px">
-              <span style="font-size:8px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:${sevColor[sev]||'var(--text)'}">${sev.toUpperCase()} [${grouped[sev].length}]</span>
-              ${grouped[sev].map(iss => `
-                <div style="font-size:9px;padding:3px 0;border-left:1px solid var(--border);padding-left:8px;margin-left:4px">
-                  <span style="color:var(--strat);font-weight:600">${_esc(iss.task_id)}</span>
-                  <span style="color:var(--dim);margin-left:4px">${_esc(iss.description)}</span>
-                  ${iss.suggestion ? `<div style="color:var(--muted);font-style:italic;padding-left:12px;font-size:8.5px;margin-top:1px">→ ${_esc(iss.suggestion)}</div>` : ''}
-                </div>
-              `).join('')}
-            </div>
-          `).join('')}`;
+          ${issueThemes ? `<div class="ghost-review-themes">${_esc(issueThemes)}</div>` : ''}`;
         }
         else if (b.type === 'burst_group') {
           // Stable key for this group — used to restore open state across re-renders.
-          const _burstKey = `${b.checkpoint}::${b.items.length}`;
+          const _burstKey = [
+            'burst',
+            encodeURIComponent(this._state.sessionId || 'session'),
+            encodeURIComponent(b.agent || 'implementer'),
+            encodeURIComponent(b.taskId || 'phase'),
+            String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
+          ].join(':');
+          _seenBurstKeys.add(_burstKey);
+          const _wasRunning = this._burstStatus.get(_burstKey);
+          // A user-controlled burst stays open while tools are arriving. Once
+          // the logical burst becomes terminal, collapse it exactly once.
+          if (_wasRunning === true && !b.running) {
+            _openBursts.delete(_burstKey);
+          }
+          this._burstStatus.set(_burstKey, b.running);
           const _isOpen   = _openBursts.has(_burstKey);
           // Icon mosaic: up to 3 unique icons from items
           const _burstIcons = [...new Set(b.items.map(x => _toolKind(x.tool).icon))].slice(0, 3).join('');
@@ -1717,10 +1756,11 @@ class CouncilUI {
         }
         // code_view blocks removed — Implementor Output column already shows file content.
         else if (b.type === 'sys') {
+          const attemptLabel = b.count > 1 ? ` · ${b.count} attempts` : '';
           html += `
           <div style="border-left:3px solid var(--sys);background:rgba(239,68,68,0.06);padding:8px 10px;margin:0 0 0 -12px;border-radius:0 4px 4px 0">
             <div style="font-size:9px;color:var(--sys);font-weight:700;letter-spacing:.06em">${_esc(b.code)}</div>
-            <div style="font-size:10px;color:var(--dim);margin-top:2px">${_esc(b.msg)}</div>
+            <div style="font-size:10px;color:var(--dim);margin-top:2px">${_esc(b.msg + attemptLabel)}</div>
             ${b.detail ? `<div style="font-size:9px;color:var(--muted);font-style:italic;margin-top:2px">${_esc(b.detail)}</div>` : ''}
           </div>`;
         }
@@ -1728,6 +1768,16 @@ class CouncilUI {
         html += `</div>`; // Close ghost-stream-entry
       }
     });
+
+    // A session can contain many short bursts. Prune state for bursts that
+    // are no longer represented in the current log so the UI state remains
+    // bounded without affecting open bursts that are still visible.
+    for (const key of this._burstStatus.keys()) {
+      if (!_seenBurstKeys.has(key)) this._burstStatus.delete(key);
+    }
+    for (const key of _openBursts) {
+      if (!_seenBurstKeys.has(key)) _openBursts.delete(key);
+    }
 
     // Append completeness indicator if available
     if (state.completeness !== null) {
@@ -2169,12 +2219,15 @@ class CouncilUI {
       const agent = typeof e.agent === 'string' ? e.agent : 'system';
       const time = typeof e.ts === 'string' ? e.ts.slice(11, 19) : new Date().toTimeString().slice(0, 8);
       const taskId = e.extra && typeof e.extra.task_id === 'string' ? e.extra.task_id : undefined;
+      const previousEvent = currentEntry?.rawEvents?.[currentEntry.rawEvents.length - 1];
+      const repeatedFailure = e.event === 'error' && previousEvent?.event === 'error'
+        && compactFailureReason(e.text, 'execution issue') === compactFailureReason(previousEvent.text, 'execution issue');
       
       const isNewPhase = !currentEntry || 
                          currentEntry.agent !== agent || 
                          (taskId && currentEntry.taskId !== taskId) ||
                          e.event === 'complete' || 
-                         e.event === 'error';
+                         (e.event === 'error' && !repeatedFailure);
 
       if (isNewPhase) {
         if (currentEntry) {
@@ -2189,8 +2242,7 @@ class CouncilUI {
           taskId: taskId,
           files: [],
           attempts: [],
-          rawEvents: [e],
-          _seenFiles: new Set()
+          rawEvents: [e]
         };
       } else {
         currentEntry.rawEvents.push(e);
@@ -2200,9 +2252,7 @@ class CouncilUI {
       const ops = parseFileOperations(e);
       if (ops) {
         ops.forEach(op => {
-          const key = `${op.op}:${op.path}`;
-          if (!currentEntry._seenFiles.has(key)) {
-            currentEntry._seenFiles.add(key);
+          if (!currentEntry.files.some(existing => sameFileOperation(existing, op))) {
             currentEntry.files.push(op);
           }
         });
@@ -2230,36 +2280,75 @@ class CouncilUI {
 
       if (grp.agent === 'chair') {
         grp.title = state.route === 'DIRECT' ? 'Direct Assessment' : 'Pipeline Instantiated';
-        grp.subtitle = cleanLogText(firstNonTool ? firstNonTool.text : first.text, 'chair') || 'Initializing council orchestration directives.';
+        grp.subtitle = compactAgentActivity('chair');
       } else if (grp.agent === 'strategist') {
-        grp.title = 'Constructing dependency routing plan';
-        grp.subtitle = (lastNonTool && lastNonTool.event === 'dag_update')
-          ? (lastNonTool.text || 'Created execution task DAG.')
-          : (cleanLogText(firstNonTool ? firstNonTool.text : first.text, 'strategist') || 'Planning execution strategy.');
+        grp.title = 'PLAN · Dependency routing';
+        const planEvent = [...grp.rawEvents].reverse().find(ev => ev.extra?.dag?.nodes);
+        const planNodes = planEvent?.extra?.dag?.nodes || [];
+        const compactPlan = planNodes.map(n => ({
+          i: n.id,
+          t: n.summary || compactTaskLabel(n.description, n.id),
+          dp: n.depends_on || []
+        }));
+        const planCount = compactPlan.length;
+        const planWaves = executionWaveCount(compactPlan);
+        grp.subtitle = planCount
+          ? `${planCount} task${planCount === 1 ? '' : 's'} planned · ${planWaves} execution wave${planWaves === 1 ? '' : 's'}`
+          : 'Constructing execution plan';
       } else if (grp.agent === 'implementer') {
         if (grp.taskId) {
-          grp.title = `Executing Task: ${grp.taskId}`;
-          const statusEv = grp.rawEvents.find(ev => ev.event === 'task_status_update' && ev.text);
-          grp.subtitle = statusEv ? cleanLogText(statusEv.text, 'implementer') : 'Running implementation loop.';
+          const statusEv = [...grp.rawEvents].reverse().find(ev => ev.event === 'task_status_update') || lastNonTool;
+          const node = statusEv?.extra?.dag?.nodes?.find(n => String(n.id) === String(grp.taskId));
+          const label = statusEv?.extra?.task_label || node?.summary || compactTaskLabel(node?.description, grp.taskId);
+          const taskState = String(statusEv?.extra?.task_status || statusEv?.status || '').toUpperCase();
+          grp.title = `BUILD · ${grp.taskId} ${label}`;
+          if (taskState === 'DONE') {
+            const fileCount = grp.files.length || (statusEv?.file_path ? 1 : 0);
+            grp.subtitle = `Approved · ${fileCount || 1} file${fileCount === 1 ? '' : 's'} updated`;
+          } else if (taskState === 'FAILED' || statusEv?.status === 'FAILED') {
+            grp.subtitle = `Rejected · ${compactFailureReason(statusEv?.text, 'execution issue')}`;
+          } else {
+            grp.subtitle = `Running · ${label}`;
+          }
         } else {
-          grp.title = 'Consolidating Codebase Updates';
-          grp.subtitle = cleanLogText(lastNonTool ? lastNonTool.text : '', 'implementer') || 'Writing code modifications.';
+          grp.title = 'BUILD · Code updates';
+          grp.subtitle = 'Writing implementation changes';
         }
       } else if (grp.agent === 'manager') {
-        grp.title = 'Approval Gate Blocked';
-        grp.subtitle = cleanLogText(firstNonTool ? firstNonTool.text : first.text, 'manager') || 'Awaiting authorization to start execution.';
+        const errorEvent = grp.rawEvents.find(ev => ev.event === 'error' || ev.status === 'FAILED');
+        const errorCount = grp.rawEvents.filter(ev => ev.event === 'error').length;
+        const attemptSuffix = errorCount > 1 ? ` · ${errorCount} attempts` : '';
+        const permissionEvent = grp.rawEvents.find(ev => ev.event === 'permission_request');
+        const recoveryEvent = grp.rawEvents.find(ev => ev.event === 'context_recovery');
+        if (errorEvent) {
+          grp.title = errorEvent.extra?.error_kind === 'context_overflow'
+            ? 'Context Recovery Failed'
+            : 'Manager Failed';
+          grp.subtitle = `Blocked · ${compactFailureReason(errorEvent.text, 'review failed')}${attemptSuffix}`;
+        } else if (permissionEvent) {
+          grp.title = 'Permission Required';
+          grp.subtitle = 'Waiting · permission required';
+        } else if (recoveryEvent) {
+          grp.title = 'Context Recovery';
+          grp.subtitle = 'Recovering · larger context review';
+        } else {
+          grp.title = 'Approval Gate Blocked';
+          grp.subtitle = 'Waiting · manager approval required';
+        }
       } else {
         const checkEvent = lastNonTool || last;
+        const errorCount = grp.rawEvents.filter(ev => ev.event === 'error').length;
+        const attemptSuffix = errorCount > 1 ? ` · ${errorCount} attempts` : '';
         if (checkEvent.event === 'complete') {
           const prefix = state.route === 'DIRECT' ? 'Direct' : 'Pipeline';
           grp.title = checkEvent.status === 'COMPLETE' ? `${prefix} Complete` : `${prefix} Failed`;
-          grp.subtitle = cleanLogText(checkEvent.text) || 'Execution cycle terminated.';
+          grp.subtitle = checkEvent.status === 'COMPLETE' ? 'Done · verified result available' : 'Blocked · execution stopped';
         } else if (checkEvent.event === 'error') {
           const prefix = state.route === 'DIRECT' ? 'Direct' : 'Pipeline';
           grp.title = `${prefix} Intercept Error`;
-          grp.subtitle = cleanLogText(checkEvent.text) || 'Execution encountered an unrecoverable failure.';
+          grp.subtitle = `Blocked · ${compactFailureReason(checkEvent.text, 'execution issue')}${attemptSuffix}`;
         } else {
-          grp.title = cleanLogText(checkEvent.text) || 'System operation';
+          grp.title = 'SYSTEM · Council update';
           grp.subtitle = '';
         }
       }
@@ -2469,6 +2558,14 @@ class CouncilUI {
 
     bar.classList.remove('review-bar-skipped');
     bar.hidden = !state.pendingReview;
+    const approveButton = document.getElementById('council-approve-btn');
+    const overrideButton = document.getElementById('council-override-btn');
+    if (approveButton) approveButton.hidden = Boolean(state.pendingReviewRequiresOverride);
+    if (overrideButton) {
+      overrideButton.textContent = state.pendingReviewRequiresOverride
+        ? 'Override Manager'
+        : 'Override';
+    }
     const planEvent = state.log.find(e => e.event === 'review_required');
     const planText = planEvent?.extra?.plan || '';
     if (body) {
@@ -2816,43 +2913,38 @@ class CouncilUI {
 
     // Review bar actions
     document.getElementById('council-approve-btn')?.addEventListener('click',
-      () => session.respond('approve'));
+      () => session.respond('approve').catch(err => console.error('[Council] approval rejected:', err)));
     document.getElementById('council-override-btn')?.addEventListener('click',
-      () => session.respond('override'));
+      () => session.respond('override').catch(err => console.error('[Council] override rejected:', err)));
 
     // Permission bar actions
-    document.getElementById('council-perm-allow-btn')?.addEventListener('click', () => {
+    const answerPermission = async (choice, persistLevel = 'once') => {
       const perm = this._state.pendingPermission;
-      if (perm) {
-        session.respondPermission('allow', perm.permissionId, perm.target, 'once');
+      if (!perm) return;
+      try {
+        await session.respondPermission(choice, perm.permissionId, perm.target, persistLevel);
         this._state.pendingPermission = null;
         this._renderPermissionBar(this._state);
+      } catch (err) {
+        // Keep the gate visible when the server rejects a stale or interrupted
+        // response.  Clearing it optimistically was the refresh/reconnect bug.
+        console.error('[Council] permission response failed:', err);
+        this._state.update({
+          event: 'log',
+          status: 'BLOCKED',
+          text: 'Permission response failed; the request remains pending.',
+          agent: 'system'
+        });
       }
-    });
-    document.getElementById('council-perm-project-btn')?.addEventListener('click', () => {
-      const perm = this._state.pendingPermission;
-      if (perm) {
-        session.respondPermission('allow', perm.permissionId, perm.target, 'project');
-        this._state.pendingPermission = null;
-        this._renderPermissionBar(this._state);
-      }
-    });
-    document.getElementById('council-perm-global-btn')?.addEventListener('click', () => {
-      const perm = this._state.pendingPermission;
-      if (perm) {
-        session.respondPermission('allow', perm.permissionId, perm.target, 'global');
-        this._state.pendingPermission = null;
-        this._renderPermissionBar(this._state);
-      }
-    });
-    document.getElementById('council-perm-deny-btn')?.addEventListener('click', () => {
-      const perm = this._state.pendingPermission;
-      if (perm) {
-        session.respondPermission('deny', perm.permissionId, perm.target);
-        this._state.pendingPermission = null;
-        this._renderPermissionBar(this._state);
-      }
-    });
+    };
+    document.getElementById('council-perm-allow-btn')?.addEventListener('click',
+      () => answerPermission('allow', 'once'));
+    document.getElementById('council-perm-project-btn')?.addEventListener('click',
+      () => answerPermission('allow', 'project'));
+    document.getElementById('council-perm-global-btn')?.addEventListener('click',
+      () => answerPermission('allow', 'global'));
+    document.getElementById('council-perm-deny-btn')?.addEventListener('click',
+      () => answerPermission('deny'));
 
     // Cancel (✕ in log header) — cancels the running session
     document.getElementById('council-cancel-btn')?.addEventListener('click',
@@ -3005,12 +3097,128 @@ function cleanLogText(text, agent = '') {
   return clean.replace(/\s+/g, ' ').trim();
 }
 
+// Deterministic, display-only task labels. The implementation prompt remains
+// available to the agent, but the primary UI gets a short noun instead of a
+// copied prompt fragment. This intentionally avoids another model call.
+function compactTaskLabel(description, taskId = '') {
+  let clean = String(description || '')
+    .replace(/`[^`]*`/g, ' ')
+    .replace(/\b[A-Za-z]:[\\/][^\s,;)]*/g, ' ')
+    .replace(/\b(?:projects|workspace|data|assets|src)\/[^\s,;)]*/gi, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/["'“”‘’]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const lower = clean.toLowerCase();
+  const rules = [
+    [/flight|airline|route|simulation/, 'Flights'],
+    [/three\.js|threejs|globe|earth|webgl|sphere/, 'Globe'],
+    [/style\.css|stylesheet|glassmorphism|dark theme|typography|responsive/, 'Theme'],
+    [/server|http\.server|cors|mime type/, 'Server'],
+    [/readme|documentation|setup instructions/, 'Docs'],
+    [/test|verification|validate|checks?/, 'Checks'],
+    [/app\.js|orchestrat|animation loop|domcontentloaded/, 'App'],
+    [/index\.html|stats panel|sidebar|interface|ui/, 'Interface'],
+    [/scaffold|skeleton|project root|directories|structure/, 'Scaffold']
+  ];
+  for (const [pattern, label] of rules) {
+    if (pattern.test(lower)) return label;
+  }
+  const phrase = clean
+    .replace(/^(create|build|implement|add|define|set up|write|update|wire|configure|serve|document|test)\s+/i, '')
+    .replace(/\b(with|containing|including|that|which)\b[\s\S]*$/i, '')
+    .trim();
+  if (phrase) {
+    const words = phrase.split(/\s+/).filter(Boolean).slice(0, 2);
+    if (words.length) return words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  }
+  return taskId ? 'Task' : 'Work';
+}
+
+function compactFailureReason(text, fallback = 'execution issue') {
+  const lower = String(text || '').toLowerCase();
+  if (/timeout|timed out/.test(lower)) return 'timeout';
+  if (/permission|denied|forbidden/.test(lower)) return 'permission required';
+  if (/verification|compiler|syntax|test/.test(lower)) return 'verification failed';
+  if (/context|token|overflow/.test(lower)) return 'context limit reached';
+  return fallback;
+}
+
+function compactFailureCode(code, text) {
+  const lower = `${String(code || '')} ${String(text || '')}`.toLowerCase();
+  if (/timeout|timed out|busy/.test(lower)) return 'TIMEOUT';
+  if (/permission|denied|forbidden/.test(lower)) return 'PERMISSION';
+  if (/context|token|overflow/.test(lower)) return 'CONTEXT';
+  if (/verification|compiler|syntax|test/.test(lower)) return 'CHECK';
+  return 'ERROR';
+}
+
+function compactToolIntent(tool, args = {}, cmd = '') {
+  const t = String(tool || '').toLowerCase();
+  if (t === 'glob' || t === 'grep' || t === 'ls') return 'Inspect workspace';
+  if (t === 'read_file') return 'Read source';
+  if (t === 'write_file' || t === 'edit_file') return 'Update files';
+  if (t === 'bash' || t === 'python') {
+    const raw = String(args?.command || args?.code || cmd || '').toLowerCase();
+    if (/test|pytest|check|lint|compile|verify/.test(raw)) return 'Run checks';
+    if (/install|build|bundle/.test(raw)) return 'Build project';
+    return 'Run command';
+  }
+  return 'Run operation';
+}
+
+function compactIssueTheme(issue) {
+  const text = String(issue?.description || issue?.suggestion || '').toLowerCase();
+  if (/memory|leak|unbounded|object creation/.test(text)) return 'memory lifecycle';
+  if (/security|sri|integrity|csp|xss|bind address|expos/.test(text)) return 'security hardening';
+  if (/performance|fps|pixel ratio|latency|render/.test(text)) return 'render performance';
+  if (/test|coverage|validation/.test(text)) return 'test coverage';
+  if (/maintain|global namespace|magic number|config/.test(text)) return 'maintainability';
+  return 'implementation detail';
+}
+
+function executionWaveCount(tasks) {
+  const byId = new Map((tasks || []).map(t => [String(t.i), t]));
+  const memo = new Map();
+  const depth = (id, trail = new Set()) => {
+    if (memo.has(id)) return memo.get(id);
+    if (trail.has(id)) return 0;
+    const node = byId.get(id);
+    const deps = Array.isArray(node?.dp) ? node.dp : [];
+    const nextTrail = new Set(trail).add(id);
+    const value = deps.length ? 1 + Math.max(...deps.map(dep => depth(String(dep), nextTrail))) : 1;
+    memo.set(id, value);
+    return value;
+  };
+  return Math.max(1, ...Array.from(byId.keys()).map(id => depth(id)));
+}
+
+function compactAgentActivity(agent, tool = '') {
+  const role = String(agent || 'agent').toLowerCase();
+  if (tool) return `${role.charAt(0).toUpperCase() + role.slice(1)} is using a tool`;
+  if (role === 'strategist') return 'Constructing execution plan';
+  if (role === 'manager') return 'Reviewing execution plan';
+  if (role === 'implementer') return 'Executing assigned task';
+  if (role === 'chair') return 'Assessing request';
+  return 'Council is working';
+}
+
+const COMPACT_LOG_EVENTS = new Set([
+  'thought', 'active_agent', 'error', 'complete', 'dag_update',
+  'plan_created', 'task_status_update', 'tool_start', 'tool_output'
+]);
+
 function sanitizeLogEntry(data, logText) {
   if (!data || typeof data !== 'object') return null;
+  const presentation = data.extra?.presentation;
+  const visibleText = COMPACT_LOG_EVENTS.has(data.event) && presentation?.summary
+    ? String(presentation.summary)
+    : (typeof logText === 'string' ? logText : '');
   return {
     ts: typeof data.timestamp === 'string' ? data.timestamp : (typeof data.ts === 'string' ? data.ts : new Date().toISOString()),
     agent: typeof data.agent === 'string' ? data.agent : 'system',
-    text: typeof logText === 'string' ? logText : '',
+    text: visibleText,
     event: typeof data.event === 'string' ? data.event : 'log',
     status: typeof data.status === 'string' ? data.status : null,
     code: typeof data.code === 'string' ? data.code : null,
@@ -3033,6 +3241,14 @@ function _ghostMd(text) {
   if (!s) return '';
   try { return markdownModule.mdToHtml(markdownModule.squashOutsideCode(s)); }
   catch (e) { return _esc(s); }
+}
+
+function sameFileOperation(left, right) {
+  if (!left || !right || left.op !== right.op) return false;
+  const normalize = path => String(path || '').replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '');
+  const a = normalize(left.path);
+  const b = normalize(right.path);
+  return a === b || (b.includes('/') && a.endsWith(`/${b}`)) || (a.includes('/') && b.endsWith(`/${a}`));
 }
 
 function parseFileOperations(item) {
@@ -3207,7 +3423,7 @@ export function init() {
   const ui      = new CouncilUI(state, session);
 
   // Single subscription: any state change → full re-render
-  state.subscribe((s, ev) => ui.render(s, ev));
+  state.subscribe((s, ev) => ui.scheduleRender(s, ev));
 
   ui.wireListeners(session);
 

@@ -97,3 +97,35 @@ def test_summarize_stream_error():
     assert "400" in llm_core._summarize_stream_error('event: error\ndata: {"status": 400, "text": "nope"}\n\n')
     assert llm_core._summarize_stream_error(None) == "primary model failed"
     assert llm_core._summarize_stream_error("garbage") == "primary model failed"
+
+
+def test_fallback_trace_records_each_candidate_response(monkeypatch, tmp_path):
+    from src import context_trace
+
+    monkeypatch.setenv("COUNCIL_CONTEXT_TRACE", "full")
+    monkeypatch.setenv("COUNCIL_CONTEXT_TRACE_DIR", str(tmp_path))
+
+    async def fake_stream(url, model, messages, **kw):
+        if model == "primary":
+            yield 'event: error\ndata: {"status": 503, "text": "down"}\n\n'
+        else:
+            yield 'data: {"delta":"repaired"}\n\n'
+            yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(llm_core, "stream_llm", fake_stream)
+
+    async def run():
+        return [chunk async for chunk in llm_core.stream_llm_with_fallback(
+            [("u1", "primary", {}), ("u2", "backup", {})],
+            [{"role": "user", "content": "hi"}],
+            trace_context={"run_id": "fallback-trace", "session_id": "s", "agent": "manager"},
+        )]
+
+    import asyncio
+    asyncio.run(run())
+    context_trace.shutdown()
+    records = [json.loads(line) for line in (tmp_path / "fallback-trace.jsonl").read_text(encoding="utf-8").splitlines()]
+    responses = [record for record in records if record["kind"] == "model_response"]
+    assert len(responses) == 2
+    assert responses[0]["status"] == "error"
+    assert responses[1]["output"] == "repaired"

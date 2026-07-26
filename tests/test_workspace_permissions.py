@@ -321,3 +321,8 @@ async def test_orchestrator_permission_retry_loop(tmp_path):
                 
                 # Verify the second loop succeeded (loop_count should be 2)
                 assert loop_count == 2
+                tool_output = next(details for event, details in emit_calls if event == "tool_output")
+                assert tool_output["extra"]["tool"] == "write_file"
+                assert tool_output["extra"]["exit_code"] == 1
+                assert "restricted" in tool_output["extra"]["output"]
+                assert tool_output["extra"]["permission_outcome"] == "approved"

@@ -36,11 +36,16 @@ class ContextBroker:
         self,
         ledger: RunLedger | None,
         *,
-        input_token_budget: int = 6000,
+        input_token_budget: int | None = None,
         response_reserve: int | None = None,
     ):
         self.ledger = ledger
-        self.input_token_budget = max(256, int(input_token_budget))
+        # ``None`` means use the adaptive budget resolved by the caller. Keep
+        # the shared default only as the compatibility fallback for callers
+        # that do not know the provider's context window yet.
+        from src.context_budget import DEFAULT_BUDGET
+        resolved_budget = DEFAULT_BUDGET if input_token_budget is None else input_token_budget
+        self.input_token_budget = max(256, int(resolved_budget))
         default_reserve = max(64, min(2048, self.input_token_budget // 4))
         self.response_reserve = default_reserve if response_reserve is None else max(
             0, int(response_reserve)

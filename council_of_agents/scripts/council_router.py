@@ -1,12 +1,17 @@
 import json, os
 from typing import Dict, Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 class ModelConfig(BaseModel):
     endpoint_url: str
     model: str
     temperature: float = 1.0
     max_tokens: int = 4096
+    # One bounded recovery model used only when the primary model rejects the
+    # request for context size.  It is deliberately separate from ordinary
+    # provider retries so a context failure is not replayed against the same
+    # window.
+    context_fallbacks: list[dict] = Field(default_factory=list)
 
 class EscalationConfig(BaseModel):
     max_loops: int = 3
