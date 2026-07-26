@@ -68,3 +68,27 @@ def test_no_rounds_exhausted_on_normal_finish(monkeypatch):
     # A plain answer (no tool block) -> done-break on round 1 -> no event.
     events = _run_loop(monkeypatch, "All done, here is your answer.", max_rounds=2)
     assert not any(e.get("type") == "rounds_exhausted" for e in events), events
+
+
+def test_tool_budget_forces_a_final_tool_free_round(monkeypatch):
+    _patch_common(monkeypatch)
+    requests = []
+
+    async def _fake_stream(_candidates, messages, **kwargs):
+        requests.append(kwargs.get("tools"))
+        if len(requests) == 1:
+            yield 'data: {"type":"tool_calls","calls":[{"id":"call-1","name":"ls","arguments":"{\\"path\\":\\".\\"}"}]}\n\n'
+        else:
+            assert not kwargs.get("tools")
+            yield 'data: {"delta":"Final plan from the workspace evidence."}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
+    events = _types(_collect(al.stream_agent_loop(
+        "https://api.openai.com/v1", "test-model",
+        [{"role": "user", "content": "plan the work"}],
+        max_rounds=2, max_tool_calls=1, relevant_tools={"ls"},
+    )))
+
+    assert len(requests) == 2
+    assert any(event.get("delta", "").startswith("Final plan") for event in events)

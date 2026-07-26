@@ -25,10 +25,16 @@ class WorkspaceRevision:
 class WorkspaceWriteGuard:
     """Optimistic, scope-bound guard checked immediately before each write."""
 
-    def __init__(self, workspace, write_scopes, base_hashes):
+    def __init__(
+        self, workspace, write_scopes, base_hashes, *, workspace_root=False,
+        task_id="", enforce_channels=False,
+    ):
         self.root = Path(workspace).resolve()
-        self.write_scopes = [self._resolve(scope) for scope in write_scopes]
+        self.write_scopes = [self.root] if workspace_root else [self._resolve(scope) for scope in write_scopes]
         self.expected = dict(base_hashes)
+        self.task_id = str(task_id or "")
+        self.workspace_root = bool(workspace_root)
+        self.enforce_channels = bool(enforce_channels)
 
     def _resolve(self, value):
         candidate = (self.root / str(value)).resolve()
@@ -49,6 +55,17 @@ class WorkspaceWriteGuard:
             except Exception:
                 pass
         return text.split("\n", 1)[0].strip() if tool == "write_file" else ""
+
+    def attempted_path(self, tool, content):
+        """Best-effort relative path for passive diagnostics; never authorizes a write."""
+        try:
+            raw_path = self._raw_path(tool, content)
+            if not raw_path:
+                return ""
+            target = self._resolve(raw_path)
+            return target.relative_to(self.root).as_posix()
+        except Exception:
+            return str(self._raw_path(tool, content) or "")
 
     def _target(self, tool, content):
         raw_path = self._raw_path(tool, content)

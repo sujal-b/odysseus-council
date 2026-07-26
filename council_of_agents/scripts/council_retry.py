@@ -14,11 +14,13 @@ class ErrorClass(str, Enum):
     THROTTLING = "throttling"
     SCHEMA = "schema"
     TERMINAL = "terminal"
+    PERMISSION = "permission"
+    CONTEXT = "context"
 
 TRANSIENT_EXCEPTIONS = (asyncio.TimeoutError, ConnectionError, ConnectionResetError, OSError)
 TRANSIENT_KW = ["timeout", "timed out", "connection reset", "502", "503", "504"]
 THROTTLING_KW = ["rate limit", "throttl", "429", "too many requests"]
-TERMINAL_KW = ["unauthorized", "forbidden", "401", "403", "invalid api key", "404"]
+TERMINAL_KW = ["unauthorized", "forbidden", "401", "403", "invalid api key", "404", "handoff_corruption"]
 
 class SchemaValidationError(Exception):
     def __init__(self, msg, raw_text="", validation_error=""):
@@ -27,6 +29,13 @@ class SchemaValidationError(Exception):
         self.validation_error = validation_error
 
 def classify_error(error):
+    try:
+        from council_of_agents.scripts.permissions import PermissionRequired
+        if isinstance(error, PermissionRequired):
+            return ErrorClass.PERMISSION
+    except ImportError:
+        pass
+
     if isinstance(error, ContextBudgetExceededError):
         return ErrorClass.TERMINAL
     if isinstance(error, SchemaValidationError):
@@ -34,6 +43,13 @@ def classify_error(error):
     if isinstance(error, TRANSIENT_EXCEPTIONS):
         return ErrorClass.TRANSIENT
     s = str(error).lower()
+    context_kw = (
+        "context length", "context window", "maximum context", "max context",
+        "prompt too long", "too many tokens", "token limit", "input is too long",
+        "exceeds the model", "exceeded the model", "protected context",
+    )
+    if any(kw in s for kw in context_kw):
+        return ErrorClass.CONTEXT
     for kw in TERMINAL_KW:
         if kw in s:
             return ErrorClass.TERMINAL
@@ -45,8 +61,8 @@ def classify_error(error):
             return ErrorClass.TRANSIENT
     return ErrorClass.TRANSIENT
 
-_BASE = {"transient": 50, "throttling": 1000, "schema": 200, "terminal": 0}
-_MAX_RETRIES = {"transient": 3, "throttling": 2, "schema": 2, "terminal": 0}
+_BASE = {"transient": 50, "throttling": 1000, "schema": 200, "terminal": 0, "permission": 0, "context": 0}
+_MAX_RETRIES = {"transient": 3, "throttling": 2, "schema": 2, "terminal": 0, "permission": 0, "context": 0}
 CAP_MS = 20000
 
 def compute_backoff(error_class, attempt):
@@ -71,7 +87,7 @@ class RetryState:
         self.errors.append({"attempt": self.attempt, "class": cls.value,
                             "error": str(error)[:200], "delay_s": delay})
 
-async def retry_with_backoff(operation, role, max_retries=None, on_retry=None):
+async def retry_with_backoff(operation, role, max_retries=None, on_retry=None, schema_retries=None):
     state = RetryState()
     while True:
         try:
@@ -80,10 +96,12 @@ async def retry_with_backoff(operation, role, max_retries=None, on_retry=None):
         except Exception as error:
             cls = classify_error(error)
             limit = (
-                0 if cls == ErrorClass.TERMINAL
+                0 if cls in (ErrorClass.TERMINAL, ErrorClass.CONTEXT, ErrorClass.PERMISSION)
                 else max_retries if max_retries is not None
                 else _MAX_RETRIES.get(cls.value, 1)
             )
+            if cls == ErrorClass.SCHEMA and schema_retries is not None:
+                limit = min(limit, max(0, int(schema_retries)))
             if state.attempt >= limit:
                 raise
             delay = compute_backoff(cls, state.attempt)

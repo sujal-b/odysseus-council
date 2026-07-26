@@ -82,13 +82,15 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a file from disk. Optionally read a line range with offset/limit for large files.",
+            "description": "Read a file from disk. Small files may be read whole; large files return a bounded structural index. Prefer offset/limit or query for targeted context. Range requests may include expected_hash and are rejected if the file changed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path to read"},
                     "offset": {"type": "integer", "description": "1-based line to start reading from (optional)"},
-                    "limit": {"type": "integer", "description": "Max number of lines to read from offset (optional)"}
+                    "limit": {"type": "integer", "description": "Max number of lines to read from offset (optional)"},
+                    "query": {"type": "string", "description": "Optional local terms query for relevant line neighborhoods"},
+                    "expected_hash": {"type": "string", "description": "Optional SHA-256 from a prior read; stale range requests are rejected"}
                 },
                 "required": ["path"]
             }

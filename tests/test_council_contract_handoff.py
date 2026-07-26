@@ -40,10 +40,11 @@ STRAT_REPLY = (
 
 def test_chair_contract_extracts_decision_fields():
     out = _orch()._contract("chair", CHAIR_REPLY)
-    assert "complexity: COMPLEX" in out
-    assert "route: PIPELINE" in out
-    assert "action: write" in out
-    assert "target: app.py" in out
+    contract = json.loads(out)
+    assert contract["complexity"] == "COMPLEX"
+    assert contract["route"] == "PIPELINE"
+    assert contract["action"] == "write"
+    assert contract["target"] == "app.py"
     # The decision is far smaller than the raw reply.
     assert len(out) < len(CHAIR_REPLY) + 200
 
@@ -56,6 +57,21 @@ def test_strategist_contract_keeps_dag_verbatim():
     assert '"extract token check"' in out
     # The short rationale is preserved.
     assert "refactor the auth layer" in out
+
+
+def test_strategist_json_contract_is_compacted_for_production_handoff():
+    raw = '{"tasks":[{"id":"t1","description":"Inspect the existing path","acceptance":"The path is understood","read_scope":["src/"],"write_scope":[]}],"risks":[]}'
+    out = _orch()._contract("strategist", raw)
+    assert json.loads(out) == {
+        "tasks": [{
+            "id": "t1",
+            "description": "Inspect the existing path",
+            "acceptance": "The path is understood",
+            "read_scope": ["src/"],
+            "write_scope": [],
+        }]
+    }
+    assert len(out) < len(raw)
 
 
 def test_strategist_no_dag_returns_raw():

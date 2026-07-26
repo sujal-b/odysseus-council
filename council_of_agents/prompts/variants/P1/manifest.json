@@ -1,0 +1,19 @@
+{
+  "version": "P1",
+  "parent": "P0",
+  "status": "candidate",
+  "active": false,
+  "changed_role": "chair",
+  "mechanism": "default-to-action with explicit assumptions",
+  "source_snapshot": "data/council_agent_evals/phase-a/prompts/P1",
+  "changed_fragments": [
+    "chair/instructions.md",
+    "chair/output_format.md",
+    "chair/examples.md"
+  ],
+  "promotion_requires": [
+    "complete P0/P1 A-B comparison",
+    "holdout pass",
+    "two complete evaluation runs"
+  ]
+}

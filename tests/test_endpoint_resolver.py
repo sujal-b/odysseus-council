@@ -82,6 +82,9 @@ class TestBuildHeaders:
     def test_openai_bearer(self):
         assert build_headers("sk-abc", "https://api.openai.com/v1") == {"Authorization": "Bearer sk-abc"}
 
+    def test_opencode_zen_uses_x_api_key(self):
+        assert build_headers("sk-zen", "https://opencode.ai/zen/v1/chat/completions") == {"x-api-key": "sk-zen"}
+
     def test_anthropic_headers(self):
         assert build_headers("sk-ant-abc", "https://api.anthropic.com") == {"x-api-key": "sk-ant-abc", "anthropic-version": "2023-06-01"}
 

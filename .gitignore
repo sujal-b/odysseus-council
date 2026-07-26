@@ -129,10 +129,24 @@ bench_results.txt
 *.bench.txt
 benchmark_results/
 
-# Scratch / reference files
+# Foglamp — publish token is a secret
+.foglamp/
+
+# Scratch / reference files / local tool outputs
 code.html
 reference.html
 odys.ps1
+.grill/
+.pytest-tmp*/
+GOAL.md
+LOOP_LOG.md
+LOOP_STATE.md
+rollout-*
+scratch/
+skills-lock.json
+data/council_agent_evals/phase-a/traces/
+data/council_agent_replays/
 
 # ─────────────────────────────────────────────────────────────────────────────
+
 

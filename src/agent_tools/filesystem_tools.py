@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 import difflib
@@ -23,6 +24,17 @@ _CODENAV_SKIP_DIRS = frozenset({
 })
 _CODENAV_MAX_HITS = 200
 _CODENAV_MAX_LINE = 400
+
+
+class StaleFileVersionError(RuntimeError):
+    def __init__(self, path: str, expected: str, actual: str):
+        self.path = path
+        self.expected = expected
+        self.actual = actual
+        super().__init__(
+            f"stale range request for {path}: expected hash {expected}, "
+            f"current hash is {actual}"
+        )
 
 def _unified_diff(old: str, new: str, path: str) -> Optional[Dict[str, Any]]:
     if old == new:
@@ -128,7 +140,7 @@ class ReadFileTool:
                     _truncate
                 )
         workspace = ctx.get("workspace")
-        raw_path, offset, limit, query = content.split("\n", 1)[0].strip(), 0, 0, ""
+        raw_path, offset, limit, query, expected_hash = content.split("\n", 1)[0].strip(), 0, 0, "", ""
         _stripped = content.strip()
         if _stripped.startswith("{"):
             try:
@@ -137,6 +149,7 @@ class ReadFileTool:
                 offset = int(_a.get("offset") or 0)
                 limit = int(_a.get("limit") or 0)
                 query = str(_a.get("query") or "").strip()
+                expected_hash = str(_a.get("expected_hash") or _a.get("file_hash") or "").strip().lower()
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         try:
@@ -146,8 +159,15 @@ class ReadFileTool:
             return {"error": f"read_file: {e}", "exit_code": 1}
         try:
             def _read():
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    lines = f.readlines()
+                with open(path, "rb") as f:
+                    raw = f.read()
+                file_hash = hashlib.sha256(raw).hexdigest()
+                if expected_hash and expected_hash != file_hash:
+                    raise StaleFileVersionError(path, expected_hash, file_hash)
+                # Preserve the historical read contract (LF output) while the
+                # version hash still represents the exact on-disk bytes.
+                text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+                lines = text.splitlines(keepends=True)
                 total_chars = sum(len(line) for line in lines)
                 total_lines = len(lines)
 
@@ -167,9 +187,10 @@ class ReadFileTool:
                     hits = [i for _, i in scored_hits[:12]]
                     if not hits:
                         return (
-                            f"[read_file retrieval] {path} | {total_lines} lines | no matches for {query!r}\n"
+                            f"[read_file retrieval] {path} | {total_lines} lines | {total_chars} chars | "
+                            f"hash={file_hash} | no matches for {query!r}\n"
                             "Use grep for regex/broad discovery, then read_file with offset/limit."
-                        ), "retrieval", total_lines, total_chars, None
+                        ), "retrieval", total_lines, total_chars, None, file_hash, 0, 0
                     selected = set()
                     for i in hits:
                         selected.update(range(max(0, i - 3), min(total_lines, i + 4)))
@@ -183,8 +204,8 @@ class ReadFileTool:
                         rendered.append(item)
                         budget -= len(item)
                         previous = i
-                    header = f"[read_file retrieval] {path} | {total_lines} lines | query={query!r}\n"
-                    return header + "".join(rendered), "retrieval", total_lines, total_chars, None
+                    header = f"[read_file retrieval] {path} | {total_lines} lines | {total_chars} chars | hash={file_hash} | query={query!r}\n"
+                    return header + "".join(rendered), "retrieval", total_lines, total_chars, None, file_hash, len(rendered), len(rendered)
 
                 # Exact windows remain raw so edit_file can copy exact source.
                 if offset > 0 or limit > 0:
@@ -199,11 +220,12 @@ class ReadFileTool:
                         chosen.append(line)
                         budget -= len(line)
                     next_offset = start + len(chosen) if start - 1 + len(chosen) < total_lines else None
-                    return "".join(chosen), "window", total_lines, total_chars, next_offset
+                    end_line = min(total_lines, start - 1 + len(chosen))
+                    return "".join(chosen), "window", total_lines, total_chars, next_offset, file_hash, start, end_line
 
                 # Preserve the convenient legacy behavior only for truly small files.
                 if total_lines <= SMALL_FILE_READ_LINES and total_chars <= SMALL_FILE_READ_CHARS:
-                    return "".join(lines), "full", total_lines, total_chars, None
+                    return "".join(lines), "full", total_lines, total_chars, None, file_hash, 1, total_lines
 
                 # Blind large reads become a navigational index. Structural lines
                 # are enough to select a precise follow-up window without paying
@@ -225,9 +247,17 @@ class ReadFileTool:
                     f"Next: {{\"path\": {json.dumps(str(path))}, \"offset\": <line>, \"limit\": {DEFAULT_READ_LINES}}} "
                     f"or add \"query\": \"symbol terms\". Maximum window: {MAX_READ_LINES} lines."
                 )
-                return data[:MAX_READ_CHARS], "index", total_lines, total_chars, None
+                return data[:MAX_READ_CHARS], "index", total_lines, total_chars, None, file_hash, 0, 0
 
-            data, read_mode, total_lines, total_chars, next_offset = await asyncio.to_thread(_read)
+            data, read_mode, total_lines, total_chars, next_offset, file_hash, range_start, range_end = await asyncio.to_thread(_read)
+        except StaleFileVersionError as e:
+            return {
+                "error": f"read_file: {e}",
+                "exit_code": 1,
+                "failure_kind": "STALE_VERSION",
+                "expected_hash": e.expected,
+                "file_hash": e.actual,
+            }
         except FileNotFoundError:
             return {"error": f"read_file: {path}: not found", "exit_code": 1}
         except PermissionError:
@@ -242,6 +272,12 @@ class ReadFileTool:
             "read_mode": read_mode,
             "total_lines": total_lines,
             "total_chars": total_chars,
+            "file_hash": file_hash,
+            "range_start": range_start,
+            "range_end": range_end,
+            "returned_lines": max(0, range_end - range_start + 1) if range_start else total_lines,
+            "range_count": 1 if range_start else 0,
+            "truncated": bool(next_offset is not None),
         }
         if next_offset is not None:
             result["next_offset"] = next_offset

@@ -17,4 +17,15 @@ Analyze the proposed implementation plan against the three dimensions below. For
    - Ensure the plan doesn't introduce technical debt or un-monitored loops.
 
 Only flag REAL, actionable issues. Do not write generic critiques.
+
+When the supplied plan is a revision, treat that revised plan as the source of
+truth. Re-check changed, added, and removed tasks against the current evidence;
+do not carry forward an earlier finding unless it still applies. Call out when
+a prior defect is resolved only when that helps the Manager distinguish old
+evidence from a new defect.
+
+For every finding, classify its disposition as `ADVISORY`, `MUST_FIX`, or
+`BLOCK`. Use `BLOCK` only for a hard safety or grounding violation. A
+`MUST_FIX` or `BLOCK` finding must cite evidence from the supplied plan; an
+`ADVISORY` finding is optional and must not force a revision by itself.
 </instructions>

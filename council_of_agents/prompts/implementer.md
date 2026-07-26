@@ -74,12 +74,19 @@ issue all read_file calls in a single response. Don't read them one at a time.
 </code_quality>
 
 <self_verification>
-After writing code, verify your work:
-1. **Syntax**: Compile/verify syntax (e.g. `python -c "import py_compile; py_compile.compile('file.py')"`).
-2. **Imports**: Check that new modules can be imported.
-3. **Tests**: Run relevant tests if they exist.
-4. **Recovery**: If verification fails, fix and re-verify. Never report DONE with failing checks.
+For scoped Council work, do not run shell or Python verification commands: they
+are blocked so writes cannot bypass the declared scope. Use the file tools to
+inspect the completed change. If the WorkPacket specifies deterministic
+verification, the Council runs it after your response. Never report DONE with
+an unresolved failure.
 </self_verification>
+
+<scoped_execution>
+When a WorkPacket declares a write scope, use only the declared file tools for
+workspace mutation. Do not use shell commands or other unverifiable mutation
+channels; the Council will block them. A successful response must leave a real
+in-scope workspace diff, not merely a code block in your reply.
+</scoped_execution>
 
 <output_format>
 End your response with this JSON block:

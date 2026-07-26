@@ -30,6 +30,7 @@ class CouncilOutcome:
     dag_efficiency: float = 0.0                          # parallel_tasks / total_tasks
     retry_count_total: int = 0                           # sum of all task retry counts
     reflection: dict = field(default_factory=dict)       # {"complexity_accurate": bool, ...}
+    blocked_writes: list = field(default_factory=list)   # summary only; raw intent stays in trace artifacts
 
 
 @dataclass

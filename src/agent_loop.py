@@ -22,6 +22,7 @@ from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools, owner_is_admin_or_single_user, NON_ADMIN_BLOCKED_TOOLS
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, ToolPolicy
 from src.tool_utils import get_mcp_manager
+from src.tool_reliability import duplicate_tool_result, tool_call_fingerprint
 from src.agent_tools import (
     parse_tool_blocks,
     strip_tool_blocks,
@@ -69,6 +70,9 @@ _AGENT_RULES = """\
 ## Rules
 - Only use tools when needed. Don't search for things you already know.
 - For web lookup/search/latest/current requests, use `web_search` or `web_fetch`. Do NOT use `bash`, `python`, `curl`, `requests`, or scraping code for web lookup unless web tools are disabled or already failed.
+- For workspace discovery, use `ls`, `glob`, `grep`, and bounded `read_file`; do not wrap those jobs in Bash. Use Bash only when no dedicated tool can express the operation.
+- For large files, search or request a line window first. Respect `read_file` hashes: if a range is rejected as stale, re-read and use the new hash instead of guessing line positions.
+- When a tool fails, read its diagnostic and change the arguments or approach. Never repeat an identical failed call.
 - These exact tags execute automatically. For showing code examples, use ```shell, ```sh, ```py, etc. instead.
 - Multiple tool blocks per response OK. 60s timeout per tool, 10K char output limit.
 - Code/content >15 lines → ```create_document (NOT in chat). Short snippets OK in chat.
@@ -116,6 +120,9 @@ _API_AGENT_RULES = """\
 - Only call tools when they materially help answer the request.
 - You MUST use tools to take action — do not describe what you would do. Act, don't narrate.
 - For web lookup/search/latest/current requests, call `web_search` or `web_fetch`. Do NOT use shell, Python, curl, requests, or scraping code for web lookup unless web tools are unavailable or already failed.
+- For workspace discovery, use `ls`, `glob`, `grep`, and bounded `read_file`; do not wrap those jobs in Bash. Use Bash only when no dedicated tool can express the operation.
+- For large files, search or request a line window first. Respect `read_file` hashes: if a range is rejected as stale, re-read and use the new hash instead of guessing line positions.
+- When a tool fails, read its diagnostic and change the arguments or approach. Never repeat an identical failed call.
 - Keep answers concise unless the user asks for depth.
 - For long code or content, use document tools instead of pasting large blocks into chat.
 - Editing an existing document: ALWAYS use `edit_document` with find/replace. Only use `update_document` for genuine full rewrites (>50% changed) — do NOT echo the entire file back for small edits.
@@ -1403,6 +1410,10 @@ def _compact_tool_outputs(
     context_length: int,
     max_tokens: int,
     keep_recent: int = 2,
+    input_budget: int = 0,
+    incoming_tokens: int = 0,
+    threshold_ratio: float = 0.90,
+    compaction_log: Optional[list] = None,
 ) -> int:
     """Replace old tool-output messages with compact metadata summaries.
 
@@ -1422,11 +1433,15 @@ def _compact_tool_outputs(
     if not messages or context_length <= 0:
         return 0
 
-    # Threshold: compact when we're within max_tokens + 20 % safety margin of
-    # the context window ceiling.  For most models max_tokens = 4096 and a
-    # 20 % margin gives headroom for the new round's output.
+    # Compact at 90% of the usable input ceiling.  The ceiling is derived from
+    # the model window after reserving output space, so a 90% trigger cannot
+    # accidentally consume the response budget.  ``input_budget`` is optional
+    # for callers that only know the raw context window.
+    usable_budget = int(input_budget or context_length)
     safety_tokens = max(max_tokens, 1024)
-    threshold = context_length - safety_tokens - int(context_length * 0.10)
+    if context_length > 0:
+        usable_budget = min(usable_budget, max(1, context_length - safety_tokens))
+    threshold = int(max(1, usable_budget) * max(0.50, min(float(threshold_ratio), 0.98)))
     if threshold <= 0:
         return 0
 
@@ -1435,7 +1450,7 @@ def _compact_tool_outputs(
     except Exception:
         return 0
 
-    if current_tokens <= threshold:
+    if current_tokens + max(0, int(incoming_tokens or 0)) <= threshold:
         return 0
 
     # Identify compaction candidates: "user" messages whose content starts with
@@ -1465,6 +1480,14 @@ def _compact_tool_outputs(
         first_line = content.split("\n", 1)[0].strip()[:120]
         summary = f"[compacted — {original_len} chars] {first_line}"
         messages[i] = {**msg, "content": summary}
+        if compaction_log is not None and len(compaction_log) < 50:
+            compaction_log.append({
+                "timestamp": time.time(),
+                "message_index": i,
+                "original_chars": original_len,
+                "summary": summary[:180],
+                "reason": "tool_output_context_budget",
+            })
         compacted += 1
 
     if compacted:
@@ -1820,6 +1843,7 @@ async def stream_agent_loop(
     active_document=None,
     session_id: Optional[str] = None,
     disabled_tools: Optional[Set[str]] = None,
+    disable_tools: bool = False,
     owner: Optional[str] = None,
     relevant_tools: Optional[Set[str]] = None,
     fallbacks: Optional[List[tuple]] = None,
@@ -1831,6 +1855,8 @@ async def stream_agent_loop(
     force_enable_tools: Optional[Set[str]] = None,
     raise_on_error: bool = False,
     workspace_write_guard=None,
+    context_tracker=None,
+    trace_context: Optional[Dict] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1846,6 +1872,12 @@ async def stream_agent_loop(
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}
     disabled_tools = set(disabled_tools or [])
+    if disable_tools:
+        # Schema-repair calls must be deterministic and cannot add more tool
+        # messages to the failed context. Disable both built-in and MCP tools
+        # at schema publication and runtime, including namespaced MCP tools.
+        disabled_tools.update(TOOL_TAGS)
+        mcp_mgr = None
     if tool_policy:
         disabled_tools.update(tool_policy.all_disabled_names())
         if tool_policy.disable_mcp:
@@ -1892,7 +1924,7 @@ async def stream_agent_loop(
     # Allow callers (e.g. Council orchestrator) to force-enable specific tools
     # that are whitelisted for sandboxed agent roles. Only bypass for admin/single-user
     # hosts to prevent privilege escalation for non-admin users.
-    if force_enable_tools:
+    if force_enable_tools and not disable_tools:
         if owner_is_admin_or_single_user(owner):
             disabled_tools -= force_enable_tools
         else:
@@ -2102,12 +2134,21 @@ async def stream_agent_loop(
     prep_timings["prompt_build"] = time.time() - _t2
 
     _t3 = time.time()
+    effective_budget = 0
+    reserve_tokens = min(max(max_tokens or 1024, 512), 2048)
     try:
         from src.context_compactor import ProtectedContextOverflowError, trim_for_context
-        from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX
+        from src.context_budget import compute_input_token_budget, DEFAULT_BUDGET, DEFAULT_HARD_MAX
         from src.settings import is_setting_overridden
 
-        soft_budget = int(get_setting("agent_input_token_budget", 6000) or 0)
+        soft_budget = int(get_setting("agent_input_token_budget", DEFAULT_BUDGET) or 0)
+        budget_mode = str(get_setting("agent_input_token_budget_mode", "auto") or "auto").strip().lower()
+        # Keep older installations working: a non-default saved value was an
+        # intentional fixed budget before the mode setting existed.  The
+        # historical saved value of 6000 is therefore promoted to auto.
+        explicit_budget = budget_mode in {"fixed", "explicit"}
+        if budget_mode == "auto" and soft_budget != DEFAULT_BUDGET:
+            explicit_budget = is_setting_overridden("agent_input_token_budget")
         if soft_budget > 0:
             before_trim_tokens = estimate_tokens(messages)
             reserve_tokens = min(max(max_tokens or 1024, 512), 2048)
@@ -2127,7 +2168,7 @@ async def stream_agent_loop(
             effective_budget = compute_input_token_budget(
                 soft_budget,
                 context_length,
-                is_setting_overridden("agent_input_token_budget"),
+                explicit_budget,
                 hard_max=hard_max,
             )
             trimmed_messages = trim_for_context(
@@ -2145,6 +2186,8 @@ async def stream_agent_loop(
                     reserve_tokens,
                 )
                 messages = trimmed_messages
+        else:
+            effective_budget = 0
     except Exception as e:
         if type(e).__name__ == "ProtectedContextOverflowError":
             logger.error("[agent] Protected context overflow: %s", e)
@@ -2179,6 +2222,7 @@ async def stream_agent_loop(
     actual_model = model
     total_tool_calls = 0  # for budget enforcement
     _total_compacted = 0  # cumulative messages replaced by _compact_tool_outputs
+    _compaction_log: list = []
 
     # Loop-breaker state. Small models (e.g. deepseek-v4-flash) can get
     # stuck firing the same tool call over and over with no text — burns
@@ -2190,6 +2234,11 @@ async def stream_agent_loop(
     # backstop. Counting identical repeats — not distinct same-tool calls —
     # lets a legit batch (e.g. 18 calendar events at once) through.
     _call_freq: collections.Counter = collections.Counter()
+    # Exact failed calls are suppressed for the rest of this turn. A new
+    # argument or a new user turn is the explicit signal that the environment
+    # or approach changed; this prevents blind retry storms without blocking
+    # legitimate later work.
+    _failed_call_fingerprints: Dict[str, str] = {}
     _THINK_RE = re.compile(r'<think>.*?</think>', re.DOTALL | re.IGNORECASE)
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
     # Supervisor: how many times we've nudged the model after it announced
@@ -2243,7 +2292,7 @@ async def stream_agent_loop(
         # Merge native tool schemas with MCP tool schemas, filtering out
         # Only send function schemas for API models (OpenAI, Anthropic, etc.).
         # Local models use fenced code blocks or <tool_code> — schemas add overhead.
-        if _force_answer:
+        if disable_tools or _force_answer:
             # Loop-breaker decided the model has enough info but keeps
             # calling tools. Send NO tools this round so it's forced to
             # write the answer instead of flailing further.
@@ -2300,6 +2349,7 @@ async def stream_agent_loop(
             tools=all_tool_schemas if all_tool_schemas else None,
             timeout=agent_stream_timeout,
             session_id=session_id,
+            trace_context={**(trace_context or {}), "round": round_num},
         ):
             if time.time() > _round_deadline:
                 logger.warning(f"[agent] round {round_num} stream exceeded wall-clock deadline; cutting off")
@@ -2488,6 +2538,7 @@ async def stream_agent_loop(
                     _raw = await llm_call_async(
                         url=endpoint_url, model=model, messages=_synth_messages,
                         headers=headers, temperature=0.3, max_tokens=max_tokens, timeout=60,
+                        trace_context={**(trace_context or {}), "round": "synthesis"},
                     )
                     _synth = _THINK_RE.sub("", strip_tool_blocks(_raw or "")).strip()
                 except Exception as _e:
@@ -2690,7 +2741,7 @@ async def stream_agent_loop(
         # Pre-stream document content for fenced tool blocks (non-native path)
         # Native path already streamed via tool_call_delta above
         # For round 1 fenced blocks, frontend fence detection already handled streaming
-        if not _doc_opened and round_num == 1:
+        if not disable_tools and not _doc_opened and round_num == 1:
             for block in tool_blocks:
                 if tool_policy and tool_policy.blocks(block.tool_type):
                     continue
@@ -2698,7 +2749,7 @@ async def stream_agent_loop(
                     _doc_opened = True
                     break
 
-        if not _doc_opened:
+        if not disable_tools and not _doc_opened:
             for block in tool_blocks:
                 if tool_policy and tool_policy.blocks(block.tool_type):
                     continue
@@ -2764,7 +2815,18 @@ async def stream_agent_loop(
             except Exception:
                 args_display = {}
 
-            if tool_policy and tool_policy.blocks(block.tool_type):
+            _call_fp = tool_call_fingerprint(block.tool_type, _content)
+            _prior_failed_fp = _failed_call_fingerprints.get(_call_fp)
+
+            if disable_tools or block.tool_type in disabled_tools:
+                desc = f"{block.tool_type}: BLOCKED"
+                result = {
+                    "error": "Tool use is disabled for this recovery attempt.",
+                    "exit_code": 1,
+                    "blocked": True,
+                }
+                logger.info("Tool blocked before start for recovery attempt: %s", block.tool_type)
+            elif tool_policy and tool_policy.blocks(block.tool_type):
                 desc = f"{block.tool_type}: BLOCKED"
                 result = {
                     "error": tool_policy.reason_for(block.tool_type),
@@ -2787,9 +2849,21 @@ async def stream_agent_loop(
                     await _progress_q.put(payload)
 
                 async def _run_tool():
+                    if _prior_failed_fp:
+                        result = (
+                            f"{block.tool_type}: duplicate suppressed",
+                            duplicate_tool_result(
+                                block.tool_type,
+                                prior_fingerprint=_prior_failed_fp,
+                                attempt_id=f"suppressed-{_call_fp}",
+                            ),
+                        )
+                        await _progress_q.put(None)
+                        return result
                     try:
                         if workspace_write_guard:
-                            workspace_write_guard.check_tool_channel(block.tool_type)
+                            if getattr(workspace_write_guard, "enforce_channels", False):
+                                workspace_write_guard.check_tool_channel(block.tool_type)
                             if block.tool_type in ("write_file", "edit_file"):
                                 workspace_write_guard.check_before_write(block.tool_type, block.content)
                         outcome = await execute_tool_block(
@@ -2808,6 +2882,33 @@ async def stream_agent_loop(
                         ):
                             workspace_write_guard.record_after_write(block.tool_type, block.content)
                         return outcome
+                    except Exception as exc:
+                        try:
+                            from council_of_agents.scripts.workspace_revision import (
+                                WorkspaceConflictError,
+                                WorkspaceScopeError,
+                            )
+                            if isinstance(exc, (WorkspaceScopeError, WorkspaceConflictError)):
+                                from src.context_trace import record_scope_violation
+                                record_scope_violation(
+                                    {**(trace_context or {}), "round": round_num},
+                                    task_id=getattr(workspace_write_guard, "task_id", ""),
+                                    tool_type=block.tool_type,
+                                    attempted_path=(
+                                        workspace_write_guard.attempted_path(block.tool_type, block.content)
+                                        if workspace_write_guard else ""
+                                    ),
+                                    content=block.content,
+                                    category=(
+                                        "workspace_conflict"
+                                        if isinstance(exc, WorkspaceConflictError)
+                                        else "scope_violation"
+                                    ),
+                                    reason=str(exc),
+                                )
+                        except Exception:
+                            pass
+                        raise
                     finally:
                         # Sentinel so the drainer knows to stop.
                         await _progress_q.put(None)
@@ -2846,6 +2947,26 @@ async def stream_agent_loop(
                     except ImportError:
                         pass
                     raise
+
+                if (
+                    isinstance(result, dict)
+                    and result.get("failure_kind")
+                    and result.get("fingerprint")
+                    and not _prior_failed_fp
+                ):
+                    _failed_call_fingerprints[_call_fp] = result["fingerprint"]
+                elif (
+                    isinstance(result, dict)
+                    and result.get("ok")
+                    and block.tool_type in {
+                        "write_file", "edit_file", "create_document", "update_document",
+                        "edit_document", "manage_documents",
+                    }
+                ):
+                    # A successful mutation can make an earlier failed read
+                    # valid (for example, creating a missing file). Permit a
+                    # fresh attempt after that environment change.
+                    _failed_call_fingerprints.clear()
 
             # Extract structured web sources from web_search tool output.
             # web_search returns {"output": ..., "exit_code": 0}; check "output"
@@ -2960,8 +3081,28 @@ async def stream_agent_loop(
             elif "error" in result:
                 output_text = result["error"][:2000]
 
+            if context_tracker is not None:
+                try:
+                    context_tracker.record_tool(
+                        session_id.rsplit(":", 1)[-1] if session_id else "agent",
+                        block.tool_type,
+                        output_tokens=estimate_tokens([{"role": "tool", "content": output_text}]),
+                        output_chars=int(result.get("total_output_chars") or len(output_text)),
+                        truncated=bool(result.get("truncated")),
+                    )
+                except Exception:
+                    logger.debug("Could not record tool context usage", exc_info=True)
+
             # Emit tool_output (include ui_event data if present)
             tool_output_data = {"type": "tool_output", "tool": block.tool_type, "command": cmd_display, "output": output_text, "exit_code": result.get("exit_code")}
+            for _key in (
+                "attempt_id", "ok", "failure_kind", "retryable", "remediation",
+                "fingerprint", "diagnostic", "read_mode", "total_lines", "total_chars",
+                "file_hash", "range_start", "range_end", "range_count", "returned_lines",
+                "next_offset", "truncated", "total_output_chars", "routing",
+            ):
+                if _key in result:
+                    tool_output_data[_key] = result[_key]
             if "ui_event" in result:
                 tool_output_data["ui_event"] = result["ui_event"]
                 for k in ("toggle_name", "state", "mode", "model", "endpoint_url", "theme_name", "colors"):
@@ -3045,9 +3186,15 @@ async def stream_agent_loop(
             tool_results.append(formatted)
             tool_result_texts.append(formatted)
 
-        # If budget was hit, stop the loop
-        if budget_hit:
-            break
+        # A bounded control-role investigation must still finish with an
+        # answer. After its final allowed tool result, force the next round to
+        # synthesize rather than silently stopping or starting another search.
+        if max_tool_calls > 0 and total_tool_calls >= max_tool_calls:
+            _force_answer = True
+            messages.append({
+                "role": "system",
+                "content": "The tool budget is exhausted. Do not call tools; return the final answer from the evidence already gathered.",
+            })
 
         # ask_user posed a question — stop here and wait for the user's choice.
         # Don't feed tool results back or advance a round; the user's selection
@@ -3061,10 +3208,47 @@ async def stream_agent_loop(
         # when a multi-round agentic task accumulates many large tool results.
         # _compact_tool_outputs is a no-op when context_length is 0 or tokens
         # are safely below the threshold, so it never harms short conversations.
-        _total_compacted += _compact_tool_outputs(messages, context_length, max_tokens)
+        # Estimate the incoming assistant/tool payload before appending it so
+        # the 90% trigger fires before the next request crosses the boundary.
+        if used_native:
+            _incoming_context = [
+                {"role": "assistant", "content": round_response,
+                 "tool_calls": native_tool_calls},
+                *[{"role": "tool", "content": value} for value in tool_result_texts],
+            ]
+        else:
+            _incoming_context = [
+                {"role": "assistant", "content": round_response},
+                {"role": "user", "content": "[Tool execution results]\n\n" + "\n\n".join(tool_results)},
+            ]
+        _incoming_tokens = estimate_tokens(_incoming_context)
+        _total_compacted += _compact_tool_outputs(
+            messages,
+            context_length,
+            max_tokens,
+            input_budget=effective_budget,
+            incoming_tokens=_incoming_tokens,
+            compaction_log=_compaction_log,
+        )
         _append_tool_results(messages, round_response, native_tool_calls,
                              tool_results, tool_result_texts, used_native, round_num,
                              round_reasoning=round_reasoning)
+
+        # A tool result can still be larger than the remaining budget even
+        # after old outputs were compacted. Trim deterministically before the
+        # next network call; ProtectedContextOverflowError remains visible to
+        # the Council fallback path instead of being silently swallowed.
+        if effective_budget > 0:
+            try:
+                messages = trim_for_context(
+                    messages,
+                    effective_budget,
+                    reserve_tokens=reserve_tokens,
+                )
+            except ProtectedContextOverflowError:
+                raise
+            except Exception as trim_error:
+                logger.warning("[agent] post-tool context trim skipped: %s", trim_error)
 
 
         # Emit agent_step event
@@ -3115,6 +3299,7 @@ async def stream_agent_loop(
     # via tracker.increment_compact_count() when it reads the metrics event.
     if _total_compacted:
         metrics["compact_count"] = _total_compacted
+        metrics["compaction_events"] = _compaction_log[:50]
     yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
 
     # Teacher-escalation: inline takeover visible in the chat stream.

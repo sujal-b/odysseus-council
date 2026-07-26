@@ -74,6 +74,14 @@ def test_write_guard_rejects_unverifiable_mutation_channels(tmp_path):
     guard.check_tool_channel("read_file")
 
 
+def test_read_only_guard_rejects_writes_and_shell_channels(tmp_path):
+    guard = WorkspaceWriteGuard(tmp_path, [], {}, enforce_channels=True)
+    with pytest.raises(WorkspaceScopeError, match="not compatible"):
+        guard.check_tool_channel("bash")
+    with pytest.raises(WorkspaceScopeError, match="outside declared scope"):
+        guard.check_before_write("write_file", "output.txt\ntrash")
+
+
 def test_write_guard_allows_declared_new_file_once(tmp_path):
     guard = WorkspaceWriteGuard(tmp_path, ["src"], {})
     assert guard.check_before_write("write_file", "src/new.py\nprint('x')") == "src/new.py"

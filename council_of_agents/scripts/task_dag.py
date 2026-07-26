@@ -1,5 +1,9 @@
 from __future__ import annotations
+import hashlib
+import json
+import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import PurePosixPath
 
 from council_of_agents.scripts.ledger_models import TaskResult, WorkPacket
@@ -14,6 +18,69 @@ def _bounded_summary(text: str, limit: int = 1200) -> str:
     head = int(content_limit * 0.75)
     tail = content_limit - head
     return f"{text[:head]}{marker}{text[-tail:]}"
+
+
+class TaskFailureCategory(str, Enum):
+    """Classifies execution failures without conflating recovery policies."""
+
+    CONTRACT_INTEGRITY = "contract_integrity"
+    HANDOFF_CORRUPTION = "handoff_corruption"
+    SCOPE_VIOLATION = "scope_violation"
+    WORKSPACE_CONFLICT = "workspace_conflict"
+    ZERO_EVIDENCE = "zero_evidence_execution"
+    TOOL_EXECUTION = "tool_execution"
+    EXTERNAL_CONSTRAINT = "external_constraint"
+
+
+class TaskContractError(ValueError):
+    """Raised when a sealed task no longer matches its approved contract."""
+
+
+def _normalize_directory_scopes(values: list[str]) -> tuple[list[str], dict]:
+    """Canonicalize safe directory scopes before they enter execution state."""
+    if values is None:
+        return [], {"scope_slash_added": False}
+    if not isinstance(values, list):
+        raise ValueError("write_scope must be a list of workspace-relative directories ending in '/'")
+
+    normalized: list[str] = []
+    slash_added = False
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("write_scope entries must be strings for workspace-relative directories ending in '/'")
+        text = value.strip().replace("\\", "/")
+        if (
+            not text
+            or text.startswith("/")
+            or re.match(r"^[A-Za-z]:", text)
+            or "*" in text
+            or "?" in text
+            or any(part == ".." for part in PurePosixPath(text).parts)
+            or text in {".", "./"}
+        ):
+            raise ValueError(
+                "write_scope entries must be workspace-relative directories ending in '/'; "
+                f"unsafe scope: {value!r}"
+            )
+
+        if not text.endswith("/"):
+            leaf = text.rsplit("/", 1)[-1]
+            if PurePosixPath(leaf).suffix or (leaf.startswith(".") and leaf != "."):
+                raise ValueError(
+                    "write_scope entries must be workspace-relative directories ending in '/'; "
+                    f"file-like scope: {value!r}"
+                )
+            text += "/"
+            slash_added = True
+        normalized.append(text)
+    return normalized, {"scope_slash_added": slash_added}
+
+class TaskExecutionEvidenceError(RuntimeError):
+    """A mutation-required task finished without a real, scoped workspace diff."""
+
+    def __init__(self, category: TaskFailureCategory, message: str):
+        super().__init__(message)
+        self.category = category
 
 
 @dataclass
@@ -41,7 +108,10 @@ class TaskNode:
     base_hashes: dict[str, str] = field(default_factory=dict)
     verification: dict = field(default_factory=dict)
     result: TaskResult | None = None
-
+    workspace_root: bool = False
+    contract_hash: str = ""
+    execution_retry: dict = field(default_factory=dict)
+    failure_category: str = ""
 
 class TaskDAG:
     def __init__(self) -> None:
@@ -115,7 +185,85 @@ class TaskDAG:
             base_hashes=dict(node.base_hashes),
             verification=node.verification or None,
             attempt=node.retry_count + 1,
+            contract_hash=node.contract_hash,
+            workspace_root=node.workspace_root,
+            execution_retry=dict(node.execution_retry),
         )
+
+    @staticmethod
+    def _contract_payload(node: TaskNode) -> dict:
+        """Fields that require new approval if they change after plan review."""
+        return {
+            "id": node.id,
+            "description": node.description,
+            "depends_on": list(node.depends_on),
+            "acceptance": node.acceptance,
+            "acceptance_ids": list(node.acceptance_ids),
+            "read_scope": list(node.read_scope),
+            "write_scope": list(node.write_scope),
+            "workspace_root": bool(node.workspace_root),
+            "artifact_refs": list(node.artifact_refs),
+            "evidence_refs": list(node.evidence_refs),
+            "verification": node.verification or {},
+        }
+
+    @classmethod
+    def _contract_hash(cls, node: TaskNode) -> str:
+        payload = json.dumps(cls._contract_payload(node), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _directory_scopes_valid(values: list[str]) -> bool:
+        """Write scopes are directories; root access uses workspace_root explicitly."""
+        try:
+            normalized, _ = _normalize_directory_scopes(values)
+        except (TypeError, ValueError):
+            return False
+        return TaskDAG._scopes_valid(normalized)
+
+    @staticmethod
+    def normalize_write_scopes(values: list[str]) -> tuple[list[str], dict]:
+        """Return canonical directory scopes plus normalization telemetry."""
+        return _normalize_directory_scopes(values)
+
+    @staticmethod
+    def requires_mutation(node: TaskNode) -> bool:
+        return bool(node.workspace_root or node.write_scope)
+
+    def validate_contracts(self) -> None:
+        """Reject an invalid task contract without sealing it."""
+        for node in self._nodes.values():
+            if not node.write_scope_declared:
+                raise TaskContractError(f"{node.id}: write_scope must be declared (use [] for read-only work)")
+            if node.write_scope:
+                try:
+                    node.write_scope, _ = _normalize_directory_scopes(node.write_scope)
+                except (TypeError, ValueError) as exc:
+                    raise TaskContractError(str(exc)) from exc
+            if node.workspace_root:
+                if node.write_scope:
+                    raise TaskContractError(
+                        f"{node.id}: workspace_root cannot be combined with write_scope"
+                    )
+            elif node.write_scope and not self._directory_scopes_valid(node.write_scope):
+                raise TaskContractError(
+                    f"{node.id}: write_scope entries must be workspace-relative directories ending in '/'"
+                )
+
+    def seal_contracts(self) -> None:
+        """Fingerprint the exact valid task plan the user approved."""
+        self.validate_contracts()
+        for node in self._nodes.values():
+            node.contract_hash = self._contract_hash(node)
+
+    def assert_contract(self, task_id: str) -> None:
+        node = self._nodes.get(task_id)
+        if node is None:
+            raise TaskContractError(f"Unknown task: {task_id}")
+        if not node.contract_hash:
+            raise TaskContractError(f"{task_id}: task contract was not sealed after approval")
+        if self._contract_hash(node) != node.contract_hash:
+            raise TaskContractError(f"{task_id}: approved task contract changed after approval")
 
     @staticmethod
     def _normalized_scope(values: list[str]) -> list[PurePosixPath]:
@@ -148,6 +296,8 @@ class TaskDAG:
             cls._scopes_valid(right.read_scope),
             cls._scopes_valid(right.write_scope),
         )):
+            return True
+        if left.workspace_root or right.workspace_root:
             return True
         # Two explicitly read-only tasks are always safe together.
         if (
@@ -245,8 +395,10 @@ class TaskDAG:
             {"id": n.id, "description": n.description, "depends_on": n.depends_on,
              "status": n.status, "output": n.output, "reason": n.reason,
              "retry_count": n.retry_count, "max_retries": n.max_retries, "error_history": n.error_history,
-             "acceptance": n.acceptance, "acceptance_ids": n.acceptance_ids,
-             "read_scope": n.read_scope, "write_scope": n.write_scope,
+              "acceptance": n.acceptance, "acceptance_ids": n.acceptance_ids,
+              "read_scope": n.read_scope, "write_scope": n.write_scope,
+              "workspace_root": n.workspace_root, "contract_hash": n.contract_hash,
+              "execution_retry": n.execution_retry, "failure_category": n.failure_category,
              "read_scope_declared": n.read_scope_declared,
              "write_scope_declared": n.write_scope_declared,
              "artifact_refs": n.artifact_refs, "evidence_refs": n.evidence_refs,
@@ -283,6 +435,10 @@ class TaskDAG:
                 evidence_refs=t.get("evidence_refs", []),
                 base_hashes=t.get("base_hashes", {}),
                 verification=t.get("verification", {}),
+                workspace_root=bool(t.get("workspace_root", False)),
+                contract_hash=t.get("contract_hash", ""),
+                execution_retry=t.get("execution_retry", {}),
+                failure_category=t.get("failure_category", ""),
                 result=TaskResult.model_validate(t["result"]) if t.get("result") else None,
             ))
         return dag

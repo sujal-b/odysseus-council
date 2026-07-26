@@ -110,6 +110,9 @@ class WorkPacket(LedgerModel):
     verification: VerificationSpec | None = None
     attempt: int = 1
     budget: dict[str, int] = Field(default_factory=dict)
+    contract_hash: str = ""
+    workspace_root: bool = False
+    execution_retry: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskResult(LedgerModel):

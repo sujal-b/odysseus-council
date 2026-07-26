@@ -1,0 +1,305 @@
+{
+  "happy_path": {
+    "user_prompt": "Add a health endpoint and a regression test to the small service.",
+    "chair": {
+      "complexity": "MEDIUM",
+      "route": "PIPELINE",
+      "action": "write",
+      "target": "health endpoint and regression test",
+      "reason": "The change needs a plan, implementation, and verification."
+    },
+    "strategist": {
+      "tasks": [
+        {
+          "id": "T1",
+          "description": "Implement the health endpoint in src/app.py.",
+          "depends_on": [],
+          "acceptance": "src/app.py contains a callable health function.",
+          "read_scope": ["src/"],
+          "write_scope": ["src/"],
+          "verification": {
+            "adapter": "file",
+            "config": {"path": "src/app.py", "contains": "def health"}
+          }
+        },
+        {
+          "id": "T2",
+          "description": "Add a regression test for the health endpoint.",
+          "depends_on": ["T1"],
+          "acceptance": "tests/test_app.py contains a health regression test.",
+          "read_scope": ["src/", "tests/"],
+          "write_scope": ["tests/"],
+          "verification": {
+            "adapter": "file",
+            "config": {"path": "tests/test_app.py", "contains": "def test_health"}
+          }
+        }
+      ],
+      "risks": []
+    },
+    "perspective": {
+      "security": {"score": 0.95, "issues": []},
+      "performance": {"score": 0.95, "issues": []},
+      "maintainability": {"score": 0.9, "issues": []},
+      "overall_score": 0.93,
+      "synthesis": "The plan is small, scoped, and directly verifiable."
+    },
+    "manager": {
+      "verdict": "APPROVED",
+      "confidence": 0.96,
+      "summary": "The plan has ordered implementation and regression verification.",
+      "issues": []
+    },
+    "workspace": {
+      "files": {
+        "src/app.py": "def app():\n    return 'ok'\n",
+        "tests/test_app.py": "# existing tests\n"
+      }
+    },
+    "implementer": {
+      "initial": {
+        "T1": [
+          {"tool": "write_file", "path": "src/app.py", "content": "def app():\n    return 'ok'\n\ndef health():\n    return {'status': 'ok'}\n"}
+        ],
+        "T2": [
+          {"tool": "write_file", "path": "tests/test_app.py", "content": "def test_health():\n    assert True\n"}
+        ]
+      },
+      "replies": {
+        "T1": "Implemented the health endpoint.",
+        "T2": "Added the health regression test."
+      },
+      "gap_fill": {}
+    },
+    "completeness": [
+      {
+        "completeness": 1.0,
+        "done": true,
+        "criteria": [
+          {"id": "T1", "met": true, "gap_type": "fillable", "detail": "health exists"},
+          {"id": "T2", "met": true, "gap_type": "fillable", "detail": "test exists"}
+        ]
+      }
+    ],
+    "final_verification": [
+      {"adapter": "file", "config": {"path": "src/app.py", "contains": "def health"}},
+      {"adapter": "file", "config": {"path": "tests/test_app.py", "contains": "def test_health"}}
+    ],
+    "expected_status": "COMPLETE"
+  },
+  "perspective_requires_revision": {
+    "user_prompt": "Add an admin export endpoint to the service.",
+    "chair": {
+      "complexity": "COMPLEX",
+      "route": "PIPELINE",
+      "action": "write",
+      "target": "admin export endpoint",
+      "reason": "The endpoint needs a plan and a security review."
+    },
+    "strategist": {
+      "tasks": [
+        {
+          "id": "T1",
+          "description": "Add the admin export endpoint.",
+          "depends_on": [],
+          "acceptance": "The endpoint exports authorized admin data.",
+          "read_scope": ["src/"],
+          "write_scope": ["src/"]
+        }
+      ],
+      "risks": []
+    },
+    "perspective": {
+      "security": {
+        "score": 0.2,
+        "issues": [
+          {
+            "severity": "critical",
+            "description": "The plan does not define an authorization check.",
+            "task_id": "T1",
+            "suggestion": "Require and verify an admin authorization boundary."
+          }
+        ]
+      },
+      "performance": {"score": 0.8, "issues": []},
+      "maintainability": {"score": 0.7, "issues": []},
+      "overall_score": 0.45,
+      "synthesis": "The plan must resolve the authorization gap before implementation."
+    },
+    "manager": {
+      "verdict": "REVISE",
+      "confidence": 0.98,
+      "summary": "The security review found a critical missing authorization requirement.",
+      "issues": [
+        {
+          "severity": "critical",
+          "task_id": "T1",
+          "description": "Authorization is not part of the task contract.",
+          "suggestion": "Revise the task to include an explicit admin authorization check."
+        }
+      ]
+    },
+    "workspace": {"files": {"src/app.py": "def app():\n    return 'ok'\n"}},
+    "expected_status": "REPLAN_REQUIRED"
+  },
+  "incomplete_then_gap_fill": {
+    "user_prompt": "Add a run function to the small service and make sure it is verified.",
+    "chair": {
+      "complexity": "MEDIUM",
+      "route": "PIPELINE",
+      "action": "write",
+      "target": "run function",
+      "reason": "The artifact must be checked against an explicit acceptance criterion."
+    },
+    "strategist": {
+      "tasks": [
+        {
+          "id": "T1",
+          "description": "Add the run function to src/app.py.",
+          "depends_on": [],
+          "acceptance": "src/app.py contains a callable run function.",
+          "read_scope": ["src/"],
+          "write_scope": ["src/"]
+        }
+      ],
+      "risks": ["The first implementation may leave the acceptance criterion incomplete."]
+    },
+    "perspective": {
+      "security": {"score": 0.9, "issues": []},
+      "performance": {"score": 0.9, "issues": []},
+      "maintainability": {"score": 0.85, "issues": []},
+      "overall_score": 0.88,
+      "synthesis": "The task is safe if the final artifact is reverified."
+    },
+    "manager": {
+      "verdict": "APPROVED",
+      "confidence": 0.9,
+      "summary": "The plan is scoped and has a clear acceptance condition.",
+      "issues": []
+    },
+    "workspace": {"files": {"src/app.py": "def app():\n    return 'ok'\n"}},
+    "implementer": {
+      "initial": {
+        "T1": [
+          {"tool": "write_file", "path": "src/app.py", "content": "def app():\n    return 'ok'\n\n# implementation started\n"}
+        ]
+      },
+      "replies": {"T1": "Implemented the first pass."},
+      "gap_fill": {
+        "T1": [
+          {"tool": "write_file", "path": "src/app.py", "content": "def app():\n    return 'ok'\n\ndef run():\n    return app()\n"}
+        ]
+      }
+    },
+    "completeness": [
+      {
+        "completeness": 0.0,
+        "done": false,
+        "criteria": [
+          {"id": "T1", "met": false, "gap_type": "fillable", "detail": "run function is missing"}
+        ]
+      },
+      {
+        "completeness": 1.0,
+        "done": true,
+        "criteria": [
+          {"id": "T1", "met": true, "gap_type": "fillable", "detail": "run function exists"}
+        ]
+      }
+    ],
+    "final_verification": [
+      {"adapter": "file", "config": {"path": "src/app.py", "contains": "def run"}}
+    ],
+    "expected_status": "COMPLETE"
+  },
+  "unsafe_scope_blocked": {
+    "user_prompt": "Add a small utility module under src/.",
+    "chair": {
+      "complexity": "MEDIUM",
+      "route": "PIPELINE",
+      "action": "write",
+      "target": "src utility module",
+      "reason": "The implementation has an explicit source-directory scope."
+    },
+    "strategist": {
+      "tasks": [
+        {
+          "id": "T1",
+          "description": "Create src/util.py.",
+          "depends_on": [],
+          "acceptance": "src/util.py exists.",
+          "read_scope": ["src/"],
+          "write_scope": ["src/"]
+        }
+      ],
+      "risks": []
+    },
+    "perspective": {
+      "security": {"score": 0.95, "issues": []},
+      "performance": {"score": 0.95, "issues": []},
+      "maintainability": {"score": 0.9, "issues": []},
+      "overall_score": 0.93,
+      "synthesis": "The task is safe within its declared scope."
+    },
+    "manager": {
+      "verdict": "APPROVED",
+      "confidence": 0.95,
+      "summary": "The plan is safe, but execution must remain inside src/.",
+      "issues": []
+    },
+    "workspace": {"files": {"src/placeholder.py": "# seed\n"}},
+    "implementer": {
+      "initial": {
+        "T1": [
+          {"tool": "write_file", "path": "../outside.txt", "content": "must not be written"}
+        ]
+      },
+      "replies": {"T1": "Created the utility module."},
+      "gap_fill": {}
+    },
+    "expected_status": "BLOCKED"
+  },
+  "false_success_no_diff": {
+    "user_prompt": "Add a small utility module under src/.",
+    "chair": {
+      "complexity": "MEDIUM",
+      "route": "PIPELINE",
+      "action": "write",
+      "target": "src utility module",
+      "reason": "The implementation must leave a real workspace artifact."
+    },
+    "strategist": {
+      "tasks": [
+        {
+          "id": "T1",
+          "description": "Create src/util.py.",
+          "depends_on": [],
+          "acceptance": "src/util.py exists.",
+          "read_scope": ["src/"],
+          "write_scope": ["src/"]
+        }
+      ],
+      "risks": []
+    },
+    "perspective": {
+      "security": {"score": 0.95, "issues": []},
+      "performance": {"score": 0.95, "issues": []},
+      "maintainability": {"score": 0.9, "issues": []},
+      "overall_score": 0.93,
+      "synthesis": "The plan is safe and small."
+    },
+    "manager": {
+      "verdict": "APPROVED",
+      "confidence": 0.95,
+      "summary": "The plan is executable and requires a real file diff.",
+      "issues": []
+    },
+    "workspace": {"files": {"src/placeholder.py": "# seed\n"}},
+    "implementer": {
+      "initial": {"T1": []},
+      "replies": {"T1": "Created src/util.py successfully."},
+      "gap_fill": {}
+    },
+    "expected_status": "FAILED"
+  }
+}

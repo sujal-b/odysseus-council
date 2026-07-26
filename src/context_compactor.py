@@ -40,7 +40,7 @@ def _content_as_text(content: Any) -> str:
     return ""
 
 
-COMPACT_THRESHOLD = 0.85  # Trigger compaction at 85% of context window
+COMPACT_THRESHOLD = 0.85  # Legacy chat summarizer threshold; Council uses its 90% preflight gate.
 SUMMARY_MAX_TOKENS = 1024
 SMALL_CONTEXT_LIMIT = 8192  # Models with context <= this get aggressive trimming
 

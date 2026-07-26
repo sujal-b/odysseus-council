@@ -27,9 +27,24 @@ def test_role_controls_are_keyboard_native_and_labeled():
 
 def test_renderer_avoids_heartbeat_full_renders_and_forced_log_scroll():
     assert "if (eventType === 'heartbeat')" in JS
+    assert "lastHeartbeatText" in JS
     assert "const keepPinnedToBottom" in JS
     assert "if (keepPinnedToBottom) el.scrollTop = el.scrollHeight" in JS
     assert "_renderRunSummary(state)" in JS
+
+
+def test_streamed_council_events_do_not_rebuild_open_aggregates():
+    assert "scheduleRender(state, eventType)" in JS
+    assert "ui.scheduleRender(s, ev)" in JS
+    assert "eventType === 'thought_delta' && ledger.querySelector('[data-live-stream]')" in JS
+    log_section = JS.split("Captain's log: record every meaningful event", 1)[1].split("// A committed thought", 1)[0]
+    assert "'tool_progress'" not in log_section
+
+
+def test_run_events_dedupe_tool_and_live_update_paths():
+    assert "function sameFileOperation(left, right)" in JS
+    assert "currentEntry.files.some(existing => sameFileOperation(existing, op))" in JS
+    assert "a.endsWith(`/${b}`)" in JS
 
 
 def test_dynamic_code_tab_markup_is_escaped():

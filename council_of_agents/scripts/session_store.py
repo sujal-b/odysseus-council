@@ -32,6 +32,13 @@ class SessionState:
     ledger_version:        int = 0
     active_checkpoint_id:  Optional[str] = None
     run_status:            str = ""
+    # Durable description of the gate currently blocking this run. A browser
+    # refresh or SSE reconnect must reconstruct the actionable prompt without
+    # guessing from historical events.
+    pending_gate:          Optional[dict] = None
+    # Explicit human override of a non-approved Manager decision. This is
+    # persisted so a refresh cannot silently turn an override into approval.
+    manager_override:      bool = False
 
 class SessionStore(ABC):
     @abstractmethod
@@ -80,6 +87,8 @@ class InMemorySessionStore(SessionStore):
             "ledger_version": state.ledger_version,
             "active_checkpoint_id": state.active_checkpoint_id,
             "run_status": state.run_status,
+            "pending_gate": state.pending_gate,
+            "manager_override": state.manager_override,
         }
         fd, tmp_path = tempfile.mkstemp(dir=self._dir, suffix=".tmp")
         try:
@@ -129,6 +138,8 @@ class InMemorySessionStore(SessionStore):
                 ledger_version=data.get("ledger_version", 0),
                 active_checkpoint_id=data.get("active_checkpoint_id"),
                 run_status=data.get("run_status", ""),
+                pending_gate=data.get("pending_gate"),
+                manager_override=bool(data.get("manager_override", False)),
             )
             self._cache[session_id] = state
             return state

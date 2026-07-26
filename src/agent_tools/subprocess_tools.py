@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # git commit and git push are intentionally EXCLUDED — they mutate remote state.
 BASH_READONLY_PREFIXES: frozenset[str] = frozenset({
     "ls", "cat", "pwd", "echo", "which", "whoami", "date", "head", "tail",
+    "grep", "rg", "findstr", "select-string", "get-childitem",
     "wc", "diff", "find", "file", "stat", "du", "df", "env", "printenv",
     "type", "uname", "hostname", "id", "groups", "dir",
     # git read-only ops
