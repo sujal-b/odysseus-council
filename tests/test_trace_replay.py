@@ -87,6 +87,8 @@ def test_historical_repair_recorded_current_initial_passes_zero_repair_attempts(
     tf.write_text(json.dumps(dummy_trace), encoding="utf-8")
 
     res = replay_role_eval_trace(tf, prompts_dir=P2_3)
+    # Trace declares no scenario_id: preserved as "" rather than raising or invented.
+    assert res["scenario_id"] == ""
     stage = res["trace"][0]
     assert stage["contract_passed"] is True
     assert stage["accepted_attempt"] == "initial"
@@ -404,6 +406,7 @@ def test_offline_cli_forwards_scenario_rubric_to_replay(monkeypatch):
     assert captured["scenario_rubric"] == DOC_RUBRIC
 
     result = json.loads((TMP_DIR / "rubric_forward_replay.json").read_text(encoding="utf-8"))
+    assert result["scenario_id"] == "documentation_update"
     planning = result["summary"]["planning_quality"]
     failed = {c["name"] for c in planning["checks"] if not c["passed"]}
 
@@ -465,6 +468,7 @@ def test_corpus_replay_applies_per_trace_scenario_rubric(monkeypatch):
     assert result["certification_live_required"] == 1
 
     nested = result["traces"][0]
+    assert nested["scenario_id"] == "documentation_update"
     planning = nested["summary"]["planning_quality"]
     failed = {c["name"] for c in planning["checks"] if not c["passed"]}
 
@@ -617,6 +621,7 @@ def test_terminal_clarification_scenario_replays_with_none_rubric(monkeypatch):
     assert result_corpus["replayed_role_eval_traces"] == 1
     assert result_corpus["malformed_trace_artifacts"] == 0
     assert result_corpus["traces"][0]["workflow_compatibility"] == "PASS_REPLAY"
+    assert result_corpus["traces"][0]["scenario_id"] == "ambiguous_storage_choice"
     assert exit_code_corpus == 0
 
     # B. Test single-trace CLI replay
@@ -631,6 +636,7 @@ def test_terminal_clarification_scenario_replays_with_none_rubric(monkeypatch):
 
     result_single = json.loads(output_single.read_text(encoding="utf-8"))
     assert result_single["workflow_compatibility"] == "PASS_REPLAY"
+    assert result_single["scenario_id"] == "ambiguous_storage_choice"
     assert exit_code_single == 0
 
 

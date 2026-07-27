@@ -484,6 +484,7 @@ def replay_role_eval_trace(
         "timestamp": time.time(),
         "source_trace": str(path),
         "source_trace_hash": source_hash,
+        "scenario_id": str(trace_data.get("scenario_id") or ""),
         "source_harness_fingerprint": source_fp,
         "current_harness_fingerprint": current_fp,
         "contract_compatibility": contract_compatibility,
