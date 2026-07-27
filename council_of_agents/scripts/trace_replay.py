@@ -168,6 +168,31 @@ def _build_structured_repair_signature(
     return f"{agent}|{repair_kind}|{failure_kind}|{raw_shape}|{loc_str}"
 
 
+def resolve_scenario_rubric(
+    scenarios: dict,
+    scenario_id: str,
+) -> tuple[bool, dict | None, str]:
+    """Resolve (valid, scenario_rubric, error_detail) for offline replay.
+
+    A scenario is valid for offline replay if:
+    1. It defines planning_rubric or rubric, OR
+    2. It explicitly declares terminal == 'clarification' (with scenario_rubric=None).
+    Otherwise it is unresolvable.
+    """
+    scenario = scenarios.get(scenario_id)
+    if not isinstance(scenario, dict):
+        return False, None, f"scenario_id {scenario_id!r} not found in scenario config"
+
+    scenario_rubric = scenario.get("planning_rubric") or scenario.get("rubric")
+    if scenario_rubric:
+        return True, scenario_rubric, ""
+
+    if scenario.get("terminal") == "clarification":
+        return True, None, ""
+
+    return False, None, f"unresolved scenario rubric for scenario_id {scenario_id!r}"
+
+
 def replay_role_eval_trace(
     trace_path: str | Path,
     prompts_dir: str | Path | None = None,
@@ -477,10 +502,14 @@ def replay_role_eval_trace(
 def replay_trace_directory(
     trace_dir: str | Path,
     prompts_dir: str | Path | None = None,
+    scenarios_config: str | Path | None = None,
 ) -> dict:
     """Replay all role_eval traces in trace_dir and return consolidated findings."""
     dir_path = Path(trace_dir)
     all_files = sorted(p for p in dir_path.glob("*.json") if p.is_file() and not p.name.startswith("replay-"))
+
+    # Load once; each trace then resolves its own rubric by recorded scenario_id.
+    scenarios = _load_scenarios(Path(scenarios_config)) if scenarios_config else None
 
     replayed_results = []
     skipped_files = []
@@ -501,8 +530,22 @@ def replay_trace_directory(
             malformed_files.append({"file": str(json_file), "error": str(exc)})
             continue
 
+        scenario_rubric = None
+        if scenarios is not None:
+            trace_scenario_id = str(raw_data.get("scenario_id") or "")
+            ok, scenario_rubric, _ = resolve_scenario_rubric(scenarios, trace_scenario_id)
+            if not ok:
+                # Fail closed: replaying without the rubric would report a false PASS_REPLAY.
+                malformed_files.append({
+                    "file": str(json_file),
+                    "error": f"unresolved scenario rubric for scenario_id {trace_scenario_id!r} in {scenarios_config}",
+                })
+                contract_fails += 1
+                workflow_fails += 1
+                continue
+
         try:
-            res = replay_role_eval_trace(json_file, prompts_dir=prompts_dir)
+            res = replay_role_eval_trace(json_file, prompts_dir=prompts_dir, scenario_rubric=scenario_rubric)
             replayed_results.append(res)
 
             if res["contract_compatibility"] == "PASS":
@@ -674,6 +717,7 @@ def main(argv=None) -> int:
     parser.add_argument("--model", help="Raw provider model ID; defaults to the captured model ID.")
     parser.add_argument("--api-key-env", default="DIRECT_MODEL_API_KEY", help="Environment variable holding the raw provider key.")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--output-dir", type=Path, help="Output directory for generated trace files.")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--inspect", action="store_true")
     parser.add_argument("--contract-only", action="store_true", help="Gate CLI exit status on contract compatibility instead of workflow compatibility.")
@@ -683,7 +727,16 @@ def main(argv=None) -> int:
     parser.add_argument("--stage", help="Target stage label (e.g. perspective_revision, manager_revision_review).")
     parser.add_argument("--stage-index", type=int, help="Target stage index in source trace.")
     parser.add_argument("--count", type=int, default=2, help="Number of targeted repetitions (default 2).")
-    parser.add_argument("--scenarios-config", type=Path, help="Scenario config file for targeted canary.")
+    parser.add_argument(
+        "--scenarios-config",
+        type=Path,
+        help=(
+            "Scenario config supplying planning rubrics. Applies to offline single-trace replay "
+            "(--role-eval-trace), corpus replay (--trace-dir, resolved per trace via its recorded "
+            "scenario_id), and targeted canaries (--role-canary). When supplied, a trace whose "
+            "scenario or rubric cannot be resolved fails instead of replaying without a rubric."
+        ),
+    )
     parser.add_argument("--scenario-id", help="Scenario ID for rubric loading.")
     parser.add_argument("--prompt-label", default="P2.3", help="Prompt label for targeted canary.")
 
@@ -711,6 +764,7 @@ def main(argv=None) -> int:
                 scenarios_config=args.scenarios_config,
                 scenario_id=args.scenario_id,
                 prompt_label=args.prompt_label,
+                output_dir=args.output_dir,
             )
             all_passed = all(
                 r.get("contract_passed") and r.get("semantic_quality", {}).get("passed") and not r.get("provider_failed")
@@ -738,7 +792,9 @@ def main(argv=None) -> int:
             return 2
 
     if args.trace_dir:
-        result = replay_trace_directory(args.trace_dir, prompts_dir=args.prompts_dir)
+        result = replay_trace_directory(
+            args.trace_dir, prompts_dir=args.prompts_dir, scenarios_config=args.scenarios_config
+        )
         output = args.output or Path("data/council_agent_replays/corpus-replay.json")
         write_replay(output, result)
         print(json.dumps({
@@ -756,7 +812,26 @@ def main(argv=None) -> int:
     if args.role_eval_trace or (args.trace and not args.endpoint and not args.agent):
         if not args.trace:
             parser.error("--trace is required for role_eval replay.")
-        result = replay_role_eval_trace(args.trace, prompts_dir=args.prompts_dir)
+
+        scenario_rubric = None
+        if args.scenarios_config:
+            scenarios = _load_scenarios(args.scenarios_config)
+            target_scenario_id = args.scenario_id or str(
+                json.loads(args.trace.read_text(encoding="utf-8")).get("scenario_id") or ""
+            )
+            ok, scenario_rubric, err_detail = resolve_scenario_rubric(scenarios, target_scenario_id)
+            if not ok:
+                if "not found" in err_detail:
+                    parser.error(
+                        f"Scenario {target_scenario_id!r} not found in {args.scenarios_config}; "
+                        "pass --scenario-id or omit --scenarios-config."
+                    )
+                else:
+                    parser.error(f"Scenario {target_scenario_id!r} has no planning_rubric or rubric.")
+
+        result = replay_role_eval_trace(
+            args.trace, prompts_dir=args.prompts_dir, scenario_rubric=scenario_rubric
+        )
         output = args.output or Path("data/council_agent_replays") / f"replay-{args.trace.name}"
         write_replay(output, result)
         print(json.dumps({
