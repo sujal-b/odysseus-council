@@ -56,7 +56,7 @@ PERSPECTIVE = json.dumps({
     "overall_score": 0.9, "synthesis": "The bounded plan is sound.",
 })
 PERSPECTIVE_BLOCK = json.dumps({
-    "security": {"score": 0.2, "issues": [{"disposition": "BLOCK", "description": "Unsafe write scope.", "evidence": "T1 allows a root-scoped write."}]},
+    "security": {"score": 0.2, "issues": [{"disposition": "BLOCK", "description": "Unsafe write scope.", "task_id": "T1", "evidence": "T1 allows a root-scoped write."}]},
     "performance": {"score": 0.9, "issues": []},
     "maintainability": {"score": 0.9, "issues": []},
     "overall_score": 0.5, "synthesis": "The plan has a hard safety finding.",

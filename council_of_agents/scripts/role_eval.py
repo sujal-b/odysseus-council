@@ -1205,6 +1205,7 @@ async def evaluate(
     provider_failed = False
     initial_contract_passed = False
     repair_attempted = False
+    repair_signature = None
     initial_normalization_metadata: dict = {}
     final_normalization_metadata: dict = {}
     final_messages = messages
@@ -1293,7 +1294,6 @@ async def evaluate(
             "repair_reason": initial_error if not initial_contract_passed else None,
         })
 
-        repair_signature = None
         if not initial_contract_passed:
             repair_attempted = True
             repair_kind = "schema_repair"
