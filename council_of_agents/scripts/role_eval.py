@@ -2819,6 +2819,9 @@ def _exit_code(result: dict) -> int:
         return 1
     if result.get("provider_failed"):
         return 1
+    outcome = result.get("scenario_outcome")
+    if outcome is not None:
+        return 0 if outcome.get("passed") else 1
     if "hard_regressions" in result:
         return 0 if not result.get("hard_regressions") else 1
     if "contract_passed" in result:
@@ -3024,6 +3027,13 @@ def main(argv=None) -> int:
             output = args.trace_out or (Path("data/council_agent_evals") / f"{args.case}-trace.json")
         if result is None:
             return 130
+        if scenario is not None:
+            outcome_passed, actual_outcome = _expected_scenario_outcome(scenario, result)
+            result["scenario_outcome"] = {
+                "passed": outcome_passed,
+                "expected_terminal": str(scenario.get("terminal") or ""),
+                "actual_outcome": actual_outcome,
+            }
         if not _write_artifact(output, result):
             return 2
         print(json.dumps(result.get("summary") or result, ensure_ascii=False))

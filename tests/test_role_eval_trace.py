@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 import council_of_agents.scripts.role_eval as role_eval
 from council_of_agents.scripts.role_eval import (
     build_messages,
@@ -1070,3 +1072,161 @@ def test_async_harness_failure_preserves_checkpoint_cases(tmp_path):
     assert result["failure_source"]["exception_type"] == "ValueError"
     assert result["partial_trace"] == checkpoint["cases"]
     assert result["checkpoint"]["completed_cases"] == 1
+
+
+# --- Single named --scenario outcome gate (P2.3-R1) ---
+
+
+def _chair_stage_record():
+    return {
+        "agent": "chair",
+        "stage": "chair",
+        "contract_passed": True,
+        "semantic_quality": {"passed": True, "score": 1.0, "checks": []},
+    }
+
+
+def _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, scenario_id, trace):
+    cfg = tmp_path / "scenarios.json"
+    cfg.write_text(json.dumps(scenarios), encoding="utf-8")
+    out = tmp_path / "trace.json"
+    monkeypatch.setattr(role_eval, "_load_role_configs", lambda *_a, **_k: {})
+    monkeypatch.setattr(
+        role_eval,
+        "_resolve_api_key_for_endpoints",
+        lambda *_a, **_k: pytest.fail("provider credential resolution must not run"),
+    )
+
+    async def fake_trace(*_a, **_k):
+        return dict(trace)
+
+    monkeypatch.setattr(role_eval, "_bounded_evaluate_trace", fake_trace)
+    code = role_eval.main([
+        "--trace",
+        "--planning-only",
+        "--scenario", scenario_id,
+        "--scenarios-config", str(cfg),
+        "--trace-out", str(out),
+        "--case", "test-single-scenario",
+    ])
+    return code, json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_single_scenario_terminal_mismatch_exits_one(tmp_path, monkeypatch):
+    scenarios = {"ambiguous_storage_choice": {
+        "user_prompt": "Add persistent storage for the new analytics feature.",
+        "terminal": "clarification",
+    }}
+    trace = {
+        "termination": "COMPLETE",
+        "trace": [
+            _chair_stage_record(),
+            {"agent": "strategist", "stage": "strategist", "contract_passed": True,
+             "semantic_quality": {"passed": True}},
+        ],
+        "summary": {"termination_reason": "planning_approved", "final_manager_verdict": "APPROVED"},
+        "readiness_gate": {"passed": True, "classification": "pass"},
+    }
+
+    code, artifact = _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, "ambiguous_storage_choice", trace)
+
+    assert code == 1
+    outcome = artifact["scenario_outcome"]
+    assert outcome["passed"] is False
+    assert outcome["expected_terminal"] == "clarification"
+    assert outcome["actual_outcome"] == "planning_approved"
+    assert artifact["readiness_gate"]["passed"] is True
+
+
+def test_single_scenario_expected_clarification_exits_zero(tmp_path, monkeypatch):
+    scenarios = {"ambiguous_storage_choice": {
+        "user_prompt": "Add persistent storage for the new analytics feature.",
+        "terminal": "clarification",
+    }}
+    trace = {
+        "termination": "COMPLETE",
+        "trace": [_chair_stage_record()],
+        "summary": {"termination_reason": "clarification_required"},
+        "readiness_gate": {"passed": False, "classification": "failed"},
+    }
+
+    code, artifact = _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, "ambiguous_storage_choice", trace)
+
+    assert code == 0
+    outcome = artifact["scenario_outcome"]
+    assert outcome["passed"] is True
+    assert outcome["expected_terminal"] == "clarification"
+    assert outcome["actual_outcome"] == "clarification_required"
+    assert artifact["readiness_gate"]["passed"] is False
+    assert [record["agent"] for record in artifact["trace"]] == ["chair"]
+
+
+def test_single_scenario_harness_failure_precedence_exits_two(tmp_path, monkeypatch):
+    scenarios = {"ambiguous_storage_choice": {
+        "user_prompt": "Add persistent storage for the new analytics feature.",
+        "terminal": "clarification",
+    }}
+    trace = {
+        "termination": "HARNESS_FAILURE",
+        "trace": [],
+        "summary": {},
+        "readiness_gate": {"passed": False, "classification": "harness-failure"},
+    }
+
+    code, _artifact = _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, "ambiguous_storage_choice", trace)
+
+    assert code == 2
+
+
+def test_single_scenario_provider_inconclusive_precedence_exits_one(tmp_path, monkeypatch):
+    scenarios = {"ambiguous_storage_choice": {
+        "user_prompt": "Add persistent storage for the new analytics feature.",
+        "terminal": "clarification",
+    }}
+    trace = {
+        "termination": "PROVIDER_INCONCLUSIVE",
+        "trace": [],
+        "summary": {"provider_failures": 1},
+        "readiness_gate": {"passed": False, "classification": "provider-inconclusive"},
+    }
+
+    code, _artifact = _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, "ambiguous_storage_choice", trace)
+
+    assert code == 1
+
+
+def test_single_scenario_nonterminal_compatibility(tmp_path, monkeypatch):
+    scenarios = {"grounded": {"user_prompt": "Fix the existing session reload bug."}}
+    passing_trace = {
+        "termination": "COMPLETE",
+        "trace": [_chair_stage_record()],
+        "summary": {"termination_reason": "planning_approved", "final_manager_verdict": "APPROVED"},
+        "readiness_gate": {"passed": True, "classification": "pass"},
+    }
+
+    code, artifact = _run_named_scenario_cli(tmp_path, monkeypatch, scenarios, "grounded", passing_trace)
+    assert code == 0
+    assert artifact["scenario_outcome"]["passed"] is True
+
+    out2 = tmp_path / "trace2.json"
+
+    async def failing_trace(*_a, **_k):
+        return {
+            "termination": "COMPLETE",
+            "trace": [_chair_stage_record()],
+            "summary": {"termination_reason": "planning_approved"},
+            "readiness_gate": {"passed": False, "classification": "failed"},
+        }
+
+    monkeypatch.setattr(role_eval, "_bounded_evaluate_trace", failing_trace)
+    code = role_eval.main([
+        "--trace",
+        "--planning-only",
+        "--scenario", "grounded",
+        "--scenarios-config", str(tmp_path / "scenarios.json"),
+        "--trace-out", str(out2),
+        "--case", "test-single-scenario-fail",
+    ])
+    artifact2 = json.loads(out2.read_text(encoding="utf-8"))
+    assert code == 1
+    assert artifact2["scenario_outcome"]["passed"] is False
