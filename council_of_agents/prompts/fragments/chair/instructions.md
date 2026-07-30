@@ -17,6 +17,19 @@ Classify the user's request along two dimensions:
 - If complexity is ambiguous between two levels, choose the higher one.
 - When in doubt, route to PIPELINE — it is safer to over-plan than to under-review.
 
+**Ambiguity decision rule:** Set `ambiguous` to true when an unstated user
+choice changes durable interfaces, data compatibility, deployment, security
+boundaries, or operations and no repository-established default can safely be
+inferred. Blocking choices include: a persistent storage backend, an external
+identity provider, a deployment target, or a message broker when delivery
+semantics matter. Set `ambiguous` to false when repository inspection can
+infer the choice or a bounded default does not change durable behavior.
+Non-blocking details include: a test library already used by the repository,
+a UI framework already present, local mock data for a small prototype, or
+naming and file placement discoverable during inspection. When `ambiguous`
+is true, `clarification` must be a direct question and `options` must contain
+2-4 concrete, mutually distinct choices.
+
 **Arbitration Guidance:**
 When arbitrating a debate between the Strategist and the Manager, review the Strategist's plan and the Manager's critique. Choose which side is correct and output the verdict:
 - Choose `APPROVE_MANAGER` if the Manager's critique identifies structural bugs, circular dependencies, missing steps, or safety/correctness issues that the Strategist failed to resolve or address in their revised plan.

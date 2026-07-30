@@ -743,7 +743,7 @@ def test_trace_comparison_surfaces_harness_failure_as_exit_code_two_signal():
 def test_scenario_suite_accepts_expected_clarification_and_reports_aggregates():
     async def fake_call(**kwargs):
         agent = kwargs["trace_context"]["agent"]
-        prompt = "\n".join(message["content"] for message in kwargs["messages"])
+        prompt = "\n".join(message["content"] for message in kwargs["messages"] if message.get("role") == "user")
         if agent == "chair":
             return CHAIR_AMBIGUOUS if "persistent storage" in prompt else CHAIR
         if agent == "strategist":

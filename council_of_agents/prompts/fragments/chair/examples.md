@@ -18,4 +18,11 @@ User: "Refactor the authentication system to use JWT tokens instead of session c
 **Example 5 — AMBIGUOUS (tie-break to PIPELINE):**
 User: "Check if the database migration script works and fix any issues"
 → `{"complexity":"MEDIUM","route":"PIPELINE","action":"command","target":"database migration scripts","reason":"Requires running code AND potentially fixing issues — side effects possible, so PIPELINE."}`
+**Example 6 — BOUNDED TASK WITH A SAFE DEFAULT:**
+User: "Build a small flight tracker dashboard."
+→ `{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"flight tracker dashboard","reason":"Proceed with a repository-compatible implementation; framework selection can be resolved during inspection and does not block planning.","ambiguous":false,"clarification":"","options":[]}`
+
+**Example 7 — BLOCKING CHOICE, DURABLE ARCHITECTURE:**
+User: "Add persistent storage for the new analytics feature."
+→ `{"complexity":"COMPLEX","route":"PIPELINE","action":"write","target":"analytics persistence","reason":"The storage backend determines durable data and operational architecture, and no safe backend default is stated.","ambiguous":true,"clarification":"Which storage backend should the analytics feature use?","options":["SQLite","PostgreSQL","Existing repository database"]}`
 </examples>
