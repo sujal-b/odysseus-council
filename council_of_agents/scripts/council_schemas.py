@@ -7,7 +7,7 @@ import logging
 import re
 from enum import Enum
 from typing import Any, List, Optional
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ class ChairOutput(BaseModel):
     # user-choice fork that materially changes the outcome and can't be safely
     # defaulted (e.g. "which database/framework?"). Defaults keep every existing
     # reply backward-compatible (no gate triggered).
-    ambiguous: bool = False
+    ambiguous: StrictBool = False
     clarification: str = ""
     options: List[str] = Field(default_factory=list)
 
@@ -87,6 +87,51 @@ class ChairOutput(BaseModel):
         if isinstance(data, str):
             return _extract_json(data)
         return data
+
+    @model_validator(mode="after")
+    def _validate_ambiguity_contract(self) -> "ChairOutput":
+        """Enforce the Chair ambiguity contract:
+
+        ambiguous=True  → clarification non-empty, 2–4 distinct non-empty options.
+        ambiguous=False → clarification empty, options empty.
+
+        Whitespace-only clarification counts as empty.
+        Options are compared case-insensitively after stripping.
+        """
+        clarification = self.clarification.strip()
+        options = self.options
+
+        if self.ambiguous:
+            if not clarification:
+                raise ValueError(
+                    "ambiguous=true requires a non-empty clarification string"
+                )
+            if not isinstance(options, list):
+                raise ValueError("options must be a list when ambiguous=true")
+            if len(options) < 2 or len(options) > 4:
+                raise ValueError(
+                    f"ambiguous=true requires 2–4 options, got {len(options)}"
+                )
+            stripped = [o.strip() for o in options]
+            if any(s == "" for s in stripped):
+                raise ValueError("every option must be a non-empty string")
+            casefolded = [s.casefold() for s in stripped]
+            if len(casefolded) != len(set(casefolded)):
+                raise ValueError("options must be unique (case-insensitive, whitespace-trimmed)")
+            # Normalise: store trimmed versions, clarification stripped
+            self.clarification = clarification
+            self.options = stripped
+        else:
+            if clarification:
+                raise ValueError(
+                    "ambiguous=false must have an empty clarification string"
+                )
+            if options:
+                raise ValueError(
+                    "ambiguous=false must have an empty options list"
+                )
+            self.clarification = clarification  # store as stripped ""
+        return self
 
 
 class ChairArbitrationOutput(BaseModel):

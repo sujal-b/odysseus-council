@@ -120,7 +120,7 @@ def parse_json_block(text: str) -> dict:
 
 
 def is_valid_chair(parsed: dict) -> bool:
-    """Schema check mirroring council_schemas.ChairOutput."""
+    """Schema check mirroring council_schemas.ChairOutput (including ambiguity contract)."""
     if not isinstance(parsed, dict):
         return False
     if parsed.get("complexity") not in ("SIMPLE", "MEDIUM", "COMPLEX"):
@@ -131,6 +131,35 @@ def is_valid_chair(parsed: dict) -> bool:
         return False
     if not isinstance(parsed.get("target"), str) or not parsed.get("target"):
         return False
+    # Ambiguity contract — mirrors ChairOutput._validate_ambiguity_contract
+    ambiguous = parsed.get("ambiguous", False)
+    clarification = parsed.get("clarification", "")
+    options = parsed.get("options", [])
+    if not isinstance(ambiguous, bool):
+        return False
+    if not isinstance(clarification, str):
+        return False
+    if not isinstance(options, list) or not all(
+        isinstance(option, str) for option in options
+    ):
+        return False
+    clarification = clarification.strip()
+    if ambiguous:
+        if not clarification:
+            return False
+        if len(options) < 2 or len(options) > 4:
+            return False
+        stripped = [o.strip() for o in options]
+        if any(s == "" for s in stripped):
+            return False
+        casefolded = [s.casefold() for s in stripped]
+        if len(casefolded) != len(set(casefolded)):
+            return False
+    else:
+        if clarification:
+            return False
+        if options:
+            return False
     return True
 
 
