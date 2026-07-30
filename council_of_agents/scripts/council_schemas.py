@@ -844,16 +844,18 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
                     # Check task ID shapes in perspective issues
                     for section in ("security", "performance", "maintainability"):
                         for issue in data_dict.get(section, {}).get("issues", []):
-                            valid, reason = validate_issue_task_id_shape(issue.get("task_id", ""))
-                            if not valid:
-                                metadata["task_id_normalization"] = reason
-                                metadata["normalization_used"] = False
-                                return ValidationResult(
-                                    success=False,
-                                    error=f"invalid task_id shape '{issue.get('task_id')}': {reason}",
-                                    metadata=metadata,
-                                    raw_text=raw_text,
-                                )
+                            tid = issue.get("task_id", "") or ""
+                            if tid:
+                                valid, reason = validate_issue_task_id_shape(tid)
+                                if not valid:
+                                    metadata["task_id_normalization"] = reason
+                                    metadata["normalization_used"] = False
+                                    return ValidationResult(
+                                        success=False,
+                                        error=f"invalid task_id shape '{tid}': {reason}",
+                                        metadata=metadata,
+                                        raw_text=raw_text,
+                                    )
                     return ValidationResult(
                         success=True,
                         data=data_dict,

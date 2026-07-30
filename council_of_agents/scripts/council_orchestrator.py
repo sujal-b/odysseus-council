@@ -722,12 +722,15 @@ Report what you FIND, not what you think might exist."""
                                            text="Manager repeated the same defect; escalating instead of looping.")
                                 break
 
-            perspective_hard_block = self._perspective_has_hard_block(perspective_reply)
+            perspective_evidence = self._classify_perspective_evidence(perspective_reply)
             manager_verdict = self._parse_manager_verdict(manager_reply)
-            if manager_verdict == "APPROVED" and perspective_hard_block:
+            if manager_verdict == "APPROVED" and perspective_evidence != "clear":
                 manager_verdict = "BLOCKED"
-                await emit(event="log", status="IN_PROGRESS", agent="manager",
-                           text="Approval blocked: the current Perspective analysis contains a hard safety or grounding finding.")
+                if perspective_evidence == "block":
+                    text = "Approval blocked: the current Perspective analysis contains a hard safety or grounding finding."
+                else:
+                    text = f"Approval blocked: Perspective evidence is {perspective_evidence} (fail-closed)."
+                await emit(event="log", status="IN_PROGRESS", agent="manager", text=text)
 
             requires_override = manager_verdict != "APPROVED"
             await emit(event="review_required", agent="manager", status="BLOCKED",
@@ -742,6 +745,7 @@ Report what you FIND, not what you think might exist."""
                            "manager_verdict": manager_verdict,
                            "requires_override": requires_override,
                            "plan_revision_count": plan_revision_count,
+                           "perspective_evidence": perspective_evidence,
                        })
             state.status = "BLOCKED"
             resume_event.clear()
@@ -758,7 +762,7 @@ Report what you FIND, not what you think might exist."""
                     extra={
                         "manager_verdict": manager_verdict,
                         "plan_revision_count": plan_revision_count,
-                        "perspective_hard_block": perspective_hard_block,
+                        "perspective_evidence": perspective_evidence,
                     },
                 )
                 return
@@ -3031,20 +3035,27 @@ Report what you FIND, not what you think might exist."""
         return "BLOCKED"
 
     @staticmethod
-    def _perspective_has_hard_block(text: str) -> bool:
-        from council_of_agents.scripts.council_schemas import validate_agent_output
-
+    def _classify_perspective_evidence(text: str) -> str:
+        """Classify perspective evidence for the approval gate.
+        Returns one of: 'block' | 'clear' | 'invalid' | 'empty'.
+        'block' and 'invalid' and 'empty' all block approval (fail-closed).
+        'clear' allows approval. Caller uses truthiness: non-'clear' == block.
+        """
         if not str(text or "").strip():
-            return False
+            return "empty"
+
+        from council_of_agents.scripts.council_schemas import validate_agent_output
 
         validation = validate_agent_output("perspective_analyzer", text, strict=True)
         if not validation.success or not validation.data:
-            return False
-        return any(
+            return "invalid"
+        if any(
             isinstance(issue, dict) and str(issue.get("disposition") or "").upper() == "BLOCK"
             for section in ("security", "performance", "maintainability")
             for issue in (validation.data.get(section, {}).get("issues") or [])
-        )
+        ):
+            return "block"
+        return "clear"
     @staticmethod
     def _revision_has_progress(previous_plan: str, revised_plan: str,
                                 previous_manager: str, current_manager: str) -> bool:

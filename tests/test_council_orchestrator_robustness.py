@@ -467,6 +467,8 @@ async def test_direct_fallback_to_pipeline():
                 return pipeline_impl_reply
             elif role == "strategist":
                 return '```tasks\n[{"id":"T1","description":"Fix auth.py","write_scope":[]}]\n```'
+            elif role == "perspective_analyzer":
+                return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
             elif role == "manager":
                 return '{"verdict": "APPROVED", "summary": "good plan"}'
             return None
@@ -602,6 +604,8 @@ async def test_direct_fallback_max_once():
                 return fail_reply
             elif role == "strategist":
                 return '```tasks\n[{"id":"T1","description":"Fix the task","write_scope":[]}]\n```'
+            elif role == "perspective_analyzer":
+                return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
             elif role == "manager":
                 return '{"verdict": "APPROVED", "summary": "ok"}'
             return None
@@ -993,10 +997,40 @@ def test_sanitize_council_event_prioritizes_schema_failure_over_timeout_setting(
     sanitized = sanitize_council_event(event)
     assert sanitized["extra"]["presentation"]["summary"] == "invalid plan schema"
 
-def test_orchestrator_detects_current_perspective_hard_block():
-    blocked = '{"security":{"score":0.2,"issues":[{"disposition":"BLOCK","evidence":"root write scope"}]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.5,"synthesis":"hard finding"}'
-    clear = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
+class TestPerspectiveEvidenceClassification:
 
-    assert CouncilOrchestrator._perspective_has_hard_block(blocked) is True
-    assert CouncilOrchestrator._perspective_has_hard_block(clear) is False
+    BLOCK_FIXTURE = '{"security":{"score":0.2,"issues":[{"disposition":"BLOCK","evidence":"root write scope"}]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.5,"synthesis":"hard finding"}'
+    CLEAR_FIXTURE = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
+
+    def test_valid_block_classified_as_block(self):
+        assert CouncilOrchestrator._classify_perspective_evidence(self.BLOCK_FIXTURE) == "block"
+
+    def test_valid_clear_classified_as_clear(self):
+        assert CouncilOrchestrator._classify_perspective_evidence(self.CLEAR_FIXTURE) == "clear"
+
+    def test_malformed_json_classified_as_invalid(self):
+        assert CouncilOrchestrator._classify_perspective_evidence("not json") == "invalid"
+
+    def test_empty_perspective_classified_as_empty(self):
+        assert CouncilOrchestrator._classify_perspective_evidence("") == "empty"
+        assert CouncilOrchestrator._classify_perspective_evidence(None) == "empty"
+        assert CouncilOrchestrator._classify_perspective_evidence("   ") == "empty"
+
+    def test_invalid_contract_classified_as_invalid(self):
+        invalid = '{"security":{"score":0.2,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]}}'
+        assert CouncilOrchestrator._classify_perspective_evidence(invalid) == "invalid"
+
+    def test_absent_optional_evidence_allowed(self):
+        no_task_id = '{"security":{"score":0.2,"issues":[{"disposition":"BLOCK","evidence":"global"}]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.5,"synthesis":"blocked"}'
+        assert CouncilOrchestrator._classify_perspective_evidence(no_task_id) == "block"
+
+    def test_clear_and_block_are_not_equal(self):
+        assert CouncilOrchestrator._classify_perspective_evidence(self.BLOCK_FIXTURE) != "clear"
+        assert CouncilOrchestrator._classify_perspective_evidence(self.CLEAR_FIXTURE) != "block"
+
+    def test_fail_closed_on_empty_perspective(self):
+        assert CouncilOrchestrator._classify_perspective_evidence("") != "clear"
+
+    def test_fail_closed_on_invalid_perspective(self):
+        assert CouncilOrchestrator._classify_perspective_evidence("{\"bad\": true}") != "clear"
 
