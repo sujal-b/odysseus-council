@@ -997,6 +997,104 @@ def test_sanitize_council_event_prioritizes_schema_failure_over_timeout_setting(
     sanitized = sanitize_council_event(event)
     assert sanitized["extra"]["presentation"]["summary"] == "invalid plan schema"
 
+class TestStructuredOutputIntegration:
+
+    def test_single_role_evaluate_sends_json_schema_by_default(self):
+        from council_of_agents.scripts.council_schemas import build_response_format, SCHEMA_MAP
+        for role in ("chair", "strategist", "manager", "perspective_analyzer"):
+            rf = build_response_format(role)
+            assert rf is not None, f"{role} should have json_schema"
+            assert rf["type"] == "json_schema"
+            assert "json_schema" in rf
+            assert rf["json_schema"]["strict"] is True
+
+    def test_implementer_has_schema_but_not_in_json_object_roles(self):
+        from council_of_agents.scripts.council_schemas import build_response_format
+        from src.llm_core import _requires_json_object
+        rf = build_response_format("implementer")
+        assert rf is not None, "implementer IS in SCHEMA_MAP"
+        assert rf["type"] == "json_schema"
+        assert _requires_json_object({"agent": "implementer"}) is False
+
+    def test_unknown_role_has_no_json_schema(self):
+        from council_of_agents.scripts.council_schemas import build_response_format
+        assert build_response_format("nonexistent_role") is None
+
+    def test_chair_arbitration_has_json_schema(self):
+        from council_of_agents.scripts.council_schemas import build_response_format
+        from src.llm_core import _requires_json_object
+        rf = build_response_format("chair_arbitration")
+        assert rf is not None, "chair_arbitration IS in SCHEMA_MAP"
+        assert rf["type"] == "json_schema"
+        assert _requires_json_object({"agent": "chair_arbitration"}) is True
+
+    def test_all_control_schemas_have_top_level_required(self):
+        from council_of_agents.scripts.council_schemas import SCHEMA_MAP, build_response_format
+        for role, schema_cls in SCHEMA_MAP.items():
+            rf = build_response_format(role)
+            schema = rf["json_schema"]["schema"]
+            assert "required" in schema
+            props = list(schema.get("properties", {}).keys())
+            for p in props:
+                assert p in schema["required"], f"{role} schema missing required field '{p}'"
+
+    def test_all_control_schemas_have_nested_required(self):
+        from council_of_agents.scripts.council_schemas import build_response_format, SCHEMA_MAP
+        for role, schema_cls in SCHEMA_MAP.items():
+            rf = build_response_format(role)
+            schema = rf["json_schema"]["schema"]
+            defs = schema.get("$defs", {})
+            for def_name, def_schema in defs.items():
+                if "properties" in def_schema:
+                    assert "required" in def_schema, f"{role}.{def_name} missing required"
+                    for p in def_schema["properties"]:
+                        assert p in def_schema["required"], f"{role}.{def_name} missing required '{p}'"
+
+    def test_schema_does_not_mutate_source(self):
+        from council_of_agents.scripts.council_schemas import SCHEMA_MAP, build_response_format, ChairOutput
+        original_schema = ChairOutput.model_json_schema()
+        build_response_format("chair")
+        after_schema = ChairOutput.model_json_schema()
+        assert after_schema == original_schema, "build_response_format must not mutate source schema"
+
+    def test_production_call_agent_adds_response_format(self):
+        from council_of_agents.scripts.council_schemas import build_response_format
+        for role in ("chair", "strategist", "manager", "perspective_analyzer"):
+            rf = build_response_format(role)
+            assert rf is not None
+            assert rf["json_schema"]["name"] == role
+
+    def test_requires_json_object_false_with_tools(self):
+        from src.llm_core import _requires_json_object
+        assert _requires_json_object({"agent": "chair"}, tools=[{"type": "function"}]) is False
+        assert _requires_json_object({"agent": "strategist"}, tools=[{"type": "function"}]) is False
+        assert _requires_json_object({"agent": "manager"}, tools=[{"type": "function"}]) is False
+        assert _requires_json_object({"agent": "implementer"}, tools=[{"type": "function"}]) is False
+
+    def test_requires_json_object_only_for_json_object_roles(self):
+        from src.llm_core import _requires_json_object
+        non_control = {"agent": "implementer"}
+        assert _requires_json_object(non_control) is False
+        non_control["agent"] = "debate_response"
+        assert _requires_json_object(non_control) is False
+
+    def test_response_format_override_takes_precedence(self):
+        from src.llm_core import _requires_json_object
+        tc = {"agent": "chair", "response_format": {"type": "json_schema", "json_schema": {"name": "chair", "strict": True}}}
+        assert _requires_json_object(tc) is True
+
+    def test_nonexistent_agent_no_json_object(self):
+        from src.llm_core import _requires_json_object
+        assert _requires_json_object({"agent": "nobody"}) is False
+        assert _requires_json_object({}) is False
+        assert _requires_json_object(None) is False
+
+    def test_requires_json_object_true_for_control_roles(self):
+        from src.llm_core import _requires_json_object
+        for role in ("chair", "strategist", "manager", "perspective_analyzer", "chair_arbitration", "completeness_auditor"):
+            assert _requires_json_object({"agent": role}) is True
+
+
 class TestPerspectiveEvidenceClassification:
 
     BLOCK_FIXTURE = '{"security":{"score":0.2,"issues":[{"disposition":"BLOCK","evidence":"root write scope"}]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.5,"synthesis":"hard finding"}'

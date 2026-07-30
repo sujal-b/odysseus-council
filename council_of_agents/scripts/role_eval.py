@@ -1171,7 +1171,7 @@ async def evaluate(
     prompts_dir: str | Path | None = None,
     call=llm_call_async,
     _include_raw: bool = False,
-    use_structured_output: bool = False,
+    use_structured_output: bool = True,
 ) -> dict:
     agent = _role(agent)
     replies = {
