@@ -1443,7 +1443,8 @@ async def llm_call_async(
             payload[tok_key] = max_tokens
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
         if _requires_json_object(trace_context):
-            payload["response_format"] = {"type": "json_object"}
+            rf_override = (trace_context or {}).get("response_format")
+            payload["response_format"] = rf_override or {"type": "json_object"}
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
         _apply_local_cache_affinity(payload, url, session_id)
@@ -1575,7 +1576,8 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
         if _requires_json_object(trace_context, tools):
-            payload["response_format"] = {"type": "json_object"}
+            rf_override = (trace_context or {}).get("response_format")
+            payload["response_format"] = rf_override or {"type": "json_object"}
         if tools:
             payload["tools"] = tools
         # For Ollama's OpenAI-compat /v1 endpoint with thinking models (qwen3,

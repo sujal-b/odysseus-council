@@ -689,6 +689,7 @@ def run_target_role_canary(
             prompt_label=prompt_label,
             handoff_mode=handoff_mode,
             run_id=run_id,
+            use_structured_output=True,
         ))
 
         res["role_canary"] = True

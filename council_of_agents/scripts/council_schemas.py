@@ -701,6 +701,32 @@ class ValidationResult(BaseModel):
     raw_text: str = ""
 
 
+def _ensure_all_required(schema_dict: dict) -> None:
+    props = schema_dict.get("properties")
+    if props:
+        schema_dict["required"] = sorted(set(schema_dict.get("required", []) + list(props.keys())))
+    refs = schema_dict.get("$defs") or schema_dict.get("definitions")
+    if refs:
+        for ref in refs.values():
+            _ensure_all_required(ref)
+
+
+def build_response_format(role: str) -> dict | None:
+    schema = SCHEMA_MAP.get(role)
+    if not schema:
+        return None
+    schema_dict = schema.model_json_schema()
+    _ensure_all_required(schema_dict)
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": role.replace("_", "_"),
+            "schema": schema_dict,
+            "strict": True,
+        },
+    }
+
+
 SCHEMA_MAP = {
     "chair": ChairOutput,
     "manager": ManagerOutput,

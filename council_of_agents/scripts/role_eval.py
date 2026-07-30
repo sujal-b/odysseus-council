@@ -25,6 +25,7 @@ from council_of_agents.scripts.agent_runner import _schema_repair_messages
 from council_of_agents.scripts.context_envelope import build_context_envelope
 from council_of_agents.scripts.council_schemas import (
     SCHEMA_MAP,
+    build_response_format,
     compact_agent_contract,
     validate_agent_output,
 )
@@ -1170,6 +1171,7 @@ async def evaluate(
     prompts_dir: str | Path | None = None,
     call=llm_call_async,
     _include_raw: bool = False,
+    use_structured_output: bool = False,
 ) -> dict:
     agent = _role(agent)
     replies = {
@@ -1229,6 +1231,7 @@ async def evaluate(
                         "agent": agent,
                         "route": "ROLE_EVAL",
                         "attempt": attempt_name,
+                        **({"response_format": build_response_format(agent)} if use_structured_output else {}),
                     },
                 ),
                 timeout=effective_timeout,

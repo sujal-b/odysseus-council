@@ -1730,10 +1730,13 @@ Report what you FIND, not what you think might exist."""
         model = cfg.model
         temperature = cfg.temperature
         max_tokens = cfg.max_tokens
+        from council_of_agents.scripts.council_schemas import build_response_format
+        _rf = build_response_format(role)
         trace_context = {
             **(self._trace_context or {"run_id": session_id, "session_id": session_id}),
             "agent": role,
             "route": route,
+            **({"response_format": _rf} if _rf else {}),
         }
         if required_contract:
             trace_context["required_contract"] = {
