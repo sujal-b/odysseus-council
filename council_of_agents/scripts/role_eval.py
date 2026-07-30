@@ -2917,7 +2917,7 @@ def main(argv=None) -> int:
     parser.add_argument("--scenario-split", choices=("all", "tuning", "holdout"), default="all", help="Run only the fixed tuning or holdout partition.")
     parser.add_argument(
         "--scenarios-config", type=Path,
-        default=Path(__file__).resolve().parents[1] / "benchmarks" / "role_eval_scenarios.json",
+        default=Path(__file__).resolve().parents[1] / "benchmarks" / "role_eval_scenarios_p2_1.json",
     )
     parser.add_argument("--trace-out", type=Path)
     parser.add_argument("--compare-baseline", type=Path, help="Compare a baseline suite JSON artifact.")

@@ -8,9 +8,18 @@ from council_of_agents.scripts.role_eval import evaluate, main
 
 
 SCENARIOS = json.loads(
-    (Path(__file__).resolve().parents[1] / "council_of_agents/benchmarks/role_eval_scenarios.json")
+    (Path(__file__).resolve().parents[1] / "council_of_agents/benchmarks/role_eval_scenarios_p2_1.json")
     .read_text(encoding="utf-8")
 )
+
+DEFAULT_SCENARIOS = json.loads(
+    (Path(__file__).resolve().parents[1] / "council_of_agents/benchmarks/role_eval_scenarios_p2_1.json")
+    .read_text(encoding="utf-8")
+)
+
+
+def test_default_approved_plan_scope_policy():
+    assert DEFAULT_SCENARIOS["approved_plan"]["planning_rubric"]["scope_policy"] == "declared_or_workspace_root"
 
 
 def _reply(value):

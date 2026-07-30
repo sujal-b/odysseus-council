@@ -15,4 +15,10 @@
   ]
 }
 ```
+
+CRITICAL FORMAT RULES:
+- `"task_id"` MUST be exactly ONE task ID from the plan (e.g. `"T1"`) or `"ALL"`. Never combine multiple IDs like `"T1,T2"` or `"T1b,T1c"`.
+- Use `"ALL"` only when an issue genuinely applies to multiple tasks across the whole plan.
+- Do not approve the plan while any issue references an unknown task ID.
+- When verdict is `REVISE` or `BLOCKED`, every `warning` and `critical` issue MUST include non-empty `"description"`, `"suggestion"`, AND `"evidence"` citing exact task fields or file paths. Never leave `"evidence"` blank.
 </output_format>

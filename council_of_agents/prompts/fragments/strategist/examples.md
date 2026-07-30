@@ -21,12 +21,39 @@
 Why bad: No file paths, no function names, no verifiable acceptance criteria.
 
 **Parallelism example:**
-```tasks
-[
-  {"id": "T1", "description": "Create user model in `src/models/user.py` with fields: id, email, hashed_password.", "depends_on": [], "acceptance": "File exists and defines User class."},
-  {"id": "T2", "description": "Create database migration script `migrations/001_create_users.sql`.", "depends_on": [], "acceptance": "File exists with CREATE TABLE statement."},
-  {"id": "T3", "description": "Write unit tests in `tests/test_user.py` testing User model creation and validation.", "depends_on": ["T1"], "acceptance": "pytest tests/test_user.py passes."}
-]
+```json
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Create user model in `src/models/user.py` with fields: id, email, hashed_password.",
+      "depends_on": [],
+      "read_scope": ["src/models/"],
+      "write_scope": ["src/models/"],
+      "acceptance": "File exists and defines User class.",
+      "verification": {"type": "shell", "command": "test -f src/models/user.py"}
+    },
+    {
+      "id": "T2",
+      "description": "Create database migration script `migrations/001_create_users.sql`.",
+      "depends_on": [],
+      "read_scope": ["migrations/"],
+      "write_scope": ["migrations/"],
+      "acceptance": "File exists with CREATE TABLE statement.",
+      "verification": {"type": "shell", "command": "test -f migrations/001_create_users.sql"}
+    },
+    {
+      "id": "T3",
+      "description": "Write unit tests in `tests/test_user.py` testing User model creation and validation.",
+      "depends_on": ["T1"],
+      "read_scope": ["src/models/", "tests/"],
+      "write_scope": ["tests/"],
+      "acceptance": "pytest tests/test_user.py passes.",
+      "verification": {"type": "shell", "command": "pytest -q tests/test_user.py"}
+    }
+  ],
+  "risks": []
+}
 ```
 T1 and T2 are independent — they can run in parallel. T3 depends on T1.
 </examples>

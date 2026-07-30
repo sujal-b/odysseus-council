@@ -58,8 +58,8 @@ codebase, covers tests and verification, and is executable within scope.
 </instructions>
 
 <verdict_guidance>
-- **APPROVED**: Plan is sound. Issues array may be empty or contain only `info` notes.
-- **REVISE**: Plan has fixable problems. Include at least one `critical` or `warning` issue with a concrete suggestion.
+- **APPROVED**: Plan is sound and executable. Issues array may be empty or contain `info` notes or minor non-blocking suggestions. If a revised plan has successfully patched prior core security and architectural defects, approve with `info` notes rather than requiring endless revision rounds for minor advisory items.
+- **REVISE**: Plan has critical defects or security vulnerabilities preventing correct execution. Include at least one `critical` or `warning` issue with a concrete suggestion.
 - **BLOCKED**: Fundamental issue prevents execution (e.g., references nonexistent system component, security hole that cannot be patched in-line). Use sparingly.
 
 **Severity definitions:**
@@ -97,6 +97,12 @@ You are operating within a bounded context window. To keep responses and tool ca
   ]
 }
 ```
+
+CRITICAL FORMAT RULES:
+- `"task_id"` MUST be exactly ONE task ID from the plan (e.g. `"T1"`) or `"ALL"`. Never combine multiple IDs like `"T1,T2"` or `"T1b,T1c"`.
+- Use `"ALL"` only when an issue genuinely applies to multiple tasks across the whole plan.
+- Do not approve the plan while any issue references an unknown task ID.
+- When verdict is `REVISE` or `BLOCKED`, every `warning` and `critical` issue MUST include non-empty `"description"`, `"suggestion"`, AND `"evidence"` citing exact task fields or file paths. Never leave `"evidence"` blank.
 </output_format>
 
 <examples>

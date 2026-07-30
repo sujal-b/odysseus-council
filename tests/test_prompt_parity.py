@@ -18,9 +18,14 @@ from council_of_agents.scripts.prompt_composer import PromptComposer
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS_DIR = ROOT / "council_of_agents" / "prompts"
 
-# Promoted P2.5 Chair identity (see data/council_agent_evals/phase-a/live-canary/P2.5-chair-generalization).
+# Promoted P2.5 identity (see data/council_agent_evals/phase-a/live-canary/P2.5-chair-generalization).
 CHAIR_MONOLITH_SHA256 = "cccbdd9494c86170f4b6a5e45c9e33c8caac3ae8d170adfcef3a6019ffc8a7bf"
 CHAIR_PROMPT_VERSION = "846d4e43c45021ac"
+
+# P2.5 promoted role monolith hashes (promoted from data/council_agent_evals/phase-a/prompts/P2.5/parent.json).
+STRATEGIST_MONOLITH_SHA256 = "fea7e3a7011744c3823fb6c643049f8cd45632a54ac7b8c179713b9cf84a9533"
+PERSPECTIVE_MONOLITH_SHA256 = "e6b7dc408fb94137bbb24799a5e9447ca3c8f1538a83b9d7def15c0f136d6c3a"
+MANAGER_MONOLITH_SHA256 = "bf83ae80ceeb90df8608f5413e580568f2cd1f391258c8b9e5247524f8e88ef6"
 OPTION_COUNT_INSTRUCTION = (
     "Provide exactly 2, 3, or 4 options\u2014never fewer and never more. "
     "Merge related alternatives when necessary."
@@ -42,11 +47,11 @@ NON_CHAIR_FRAGMENT_SHA256 = {
     "manager/examples.md": "d337b42308bc5b0b43a214460ae5a55a81776ee43faae94687b83ba9dcce1c48",
     "manager/identity.md": "0c10d3741475ee59585c480aa98be7e6a2b4060d6f41b9f70a2440eb884f3c68",
     "manager/instructions.md": "b1385856cbba6890c74eb43943dac563f96937e4f5b611c446c171d5914192b6",
-    "manager/output_format.md": "48ee7a7d3cc00e859e9f33c6a3a03cebb57c0fc1073322b2f009f2e1e2f7b7a4",
-    "manager/verdict_guidance.md": "97a59d0773c93f5930b887451bafd3b53bfc4d09ab68625ed8c173dcbcada0de",
+    "manager/output_format.md": "9478eb20b6bd086b1578128696a522a0d080f4776b9450de34540e1a099b5f25",
+    "manager/verdict_guidance.md": "679717a8747d8b7a44006003236de743a1379877d84c9926d518c9d98ee1f289",
     "perspective_analyzer/identity.md": "34edc2331213515282cca2d22b8ebf921d3bd3ed5b41ea61900fedfe37499458",
     "perspective_analyzer/instructions.md": "39b54fbb166b48cf81e89e9fcdcb0965d4a1ae686868518add9368a7db74f155",
-    "perspective_analyzer/output_format.md": "3578248160700a5b3a550d85c05aec66763d7158c797ef85509e15656dd5a63c",
+    "perspective_analyzer/output_format.md": "e72b8ab30a8c52a2bf59c2b7a16b6a44c4f1bff8cfd78a115b2f784e0713b895",
     "shared/code_quality.md": "3421d6278874c67ad41f37680783c2f5d18b1d7ba57b5863749e396ae256e9ad",
     "shared/context_efficiency.md": "a986ae1279ade52ab33eb0d52d286e283842e9592d95261523cab3cbb0531633",
     "shared/default_to_action.md": "eb6e4d061a20bc7cf725718f68c0281581f06ce16425de7d2c122ebb81ef6010",
@@ -54,10 +59,10 @@ NON_CHAIR_FRAGMENT_SHA256 = {
     "shared/parallel_tools.md": "aaff96a374dd72455db4d1d8a705494c5b5a400d63a545a0027f02c53364a8d5",
     "shared/self_verification.md": "4a2ec14e816505916586d0d24f8caf10ac6a2a0a148fdee4b19281a90cdbba41",
     "shared/tool_selection.md": "0e7df46ae66dab56a3391e31c9acbdb7293784128631bb31bd9c37d37f1388df",
-    "strategist/examples.md": "dbdf0a026e67d2378ac69391494e441bc8b9972ef6e95bb5bdf5860bb3c585ed",
+    "strategist/examples.md": "de155354a681a26701f7b84b3bc460ac200f89f6033bb826af2071a236a08710",
     "strategist/identity.md": "9a27f2788d1c151624d650061d03aaeb3ca08b74421cea4da0fbd6264ee0f136",
-    "strategist/instructions.md": "17c81d9146c0f007a6b569cd4b96cf59eda4f5997de547c427af9770bbac3d6d",
-    "strategist/output_format.md": "d84a939fcf18b7b2594c4518bd4f626ab5068b943c3534cc4cc4265a49b237a3",
+    "strategist/instructions.md": "5b0937fd39589ec08dcb13dcc37a0a870fccf606eea6f01b8333b42f4b825d28",
+    "strategist/output_format.md": "b52db7472f818b843d1b1b48c2c33fcd213d23156ce39b888a1d9cf6664d580d",
     "validator/examples.md": "454dfaf9b69f03d2b5585ea40197fbb5db39816d5cbcf2c067225213726f6148",
     "validator/identity.md": "b7324ea1adf4db84027b67caccf96b350fabf249f89e73ac3a556f74594d2339",
     "validator/instructions.md": "cf5c45c436a656c33bbf0d965691b2373dbdb0284aab8b547b3130257faecf0c",
@@ -135,6 +140,21 @@ def test_chair_composed_prompt_version():
 def test_chair_option_count_instruction_occurs_once():
     composed = PromptComposer(PROMPTS_DIR).compose("chair")
     assert composed.count(OPTION_COUNT_INSTRUCTION) == 1
+
+
+def test_strategist_monolith_matches_p2_5_hash():
+    raw = (PROMPTS_DIR / "strategist.md").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == STRATEGIST_MONOLITH_SHA256
+
+
+def test_perspective_analyzer_monolith_matches_p2_5_hash():
+    raw = (PROMPTS_DIR / "perspective_analyzer.md").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == PERSPECTIVE_MONOLITH_SHA256
+
+
+def test_manager_monolith_matches_p2_5_hash():
+    raw = (PROMPTS_DIR / "manager.md").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == MANAGER_MONOLITH_SHA256
 
 
 @pytest.mark.parametrize("fragment", sorted(NON_CHAIR_FRAGMENT_SHA256))
