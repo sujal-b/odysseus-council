@@ -1496,8 +1496,18 @@ async def test_task_gate_receives_actual_written_files_evidence():
 
     assert len(gate_messages) == 1, "the per-task gate must receive the written-files evidence"
     assert "Actual files written by this task's attempt: NONE" in gate_messages[0]
-    # Non-empty path carries the guard-approved paths verbatim.
+    assert "Task contract: acceptance" in gate_messages[0]
+    assert "Judge ONLY against this task's acceptance" in gate_messages[0]
+    # Non-empty path carries the guard-approved paths verbatim; the
+    # deterministic verification result travels with it.
     assert "src/app.py" in CouncilOrchestrator._task_gate_evidence_line(["src/app.py", "tests/x.py"])
+    passed = SimpleNamespace(passed=True, adapter="command")
+    assert "PASSED" in CouncilOrchestrator._task_gate_evidence_line(["src/app.py"], passed)
+    failed = SimpleNamespace(passed=False, adapter="command")
+    assert "FAILED" in CouncilOrchestrator._task_gate_evidence_line(["src/app.py"], failed)
+    line = CouncilOrchestrator._task_gate_contract_line(
+        SimpleNamespace(acceptance="endpoint added", write_scope=["src/"]))
+    assert "['src/']" in line and "endpoint added" in line
 
 def test_rehydrate_retry_on_readonly_task_forbids_writes():
     """Regression: Manager-REVISE retries on a read-only task must keep the

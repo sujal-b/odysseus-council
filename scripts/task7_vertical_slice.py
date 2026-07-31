@@ -43,7 +43,14 @@ os.environ.setdefault("COUNCIL_LEDGER_MODE", "shadow")
 
 PROMPT = (
     "Extend the small service with a health endpoint and a regression test. "
-    "Modify src/app.py to add the endpoint and tests/test_app.py to add the test."
+    "The service is plain WSGI with no framework: src/app.py exposes app() "
+    "returning a dict, and tests import functions directly from src.app. "
+    "Add a health() function to src/app.py that returns a JSON-serializable "
+    "dict, and add a test in tests/test_app.py that imports health from src.app "
+    "and asserts its return value. The task that modifies the files must "
+    "declare a verification command that runs pytest. Plan only file-modification "
+    "tasks; do not plan inspection-only or test-execution tasks; verification "
+    "is handled by the declared command."
 )
 
 SEED_APP = '''"""Small service entrypoint."""

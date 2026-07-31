@@ -1198,7 +1198,8 @@ Report what you FIND, not what you think might exist."""
                                     [{"role": "system",  "content": self._load_prompt("validator_task")},
                                      {"role": "user",    "content": f"Task: {t_node.id} — {t_node.description}\n\n{self._envelope_user_msg(state.user_prompt, workspace=workspace)}"},
                                      {"role": "assistant", "content": impl_reply},
-                                     {"role": "user",    "content": self._task_gate_evidence_line(task_written_paths)}],
+                                     {"role": "user",    "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence)},
+                                     {"role": "user",    "content": self._task_gate_contract_line(t_node)}],
                                     emit, owner=owner, written_paths=written_paths
                                 )
                                 if task_review:
@@ -3376,21 +3377,48 @@ Report what you FIND, not what you think might exist."""
         )
 
     @staticmethod
-    def _task_gate_evidence_line(task_written_paths) -> str:
-        """Guard-approved writes for the task-gate Manager's review.
+    def _task_gate_contract_line(task) -> str:
+        """Task-contract framing for the per-task Manager gate.
+
+        The gate used to review tasks against the full user request, so a
+        split-scope plan got REVISE'd for work owned by a sibling task (slice
+        runs 19-21: T1 (src/) was REVISE'd for the test that T2 (tests/) owns,
+        even after the guard blocked the out-of-scope write). State the task's
+        own acceptance and scope so the gate judges the contract, not the
+        request.
+        """
+        return (
+            f"Task contract: acceptance = {getattr(task, 'acceptance', '') or '(unspecified)'}; "
+            f"write scope = {sorted(task.write_scope or [])}. Judge ONLY against this task's "
+            "acceptance; deliverables owned by other tasks in the plan are not part of this task."
+        )
+
+    @staticmethod
+    def _task_gate_evidence_line(task_written_paths, deterministic_evidence=None) -> str:
+        """Guard-approved writes and verification result for the task gate.
 
         The gate used to see only the implementer's self-report, so a
         well-behaved implementer was REVISE'd for "verification" the manager
-        had no evidence for (slice runs 8-10: the gate demanded proof of
-        exposure the reply already claimed). The guard-approved write list is
-        the actual mutation record, not a claim.
+        had no evidence for (slice runs 8-10, 22: the gate kept demanding
+        runtime proof). The guard-approved write list is the actual mutation
+        record; the deterministic verification result is the runtime proof —
+        both facts, not claims.
         """
+        parts = []
         if task_written_paths:
-            return (
+            parts.append(
                 "Actual files written by this task's attempt (guard-approved): "
                 f"{sorted(set(task_written_paths))}"
             )
-        return "Actual files written by this task's attempt: NONE"
+        else:
+            parts.append("Actual files written by this task's attempt: NONE")
+        if deterministic_evidence is not None:
+            passed = bool(getattr(deterministic_evidence, "passed", False))
+            parts.append(
+                f"Deterministic verification: {'PASSED' if passed else 'FAILED'}"
+                f" (adapter={getattr(deterministic_evidence, 'adapter', 'unknown')})"
+            )
+        return " | ".join(parts)
 
     @staticmethod
     def _build_execution_retry(task, error_msg, category, diagnostic=None) -> dict:
