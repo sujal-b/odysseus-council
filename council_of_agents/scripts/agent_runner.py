@@ -210,6 +210,7 @@ class AgentRunner:
             on_chunk=None,
             emit_cb=self.emit,
             disable_tools=validation_role in SCHEMA_MAP and validation_role != "implementer",
+            workspace=getattr(self.state, "workspace", None) or None,
         )
         if validation_role in SCHEMA_MAP and not raw:
             raise SchemaValidationError(
@@ -391,6 +392,7 @@ class AgentRunner:
                 attempt_started = True
                 # Delegate low-level LLM call back to orchestrator
                 call_kwargs = dict(kwargs)
+                call_kwargs.setdefault("workspace", getattr(self.state, "workspace", None) or None)
                 if active_context_fallback is not None:
                     call_kwargs["context_fallback"] = active_context_fallback
                 if schema_repair_used:

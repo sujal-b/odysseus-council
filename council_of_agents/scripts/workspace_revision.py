@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -54,6 +55,14 @@ class WorkspaceWriteGuard:
                     return str(payload["path"])
             except Exception:
                 pass
+            # Some models emit JSON with unescaped quotes inside string values
+            # (e.g. docstring-style `"""`). The path is still declared in the
+            # text, and the scope/conflict checks below are the real
+            # authorization, so extract it leniently instead of hard-stopping
+            # the task on JSON cosmetics.
+            match = re.search(r'"path"\s*:\s*"([^"]+)"', text)
+            if match:
+                return match.group(1)
         return text.split("\n", 1)[0].strip() if tool == "write_file" else ""
 
     def attempted_path(self, tool, content):

@@ -39,6 +39,10 @@ class SessionState:
     # Explicit human override of a non-approved Manager decision. This is
     # persisted so a refresh cannot silently turn an override into approval.
     manager_override:      bool = False
+    # Repository evidence for grounding plans (rendered as
+    # <context:repository_capsule> in the Strategist envelope). Set by the
+    # caller that owns the workspace; the orchestrator only forwards it.
+    repository_context:    Optional[str] = None
 
 class SessionStore(ABC):
     @abstractmethod

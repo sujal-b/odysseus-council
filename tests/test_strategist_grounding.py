@@ -269,14 +269,18 @@ def test_p26_strategist_prompt_carries_grounding_contract():
     assert "concrete change" in composed
 
 
-def test_p26_is_a_new_candidate_branch_not_canonical_or_p25():
+def test_p26_promoted_into_canonical_while_p25_stays_previous():
+    """P2.6 was promoted after the task-7 planning gate (3/3 evidence in
+    data/council_agent_evals/phase-a/task6-gates/planning-unknown-target-session-bug.json):
+    the canonical Strategist now equals the P2.6 candidate exactly, and P2.5
+    remains the distinct previous version. The P2.6 variant tree stays frozen."""
     p26_strat = hashlib.sha256(PromptComposer(P26).compose("strategist").encode("utf-8")).hexdigest()
     p25_strat = hashlib.sha256(PromptComposer(P25).compose("strategist").encode("utf-8")).hexdigest()
     canonical = hashlib.sha256(
         PromptComposer(Path(__file__).resolve().parents[1] / "council_of_agents/prompts").compose("strategist").encode("utf-8")
     ).hexdigest()
-    assert p26_strat != p25_strat
-    assert p26_strat != canonical
+    assert p26_strat == canonical
+    assert p25_strat != canonical
     meta = json.loads((P26 / "parent.json").read_text(encoding="utf-8"))
     assert meta["parent"] == "P2.5"
     assert meta["status"] == "candidate"

@@ -22,8 +22,12 @@ PROMPTS_DIR = ROOT / "council_of_agents" / "prompts"
 CHAIR_MONOLITH_SHA256 = "cccbdd9494c86170f4b6a5e45c9e33c8caac3ae8d170adfcef3a6019ffc8a7bf"
 CHAIR_PROMPT_VERSION = "846d4e43c45021ac"
 
-# P2.5 promoted role monolith hashes (promoted from data/council_agent_evals/phase-a/prompts/P2.5/parent.json).
-STRATEGIST_MONOLITH_SHA256 = "fea7e3a7011744c3823fb6c643049f8cd45632a54ac7b8c179713b9cf84a9533"
+# Promoted role monolith hashes. Strategist is P2.6 (repository-grounding
+# candidate, promoted after the task-7 planning gate; see
+# data/council_agent_evals/phase-a/prompts/P2.6/parent.json for the 3/3 gate
+# evidence under data/council_agent_evals/phase-a/task6-gates/). The rest are
+# P2.5 promoted (data/council_agent_evals/phase-a/prompts/P2.5/parent.json).
+STRATEGIST_MONOLITH_SHA256 = "99d0ee788b4ff7257ac82e3e4953b028a01d2b3213600128ca83aa407c179e80"
 PERSPECTIVE_MONOLITH_SHA256 = "e6b7dc408fb94137bbb24799a5e9447ca3c8f1538a83b9d7def15c0f136d6c3a"
 MANAGER_MONOLITH_SHA256 = "bf83ae80ceeb90df8608f5413e580568f2cd1f391258c8b9e5247524f8e88ef6"
 OPTION_COUNT_INSTRUCTION = (
@@ -61,7 +65,7 @@ NON_CHAIR_FRAGMENT_SHA256 = {
     "shared/tool_selection.md": "0e7df46ae66dab56a3391e31c9acbdb7293784128631bb31bd9c37d37f1388df",
     "strategist/examples.md": "de155354a681a26701f7b84b3bc460ac200f89f6033bb826af2071a236a08710",
     "strategist/identity.md": "9a27f2788d1c151624d650061d03aaeb3ca08b74421cea4da0fbd6264ee0f136",
-    "strategist/instructions.md": "5b0937fd39589ec08dcb13dcc37a0a870fccf606eea6f01b8333b42f4b825d28",
+    "strategist/instructions.md": "7f88cc7eb8537f85f0d6aa93acd2de4b701644246e296af5cb3a36ec687cc951",
     "strategist/output_format.md": "b52db7472f818b843d1b1b48c2c33fcd213d23156ce39b888a1d9cf6664d580d",
     "validator/examples.md": "454dfaf9b69f03d2b5585ea40197fbb5db39816d5cbcf2c067225213726f6148",
     "validator/identity.md": "b7324ea1adf4db84027b67caccf96b350fabf249f89e73ac3a556f74594d2339",
@@ -142,7 +146,7 @@ def test_chair_option_count_instruction_occurs_once():
     assert composed.count(OPTION_COUNT_INSTRUCTION) == 1
 
 
-def test_strategist_monolith_matches_p2_5_hash():
+def test_strategist_monolith_matches_p2_6_hash():
     raw = (PROMPTS_DIR / "strategist.md").read_bytes()
     assert hashlib.sha256(raw).hexdigest() == STRATEGIST_MONOLITH_SHA256
 

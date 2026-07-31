@@ -82,6 +82,27 @@ def test_read_only_guard_rejects_writes_and_shell_channels(tmp_path):
         guard.check_before_write("write_file", "output.txt\ntrash")
 
 
+def test_write_guard_extracts_path_from_malformed_json_edit_file(tmp_path):
+    """An edit_file whose JSON has unescaped quotes (docstring-style triple
+    quotes inside string values) must still be scope-checked via the declared
+    path instead of hard-stopping on 'no parseable path' (regression: the
+    vertical slice failed when one malformed-but-declared path killed the
+    task with zero retries)."""
+    target = tmp_path / "src" / "app.py"
+    target.parent.mkdir()
+    target.write_text('def app():\n    return {"status": "running"}\n', encoding="utf-8")
+    base = snapshot_workspace(tmp_path, ["src"])
+    guard = WorkspaceWriteGuard(tmp_path, ["src"], base.file_hashes)
+    malformed = ('{"path": "src/app.py", "old_string": """Small service entrypoint."""\n'
+                 'def app():\n    return {"status": "running"}", "new_string": "new body"}')
+    assert guard.check_before_write("edit_file", malformed) == "src/app.py"
+
+    # Scope enforcement still applies to the leniently extracted path.
+    narrow = WorkspaceWriteGuard(tmp_path, ["src/app.py"], base.file_hashes)
+    with pytest.raises(WorkspaceScopeError, match="outside declared scope"):
+        narrow.check_before_write("edit_file", malformed.replace("src/app.py", "tests/test_app.py"))
+
+
 def test_write_guard_allows_declared_new_file_once(tmp_path):
     guard = WorkspaceWriteGuard(tmp_path, ["src"], {})
     assert guard.check_before_write("write_file", "src/new.py\nprint('x')") == "src/new.py"

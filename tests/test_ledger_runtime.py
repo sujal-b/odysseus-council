@@ -277,3 +277,27 @@ def test_workspace_change_invalidates_previously_proven_result(tmp_path):
     runtime.sync_dag(resumed, workspace=tmp_path)
     assert resumed._nodes["T1"].status == "BLOCKED"
     assert "stale" in resumed._nodes["T1"].reason
+
+
+def test_sync_dag_accepts_plan_contract_verification_shape():
+    """A plan-contract verification ({'type': 'shell', 'command': ...}) must
+    sync through the ledger without raising: sync_dag normalizes the shape
+    exactly like the WorkPacket path (regression: ledger sync crashed on
+    compliant plans, only masked by shadow mode)."""
+    state = _state()
+    store = InMemoryLedgerStore()
+    runtime = CouncilLedgerRuntime(state, mode="shadow", store=store)
+    runtime.start()
+    dag = TaskDAG.from_task_list([{
+        "id": "T1",
+        "description": "create result",
+        "acceptance": "result exists",
+        "acceptance_ids": ["AC-1"],
+        "read_scope": ["result.txt"],
+        "write_scope": ["result.txt"],
+        "verification": {"type": "shell", "command": "test -f result.txt"},
+    }])
+
+    synced = runtime.sync_dag(dag)
+    assert synced is not None
+    assert synced.acceptance_criteria["AC-1"].verification.adapter == "command"

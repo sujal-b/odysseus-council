@@ -378,6 +378,19 @@ def sanitize_council_event(item) -> dict:
         "extra": extra
     }
 
+def _require_session(session_id: str, owner: str | None):
+    """Load session and verify ownership. Returns state or raises 404/403."""
+    state = _store.load(session_id)
+    if not state:
+        raise HTTPException(404, "Session not found")
+    # Ownership is compared case-insensitively: the same account may be
+    # written with different casing by the auth layer and by the session
+    # creator, and casing drift must not lock the owner out of the session.
+    if owner and state.owner.lower() != owner.lower():
+        raise HTTPException(403, "Forbidden")
+    return state
+
+
 class SessionQueueProxy:
     # Events that reflect transient liveness only — never persisted to the
     # session log (otherwise a refresh would replay thousands of them).
@@ -683,9 +696,8 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
 
     @router.post("/api/council/session/{session_id}/respond")
     async def respond(session_id: str, request: Request):
-        state = _store.load(session_id)
-        if not state:
-            raise HTTPException(404, "Session not found")
+        owner = get_current_user(request)
+        state = _require_session(session_id, owner)
         body  = await request.json()
         choice = body.get("choice", "approve")
         notes = body.get("notes", "")
@@ -800,9 +812,8 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
 
     @router.post("/api/council/session/{session_id}/feedback")
     async def feedback(session_id: str, request: Request):
-        state = _store.load(session_id)
-        if not state:
-            raise HTTPException(404, "Session not found")
+        owner = get_current_user(request)
+        state = _require_session(session_id, owner)
         body = await request.json()
         state.feedback = {"rating": body.get("rating", ""), "comment": body.get("comment", "")}
         _store.save(state)
@@ -810,6 +821,7 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
 
     @router.get("/api/council/session/{session_id}")
     async def get_session(session_id: str, request: Request):
+        owner = get_current_user(request)
         from core.database import Session as DbSession, SessionLocal
         db = SessionLocal()
         try:
@@ -820,9 +832,7 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
             _store.delete(session_id)
             raise HTTPException(404, "Session not found")
 
-        state = _store.load(session_id)
-        if not state:
-            raise HTTPException(404, "Session not found")
+        state = _require_session(session_id, owner)
         # Ensure log entries are sanitized before sending back to frontend
         if isinstance(state.log, list):
             state.log = [sanitize_council_event(item) for item in state.log if item is not None]
@@ -840,9 +850,8 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
 
     @router.patch("/api/council/session/{session_id}/role/{role}")
     async def patch_role(session_id: str, role: str, request: Request):
-        state = _store.load(session_id)
-        if not state:
-            raise HTTPException(404, "Session not found")
+        owner = get_current_user(request)
+        state = _require_session(session_id, owner)
         body = await request.json()
         state.role_overrides[role] = body
         _store.save(state)

@@ -36,6 +36,15 @@ def classify_error(error):
     except ImportError:
         pass
 
+    try:
+        from council_of_agents.scripts.workspace_revision import WorkspaceScopeError
+        if isinstance(error, WorkspaceScopeError):
+            # A workspace-guard rejection is deterministic, not transient:
+            # re-invoking with identical context cannot change the outcome.
+            return ErrorClass.TERMINAL
+    except ImportError:
+        pass
+
     if isinstance(error, ContextBudgetExceededError):
         return ErrorClass.TERMINAL
     if isinstance(error, SchemaValidationError):
