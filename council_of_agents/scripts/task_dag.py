@@ -2,11 +2,49 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shlex
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import PurePosixPath
 
 from council_of_agents.scripts.ledger_models import TaskResult, WorkPacket
+
+
+def normalize_verification(raw) -> dict | None:
+    """Translate plan-contract verification shapes to the ledger VerificationSpec.
+
+    The Strategist contract (and planning-gate fixtures) describe verification
+    as ``{"type": "shell"|"command", "command": "..."}`` or ``{"type": "file",
+    "path": "..."}``, while the ledger WorkPacket consumes
+    ``{"adapter": "command", "config": {"argv": [...]}}`` / ``{"adapter":
+    "file", "config": {"path": ...}}``. Without this bridge a compliant plan
+    crashed ``WorkPacket`` validation at execution time. Unknown shapes are
+    dropped (bounded degradation: verification becomes one of several gates,
+    never a run crash).
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    if "adapter" in raw and isinstance(raw.get("config"), dict):
+        return raw
+    if raw.get("type") in ("shell", "command") and isinstance(raw.get("command"), str):
+        try:
+            argv = shlex.split(raw["command"])
+        except ValueError:
+            # Malformed command (e.g. unbalanced quote from the model):
+            # drop verification rather than crash the run (slice run 7:
+            # the shadow ledger sync caught this first, the production
+            # path would have crashed at packet build).
+            return None
+        if argv:
+            return {"adapter": "command", "config": {"argv": argv, "timeout_seconds": 600}}
+    if raw.get("type") == "file" and isinstance(raw.get("path"), str):
+        config = {"path": raw["path"]}
+        if raw.get("exists") is not None:
+            config["exists"] = bool(raw["exists"])
+        if raw.get("contains"):
+            config["contains"] = raw["contains"]
+        return {"adapter": "file", "config": config}
+    return None
 
 
 def _bounded_summary(text: str, limit: int = 1200) -> str:
@@ -94,6 +132,12 @@ class TaskNode:
     retry_count: int = 0
     max_retries: int = 2
     error_history: list = field(default_factory=list)
+    # Guard-approved writes accumulated across this task's attempts. The
+    # attributable-diff evidence is per-task, not per-attempt: a retry whose
+    # previous attempt already produced the required scoped diff must not be
+    # forced to make a redundant second write (slice run 11: T1 wrote
+    # src/app.py on attempt 1, then died on attempt 2 for zero fresh diff).
+    accumulated_writes: set = field(default_factory=set)
     # Machine-checkable done-condition for this task (emitted by the
     # Strategist). Retained so the completeness auditor can grade the
     # delivered artifact against each task's acceptance criterion.
@@ -183,7 +227,7 @@ class TaskDAG:
             read_scope=list(node.read_scope),
             write_scope=list(node.write_scope),
             base_hashes=dict(node.base_hashes),
-            verification=node.verification or None,
+            verification=normalize_verification(node.verification),
             attempt=node.retry_count + 1,
             contract_hash=node.contract_hash,
             workspace_root=node.workspace_root,
@@ -402,7 +446,7 @@ class TaskDAG:
              "read_scope_declared": n.read_scope_declared,
              "write_scope_declared": n.write_scope_declared,
              "artifact_refs": n.artifact_refs, "evidence_refs": n.evidence_refs,
-             "base_hashes": n.base_hashes,
+             "base_hashes": n.base_hashes, "accumulated_writes": sorted(n.accumulated_writes),
              "verification": n.verification,
              "result": n.result.model_dump(mode="json") if n.result else None}
             for n in self._nodes.values()
@@ -481,3 +525,4 @@ class TaskDAG:
         for adj_list in self._adj.values():
             while nid in adj_list:
                 adj_list.remove(nid)
+

@@ -6,7 +6,13 @@ import pytest
 from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
 from council_of_agents.scripts.council_schemas import validate_agent_output
 from council_of_agents.scripts.prompt_composer import PromptComposer
-from council_of_agents.scripts.task_dag import TaskContractError, TaskDAG, TaskNode
+from council_of_agents.scripts.task_dag import (
+    TaskContractError,
+    TaskDAG,
+    TaskFailureCategory,
+    TaskNode,
+    normalize_verification,
+)
 from src.llm_core import FinalContextContractError, _assert_required_contract
 
 
@@ -118,6 +124,35 @@ def test_execution_retry_preserves_the_approved_task_and_changes_only_strategy()
     assert "successful write" in retry["instruction"]
 
 
+def test_failure_terminal_policy_allows_one_informed_retry():
+    """A guard rejection (scope/channel violation) must be retryable once with
+    the rejection carried, then terminal — not instantly fatal (regression:
+    the vertical slice died whenever the model tripped the write guard on its
+    first attempt, e.g. calling bash for pytest in guarded execution)."""
+    from council_of_agents.scripts.workspace_revision import WorkspaceScopeError
+    first_trip = WorkspaceScopeError("tool 'bash' is not compatible with guarded workspace execution")
+    assert CouncilOrchestrator._failure_is_terminal(first_trip, 0) is False
+    assert CouncilOrchestrator._failure_is_terminal(first_trip, 1) is True
+    # Unclassified failures stay non-terminal (retry machinery decides).
+    assert CouncilOrchestrator._failure_is_terminal(RuntimeError("misc"), 0) is False
+    assert CouncilOrchestrator._failure_is_terminal(RuntimeError("misc"), 5) is False
+
+
+def test_execution_retry_carries_manager_revise_feedback_verbatim():
+    """A task-gate Manager REVISE must reach the implementer's retry with the
+    actual rejection text, not just a hash (regression: the vertical slice
+    failed when the implementer re-attempted a REVISE'd task without the
+    manager's correction — only error_fingerprint was emitted)."""
+    task = TaskNode(id="T1", description="Add health endpoint", write_scope=["src/"])
+    rejection = ('Manager rejected task T1: {"verdict": "REVISE", '
+                 '"summary": "File is WSGI, not Flask; route PATH_INFO == \'/health\'."}')
+    retry = CouncilOrchestrator._build_execution_retry(
+        task, rejection, TaskFailureCategory.HANDOFF_CORRUPTION.value)
+    assert retry["error"] == rejection
+    assert "PATH_INFO" in retry["error"]
+    assert len(retry["error_fingerprint"]) == 16
+
+
 def test_pipeline_plan_requires_a_nonempty_valid_dag():
     assert not validate_agent_output("strategist", "Plan: make it better.").success
 
@@ -183,3 +218,96 @@ def test_strategist_prompt_keeps_reasoning_private_and_scope_explicit():
     assert "read-first inspection task" in composed
     assert "include the relevant `read_scope`" in composed
     assert "Do not\ninclude `read_scope`" not in composed
+
+def test_plan_contract_verification_shape_is_translated_into_work_packet():
+    """Regression: the Strategist contract emits verification as
+    {"type": "shell", "command": "..."} but WorkPacket consumes
+    {adapter, config}; the bridge must translate without crashing."""
+    dag = _dag([{
+        "id": "T1",
+        "description": "Add a health endpoint and a regression test",
+        "acceptance": "pytest passes",
+        "read_scope": ["src/", "tests/"],
+        "write_scope": ["src/", "tests/"],
+        "verification": {"type": "shell", "command": "pytest -q tests/test_app.py::test_health"},
+    }])
+    dag.seal_contracts()
+    packet = dag.build_work_packet("T1")
+    assert packet.verification is not None
+    assert packet.verification.adapter == "command"
+    assert packet.verification.config["argv"] == ["pytest", "-q", "tests/test_app.py::test_health"]
+
+def test_file_verification_shape_is_translated():
+    dag = _dag([{
+        "id": "T1",
+        "description": "Create the service module",
+        "acceptance": "module exists",
+        "read_scope": [],
+        "write_scope": ["src/"],
+        "verification": {"type": "file", "path": "src/app.py", "exists": True},
+    }])
+    packet = dag.build_work_packet("T1")
+    assert packet.verification.adapter == "file"
+    assert packet.verification.config["path"] == "src/app.py"
+
+def test_canonical_adapter_shape_passes_through_unchanged():
+    dag = _dag([{
+        "id": "T1",
+        "description": "Run the suite",
+        "acceptance": "suite green",
+        "read_scope": ["src/"],
+        "write_scope": ["tests/"],
+        "verification": {"adapter": "command", "config": {"argv": ["pytest", "-q"], "timeout_seconds": 120}},
+    }])
+    packet = dag.build_work_packet("T1")
+    assert packet.verification.adapter == "command"
+    assert packet.verification.config["argv"] == ["pytest", "-q"]
+
+def test_unknown_verification_shape_degrades_to_none_instead_of_crashing():
+    dag = _dag([{
+        "id": "T1",
+        "description": "Whatever",
+        "acceptance": "done",
+        "read_scope": [],
+        "write_scope": ["src/"],
+        "verification": {"verifier": "custom-eval", "payload": 42},
+    }])
+    packet = dag.build_work_packet("T1")
+    assert packet.verification is None
+
+
+def test_normalize_verification_drops_malformed_command():
+    """Regression: a verification command with an unbalanced quote must be
+    dropped (bounded degradation), never crash packet build (slice run 7:
+    the shadow ledger sync hit this ValueError first)."""
+    assert normalize_verification(
+        {"type": "shell", "command": 'pytest "unclosed'}
+    ) is None
+
+
+def test_normalize_verification_keeps_valid_command():
+    assert normalize_verification(
+        {"type": "command", "command": 'pytest -q "test_x.py"'}
+    ) == {"adapter": "command",
+          "config": {"argv": ["pytest", "-q", "test_x.py"], "timeout_seconds": 600}}
+
+
+def test_accumulated_writes_serialize_and_survive_checkpoint_overlay():
+    """Regression: a task's guard-approved write record must survive DAG
+    serialization and the checkpoint-restore overlay, so a retry (or a
+    restored run) can prove its attributable diff without a redundant second
+    write (slice run 11: T1 wrote src/app.py on attempt 1, then died on
+    attempt 2 for zero fresh diff)."""
+    dag = _dag([{"id": "T1", "description": "x", "read_scope": [], "write_scope": ["src/"]}])
+    dag._nodes["T1"].accumulated_writes = {"src/app.py"}
+    node = [n for n in dag.to_dict()["nodes"] if n["id"] == "T1"][0]
+    assert node["accumulated_writes"] == ["src/app.py"]
+
+    restored = _dag([{"id": "T1", "description": "x", "read_scope": [], "write_scope": ["src/"]}])
+    current = restored._nodes["T1"]
+    current.status = node["status"]
+    current.base_hashes = node.get("base_hashes") or {}
+    current.failure_category = node.get("failure_category")
+    current.execution_retry = node.get("execution_retry")
+    current.accumulated_writes = set(node.get("accumulated_writes") or [])
+    assert current.accumulated_writes == {"src/app.py"}

@@ -307,7 +307,23 @@ def _parse_manage_memory(content: str) -> Dict:
 
 def _parse_write_file(content: str) -> Dict:
     lines = content.split("\n", 1)
-    return {"path": lines[0].strip(), "content": lines[1] if len(lines) > 1 else ""}
+    first = lines[0].strip()
+    if first.startswith("{"):
+        # Models also emit write_file as a JSON object ({"path": ...,
+        # "content": ...}); without unwrapping, the object becomes the path
+        # and the write never lands (vertical-slice run 19: the implementer
+        # produced only JSON-blob write calls, so the attempt wrote nothing).
+        try:
+            obj = json.loads(first)
+            if isinstance(obj, dict) and obj.get("path"):
+                content_value = obj.get("content", "")
+                return {
+                    "path": str(obj["path"]),
+                    "content": content_value if isinstance(content_value, str) else "",
+                }
+        except (ValueError, TypeError):
+            pass
+    return {"path": first, "content": lines[1] if len(lines) > 1 else ""}
 
 
 _MCP_ARG_PARSERS: Dict[str, Callable[[str], Dict[str, str]]] = {

@@ -1817,6 +1817,59 @@ def build_active_plan_note(approved_plan: str) -> str:
     )
 
 
+def _soft_guard_rejection(block, guard, trace_context=None, round_num=0):
+    """Run the workspace guard's channel/scope checks for one tool call.
+
+    A guard rejection becomes a model-visible tool failure instead of raising:
+    the write is still blocked (zero unauthorized writes), but the attempt
+    survives so the model can correct course inside its bounded tool loop.
+    Without this, an implementer's first out-of-scope attempt aborted the whole
+    attempt and burned the informed retry (vertical-slice runs 5/7/12-18 died
+    this way, mostly on read-only inspect tasks).
+
+    Returns a ``(description, result)`` tool-failure tuple when rejected, else
+    ``None`` (proceed with the call).
+    """
+    from council_of_agents.scripts.workspace_revision import (
+        WorkspaceConflictError,
+        WorkspaceScopeError,
+    )
+    try:
+        if getattr(guard, "enforce_channels", False):
+            guard.check_tool_channel(block.tool_type)
+        if block.tool_type in ("write_file", "edit_file"):
+            guard.check_before_write(block.tool_type, block.content)
+    except (WorkspaceScopeError, WorkspaceConflictError) as exc:
+        try:
+            from src.context_trace import record_scope_violation
+            record_scope_violation(
+                {**(trace_context or {}), "round": round_num},
+                task_id=getattr(guard, "task_id", ""),
+                tool_type=block.tool_type,
+                attempted_path=guard.attempted_path(block.tool_type, block.content),
+                content=block.content,
+                category=(
+                    "workspace_conflict"
+                    if isinstance(exc, WorkspaceConflictError)
+                    else "scope_violation"
+                ),
+                reason=str(exc),
+            )
+        except Exception:
+            pass
+        return (
+            f"{block.tool_type} rejected by the workspace guard: {exc}",
+            {
+                "exit_code": 1,
+                "stderr": str(exc),
+                "output": str(exc),
+                "error": str(exc),
+                "guard_rejected": True,
+            },
+        )
+    return None
+
+
 def _detect_runaway_call(call_freq, threshold=15):
     """Tool name of a call signature repeated >= ``threshold`` times — a real
     runaway loop. Counts IDENTICAL repeated calls (same tool AND args), so a
@@ -2862,10 +2915,12 @@ async def stream_agent_loop(
                         return result
                     try:
                         if workspace_write_guard:
-                            if getattr(workspace_write_guard, "enforce_channels", False):
-                                workspace_write_guard.check_tool_channel(block.tool_type)
-                            if block.tool_type in ("write_file", "edit_file"):
-                                workspace_write_guard.check_before_write(block.tool_type, block.content)
+                            soft = _soft_guard_rejection(
+                                block, workspace_write_guard, trace_context, round_num
+                            )
+                            if soft is not None:
+                                await _progress_q.put(None)
+                                return soft
                         outcome = await execute_tool_block(
                             block,
                             session_id=session_id,

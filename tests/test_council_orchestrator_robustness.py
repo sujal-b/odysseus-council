@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from src.agent_loop import stream_agent_loop
@@ -488,6 +489,77 @@ async def test_direct_fallback_to_pipeline():
 
 
 @pytest.mark.asyncio
+async def test_direct_timeout_escalates_to_pipeline():
+    """A transient implementer timeout on the DIRECT path must escalate to
+    PIPELINE, not kill the production run (regression: the vertical slice
+    failed end-to-end when the DIRECT implementer endpoint stopped answering
+    and the raised TimeoutError bypassed the existing DIRECT→PIPELINE
+    escalation, which only handled None/quality-failure replies)."""
+    mock_router = MagicMock()
+    cfg = MagicMock()
+    cfg.escalation.max_loops = 3
+    cfg.escalation.conflict_threshold = 0.7
+    mock_router.get.return_value = cfg
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    mock_state = MagicMock()
+    mock_state.session_id = "test-direct-timeout"
+    mock_state.user_prompt = "Add a health endpoint and a regression test."
+    mock_state.role_overrides = {}
+    mock_state.owner = "test-user"
+
+    chair_reply = '{"complexity": "SIMPLE", "route": "DIRECT", "action": "read", "target": "src/app.py", "reason": "read-only"}'
+    pipeline_impl_reply = "Added the health endpoint and its regression test."
+
+    roles_called = []
+
+    with patch.object(orchestrator, '_invoke_agent_safe') as mock_invoke, \
+         patch.object(orchestrator, '_load_prompt', return_value="test prompt"), \
+         patch("src.tool_security.blocked_tools_for_owner", return_value=set()), \
+         patch("src.tool_security.owner_is_admin_or_single_user", return_value=True), \
+         patch("services.memory.skills.SkillsManager") as mock_skills_manager_class, \
+         patch("council_of_agents.scripts.council_orchestrator.OutcomeStore") as mock_outcome_store_class, \
+         patch("council_of_agents.scripts.council_orchestrator.SessionLocal") as mock_session_local:
+
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+        mock_db.query.return_value.filter.return_value.first.return_value = MagicMock(owner="test-user")
+        mock_outcome_store_class.return_value = MagicMock()
+        mock_skills_manager_class.return_value.get_relevant_skills.return_value = []
+
+        async def side_effect(role, state, messages, emit, **kwargs):
+            roles_called.append(role)
+            if role == "chair":
+                return chair_reply
+            elif role == "implementer":
+                if roles_called.count("implementer") == 1:
+                    raise asyncio.TimeoutError(
+                        "implementer received no complete model response within 600s"
+                    )
+                return pipeline_impl_reply
+            elif role == "strategist":
+                return '```tasks\n[{"id":"T1","description":"Add health endpoint","write_scope":[]}]\n```'
+            elif role == "perspective_analyzer":
+                return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
+            elif role == "manager":
+                return '{"verdict": "APPROVED", "summary": "good plan"}'
+            return None
+
+        mock_invoke.side_effect = side_effect
+
+        event_queue = asyncio.Queue()
+        resume_event = MagicMock(spec=asyncio.Event)
+        async def dummy_wait():
+            pass
+        resume_event.wait = dummy_wait
+        await orchestrator.run(mock_state, event_queue, resume_event)
+
+    # The raised timeout must not propagate: the run escalates to PIPELINE.
+    assert "strategist" in roles_called, "Timeout must escalate to PIPELINE"
+    assert roles_called.count("implementer") == 2, "Implementer called twice: once DIRECT (raised), once PIPELINE"
+
+
+@pytest.mark.asyncio
 async def test_pipeline_rechecks_perspective_before_manager_revision_review(tmp_path, monkeypatch):
     """A revised plan must not be approved using the original perspective evidence."""
     monkeypatch.setenv("COUNCIL_PLAN_MAX_REVISIONS", "1")
@@ -554,6 +626,91 @@ async def test_pipeline_rechecks_perspective_before_manager_revision_review(tmp_
     revised_manager_messages = "\n".join(message["content"] for role, messages in calls[-1:] for message in messages)
     assert "Revised plan evidence." in revised_manager_messages
     assert "Original plan evidence." not in revised_manager_messages
+
+@pytest.mark.asyncio
+async def test_unparseable_plan_revision_falls_through_to_override_gate():
+    """A schema-invalid strategist revision (bounded retries exhausted) must
+    degrade to the Manager override gate, not crash the run (regression: the
+    vertical slice died when a revision reply could not be normalized and the
+    SchemaValidationError escaped run(), skipping the designed gate)."""
+    from council_of_agents.scripts.council_retry import SchemaValidationError
+    mock_router = MagicMock()
+    cfg = MagicMock()
+    cfg.escalation.max_loops = 3
+    cfg.escalation.conflict_threshold = 0.7
+    mock_router.get.return_value = cfg
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    mock_state = MagicMock()
+    mock_state.session_id = "test-revision-schema-fail"
+    mock_state.user_prompt = "Add a health endpoint and a regression test."
+    mock_state.role_overrides = {}
+    mock_state.owner = "test-user"
+    mock_state.workspace = None
+
+    chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"health endpoint","reason":"code change"}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect the service","acceptance":"The failure path is identified","read_scope":["src/"],"write_scope":[]}]}'
+    perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Original plan evidence."}'
+    manager_revise = '{"verdict":"REVISE","confidence":0.4,"summary":"Add regression coverage.","issues":[{"severity":"warning","task_id":"T1","description":"Tests are missing.","suggestion":"Inspect and cover the existing regression path.","evidence":"T1 read scope omits tests/."}]}'
+
+    calls = []
+
+    async def side_effect(role, state, messages, emit, **kwargs):
+        calls.append(role)
+        if role == "chair":
+            return chair
+        if role == "strategist":
+            if calls.count("strategist") == 1:
+                return plan
+            raise SchemaValidationError(
+                "strategist schema invalid: strategist response could not be normalized (raw_shape=unparseable)",
+                raw_text="Here is the revised plan:",
+                validation_error="strategist response could not be normalized (raw_shape=unparseable)",
+            )
+        if role == "perspective_analyzer":
+            return perspective
+        if role == "manager":
+            return manager_revise
+        return None
+
+    with patch.object(orchestrator, "_invoke_agent_safe", side_effect=side_effect), \
+         patch.object(orchestrator, "_load_prompt", return_value="test prompt"), \
+         patch("src.tool_security.blocked_tools_for_owner", return_value=set()), \
+         patch("src.tool_security.owner_is_admin_or_single_user", return_value=True), \
+         patch("services.memory.skills.SkillsManager") as mock_skills_manager_class, \
+         patch("council_of_agents.scripts.council_orchestrator.OutcomeStore") as mock_outcome_store_class, \
+         patch("council_of_agents.scripts.council_orchestrator.SessionLocal") as mock_session_local:
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+        mock_db.query.return_value.filter.return_value.first.return_value = MagicMock(owner="test-user")
+        mock_outcome_store_class.return_value = MagicMock()
+        mock_skills_manager_class.return_value.get_relevant_skills.return_value = []
+
+        event_queue = asyncio.Queue()
+        resume_event = MagicMock(spec=asyncio.Event)
+
+        async def dummy_wait():
+            return None
+
+        resume_event.wait = dummy_wait
+        # Must NOT raise: the schema-invalid revision must not escape run().
+        await orchestrator.run(mock_state, event_queue, resume_event)
+
+    emitted = []
+    while not event_queue.empty():
+        event = event_queue.get_nowait()
+        if event is not None:
+            emitted.append(event)
+
+    review_events = [e for e in emitted if e.event == "review_required"]
+    assert review_events, "run must fall through to the Manager override gate"
+    assert review_events[0].extra["requires_override"] is True
+    strategy_errors = [e for e in emitted if e.event == "error" and e.agent == "strategist"]
+    assert any("parseable plan revision" in e.text for e in strategy_errors), (
+        "a clear strategist error event must explain the failed revision"
+    )
+    assert calls.count("strategist") == 2, "exactly one revision attempt (bounded invoke retries live inside _invoke_agent_safe)"
+
 
 @pytest.mark.asyncio
 async def test_direct_fallback_max_once():
@@ -1132,3 +1289,261 @@ class TestPerspectiveEvidenceClassification:
     def test_fail_closed_on_invalid_perspective(self):
         assert CouncilOrchestrator._classify_perspective_evidence("{\"bad\": true}") != "clear"
 
+
+class TestTimeoutPolicy:
+
+    def test_manager_hard_timeout_matches_slow_provider_floor(self):
+        """Regression: the Manager sits on the same slow nvidia provider as
+        the Strategist, so its total model-wait budget must be at least the
+        Strategist's. The slice run 6 died when a working Manager was cut off
+        at the 60s inactivity cap twice in a row."""
+        manager_cap = CouncilOrchestrator.AGENT_HARD_TIMEOUTS.get(
+            "manager", CouncilOrchestrator.AGENT_TIMEOUTS["manager"])
+        strategist_cap = CouncilOrchestrator.AGENT_HARD_TIMEOUTS["strategist"]
+        assert manager_cap >= strategist_cap
+
+
+@pytest.mark.asyncio
+async def test_agent_runner_passes_state_workspace_to_call_agent(tmp_path):
+    """Regression: tool-enabled calls must target state.workspace even when the
+    session is not in the in-memory session store (e.g. after process restart)."""
+    captured = {}
+
+    class StubOrchestrator:
+        AGENT_TIMEOUTS = {"implementer": 30}
+        AGENT_HARD_TIMEOUTS = {"implementer": 30}
+        AGENT_MAX_RETRIES = {"implementer": 0}
+
+        async def _call_agent(self, role, session_id, overrides, messages,
+                              on_chunk=None, emit_cb=None, written_paths=None,
+                              owner=None, tool_results_out=None, route="PIPELINE",
+                              workspace_write_guard=None, context_fallback=None,
+                              disable_tools=False, required_contract=None, workspace=None):
+            captured["workspace"] = workspace
+            return "implemented."
+
+    from council_of_agents.scripts.session_store import SessionState
+    from council_of_agents.scripts.agent_runner import AgentRunner
+    state = SessionState(session_id="wfa-regression", owner="admin",
+                         user_prompt="add a health endpoint", workspace=str(tmp_path),
+                         status="PENDING")
+    runner = AgentRunner(StubOrchestrator(), state, emit=None)
+    result = await runner.invoke("implementer", [{"role": "user", "content": "go"}])
+    assert result
+    assert captured["workspace"] == str(tmp_path)
+
+@pytest.mark.asyncio
+async def test_completeness_gap_fill_runs_with_workspace_guard():
+    """Regression: the completeness gap-fill implementer dispatch must use the
+    same workspace confinement as DAG tasks (safe tools, writes in workspace)."""
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+    from council_of_agents.scripts.session_store import SessionState
+    from council_of_agents.scripts.task_dag import TaskDAG
+    import tempfile, os
+
+    mock_router = MagicMock()
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    workspace = tempfile.mkdtemp(prefix="council-gap-")
+    state = SessionState(session_id="wfb-gap-regression", owner="admin",
+                         user_prompt="deliver the artifact", workspace=workspace,
+                         status="IN_PROGRESS")
+
+    seen = {}
+    audit_calls = {"n": 0}
+
+    async def fake_audit(state, criteria, impl_reply, written_paths, emit, owner):
+        audit_calls["n"] += 1
+        if audit_calls["n"] == 1:
+            return {
+                "done": False, "completeness": 0.0,
+                "criteria": [{"id": "C1", "met": False, "gap_type": "fillable",
+                              "description": "add src/app.py", "acceptance": "file exists"}],
+            }
+        return {"done": True, "completeness": 1.0,
+                "criteria": [{"id": "C1", "met": True}]}
+
+    async def fake_invoke(role, state, messages, emit, **kwargs):
+        if role == "implementer":
+            seen["kwargs"] = kwargs
+            return "gap closed"
+        return None
+
+    async def fake_emit(**event):
+        pass
+
+    async def fake_wait():
+        return True
+
+    orchestrator._run_completeness_audit = fake_audit
+    orchestrator._invoke_agent_safe = fake_invoke
+    orchestrator._load_prompt = lambda role, workspace=None: f"prompt {role}"
+
+    resume = MagicMock(spec=asyncio.Event)
+    resume.wait = fake_wait
+
+    reply, metrics, cancelled = await orchestrator._completeness_loop(
+        state, TaskDAG(), "initial", [], set(), "PIPELINE", workspace,
+        fake_emit, "admin", resume,
+    )
+    assert cancelled is False
+    assert audit_calls["n"] == 2
+    assert "gap closed" in reply
+    guard = seen["kwargs"].get("workspace_write_guard")
+    assert guard is not None, "gap-fill dispatch must carry a workspace write guard"
+    assert guard.enforce_channels is True
+    assert os.path.realpath(guard.root) == os.path.realpath(workspace)
+
+def test_readonly_task_rule_forbids_writes_and_writable_rule_requires_diff():
+    """Regression: read-only DAG tasks must get an explicit no-write rule, and
+    writable tasks must keep the artifact-diff rule (slice runs 5 and 7: the
+    blanket "leave a diff" line pushed read-only implementers into writing)."""
+    readonly = CouncilOrchestrator._guarded_execution_rule(SimpleNamespace(write_scope=[]))
+    writable = CouncilOrchestrator._guarded_execution_rule(SimpleNamespace(write_scope=["src/"]))
+    assert "READ-ONLY" in readonly and "write_file" in readonly
+    # The read-only rule must also carry the channel warning (slice runs 12/13:
+    # read-only implementers kept calling bash to inspect).
+    assert "bash" in readonly and "python" in readonly
+    assert "artifact diff" in writable and "READ-ONLY" not in writable
+
+def test_scope_violation_retry_gives_explicit_compliance_guidance():
+    """Regression: guard rejections must carry corrective guidance, not the
+    generic alternate-approach line (slice runs 3/9: bash in guarded
+    execution; runs 5/7/8: writes outside declared scope)."""
+    task = SimpleNamespace(write_scope=["src/"])
+    bash = CouncilOrchestrator._build_execution_retry(
+        task, "tool 'bash' is not compatible with guarded workspace execution", "scope_violation")
+    assert bash["strategy"] == "channel_compliance"
+    assert "read_file" in bash["instruction"] and "bash" in bash["instruction"]
+
+    scope = CouncilOrchestrator._build_execution_retry(
+        task, "write target is outside declared scope: tests/test_app.py", "scope_violation")
+    assert scope["strategy"] == "scope_compliance"
+    assert "['src/']" in scope["instruction"] and "tests/test_app.py" not in scope["instruction"].split("report")[0]
+
+    readonly = CouncilOrchestrator._build_execution_retry(
+        SimpleNamespace(write_scope=[]),
+        "write target is outside declared scope: src/app.py", "scope_violation")
+    assert readonly["strategy"] == "readonly_compliance"
+    assert "read-only" in readonly["instruction"]
+
+@pytest.mark.asyncio
+async def test_task_gate_receives_actual_written_files_evidence():
+    """Regression: the per-task Manager gate must see the guard-approved write
+    record, not just the implementer's self-report (slice runs 8-10: the gate
+    REVISE'd completed tasks for "verification" it had no evidence for)."""
+    mock_router = MagicMock()
+    cfg = MagicMock()
+    cfg.escalation.max_loops = 3
+    cfg.escalation.conflict_threshold = 0.7
+    mock_router.get.return_value = cfg
+    orchestrator = CouncilOrchestrator(mock_router)
+
+    mock_state = MagicMock()
+    mock_state.session_id = "test-gate-evidence"
+    mock_state.user_prompt = "Add a health endpoint and a regression test."
+    mock_state.role_overrides = {}
+    mock_state.owner = "test-user"
+    mock_state.workspace = None
+
+    chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"health endpoint","reason":"code change"}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect the service","acceptance":"Findings documented","read_scope":["src/"],"write_scope":[]}]}'
+    perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
+    manager_approve = '{"verdict":"APPROVED","confidence":0.9,"summary":"ok"}'
+    audit_done = '{"done": true, "completeness": 1.0, "criteria": [{"id": "C1", "met": true}]}'
+
+    gate_messages = []
+
+    async def side_effect(role, state, messages, emit, **kwargs):
+        joined = "\n".join(m.get("content", "") for m in messages)
+        if "Actual files written by this task's attempt" in joined:
+            gate_messages.append(joined)
+        if role == "chair":
+            return chair
+        if role == "strategist":
+            return plan
+        if role == "perspective_analyzer":
+            return perspective
+        if role == "manager":
+            return manager_approve
+        if role == "implementer":
+            return "T1 done: inspected the service, findings documented."
+        if role == "completeness_auditor":
+            return audit_done
+        return None
+
+    with patch.object(orchestrator, "_invoke_agent_safe", side_effect=side_effect), \
+         patch.object(orchestrator, "_load_prompt", return_value="test prompt"), \
+         patch("src.tool_security.blocked_tools_for_owner", return_value=set()), \
+         patch("src.tool_security.owner_is_admin_or_single_user", return_value=True), \
+         patch("services.memory.skills.SkillsManager") as mock_skills_manager_class, \
+         patch("council_of_agents.scripts.council_orchestrator.OutcomeStore") as mock_outcome_store_class, \
+         patch("council_of_agents.scripts.council_orchestrator.SessionLocal") as mock_session_local:
+        mock_db = MagicMock()
+        mock_session_local.return_value = mock_db
+        mock_db.query.return_value.filter.return_value.first.return_value = MagicMock(owner="test-user")
+        mock_outcome_store_class.return_value = MagicMock()
+        mock_skills_manager_class.return_value.get_relevant_skills.return_value = []
+
+        event_queue = asyncio.Queue()
+        resume_event = MagicMock(spec=asyncio.Event)
+
+        async def dummy_wait():
+            return None
+
+        resume_event.wait = dummy_wait
+        await orchestrator.run(mock_state, event_queue, resume_event)
+
+    assert len(gate_messages) == 1, "the per-task gate must receive the written-files evidence"
+    assert "Actual files written by this task's attempt: NONE" in gate_messages[0]
+    # Non-empty path carries the guard-approved paths verbatim.
+    assert "src/app.py" in CouncilOrchestrator._task_gate_evidence_line(["src/app.py", "tests/x.py"])
+
+def test_rehydrate_retry_on_readonly_task_forbids_writes():
+    """Regression: Manager-REVISE retries on a read-only task must keep the
+    no-write/no-bash instruction (slice run 14: the rehydrate retry had no
+    warning and the implementer wrote src/app.py in a read-only task)."""
+    retry = CouncilOrchestrator._build_execution_retry(
+        SimpleNamespace(write_scope=[]), "Manager rejected task T1", "handoff_corruption")
+    assert retry["strategy"] == "rehydrate_contract"
+    assert "READ-ONLY" in retry["instruction"] and "bash" in retry["instruction"]
+    writable = CouncilOrchestrator._build_execution_retry(
+        SimpleNamespace(write_scope=["src/"]), "Manager rejected task T2", "handoff_corruption")
+    assert "READ-ONLY" not in writable["instruction"]
+    assert "bash" in writable["instruction"]  # channel warning on every retry
+
+def test_guard_rejection_is_soft_tool_failure_not_attempt_abort():
+    """Regression: a workspace-guard rejection must reach the model as a tool
+    failure result instead of aborting the attempt (vertical-slice runs
+    5/7/12-18: the first out-of-scope write killed the whole attempt). The
+    write is still blocked; the attempt survives to correct course."""
+    from src.agent_loop import _soft_guard_rejection
+    from council_of_agents.scripts.workspace_revision import WorkspaceWriteGuard
+
+    class Block:
+        def __init__(self, tool, content=""):
+            self.tool_type = tool
+            self.content = content
+
+    guard = WorkspaceWriteGuard("C:/ws", [], {}, enforce_channels=True, task_id="T1")
+    desc, result = _soft_guard_rejection(Block("bash", "ls -la"), guard)
+    assert result["guard_rejected"] is True and result["exit_code"] == 1
+    assert "not compatible" in result["error"]
+    desc, result = _soft_guard_rejection(Block("write_file", "src/app.py\nprint(1)"), guard)
+    assert result["guard_rejected"] is True and "outside declared scope" in result["error"]
+    # Compliant calls are untouched.
+    assert _soft_guard_rejection(Block("read_file", '{"path": "src/app.py"}'), guard) is None
+
+def test_write_file_parser_unwraps_json_object_calls():
+    """Regression: write_file must accept the JSON-object call shape
+    ({"path": ..., "content": ...}) models emit, not treat the object as the
+    path (vertical-slice run 19: every write call was a JSON blob, so the
+    attempt wrote nothing and died with NONE evidence)."""
+    from src.tool_execution import _parse_write_file
+    assert _parse_write_file('{"path": "src/app.py", "content": "def health(): pass"}') == {
+        "path": "src/app.py", "content": "def health(): pass"}
+    # Legacy text shape (path on first line) is unchanged.
+    assert _parse_write_file("src/app.py\ndef health(): pass") == {
+        "path": "src/app.py", "content": "def health(): pass"}
+    # Non-JSON first line stays text.
+    assert _parse_write_file("notes.txt\nhello")["path"] == "notes.txt"
