@@ -7,6 +7,7 @@ not in the system prompt. The system prompt is 100% static.
 
 def build_context_envelope(
     workspace: str = None,
+    repository_context: str = None,
     session_id: str = None,
     complexity: str = None,
     route: str = None,
@@ -22,11 +23,21 @@ def build_context_envelope(
     """Build a structured context block to prepend to the user message.
 
     Returns empty string if no context is provided.
+
+    ``workspace`` is the workspace root path. ``repository_context`` is
+    read-only repository evidence (e.g. a capsule of known authoritative
+    paths, framework, tests, constraints) that agents must ground plans in; it
+    is forwarded alongside ``workspace`` and never substitutes for it.
     """
     sections = []
 
     if workspace:
         sections.append(f"<workspace>\n{workspace}\n</workspace>")
+
+    if repository_context:
+        sections.append(
+            f"<context:repository_capsule>\n{repository_context}\n</context:repository_capsule>"
+        )
 
     state_parts = []
     for k, v in [

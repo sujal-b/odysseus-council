@@ -302,8 +302,8 @@ def _configured_api_key(endpoint: str = "") -> str:
     return ""
 
 
-def _user_message(user_prompt: str, workspace: str = "") -> str:
-    envelope = build_context_envelope(workspace=workspace)
+def _user_message(user_prompt: str, workspace: str = "", repository_context: str = "") -> str:
+    envelope = build_context_envelope(workspace=workspace, repository_context=repository_context)
     return f"{envelope}\n\n{user_prompt}" if envelope else user_prompt
 
 
@@ -572,6 +572,7 @@ def build_messages(
     user_prompt: str,
     *,
     workspace: str = "",
+    repository_context: str = "",
     chair_reply: str = "",
     strategist_reply: str = "",
     perspective_reply: str = "",
@@ -590,7 +591,7 @@ def build_messages(
     prompt_composer = _prompt_composer(prompts_dir)
     messages = [
         {"role": "system", "content": prompt_composer.compose(agent)},
-        {"role": "user", "content": _user_message(user_prompt, workspace)},
+        {"role": "user", "content": _user_message(user_prompt, workspace, repository_context)},
     ]
     if agent == "chair":
         return messages
@@ -1160,6 +1161,7 @@ async def evaluate(
     model: str,
     api_key: str = "",
     workspace: str = "",
+    repository_context: str = "",
     chair_reply: str = "",
     strategist_reply: str = "",
     perspective_reply: str = "",
@@ -1191,7 +1193,8 @@ async def evaluate(
         "implementer_reply": implementer_reply,
     }
     messages = build_messages(
-        agent, user_prompt, workspace=workspace, chair_reply=chair_reply,
+        agent, user_prompt, workspace=workspace, repository_context=repository_context,
+        chair_reply=chair_reply,
         strategist_reply=strategist_reply, perspective_reply=perspective_reply,
         manager_reply=manager_reply, implementer_reply=implementer_reply,
         criteria=criteria, evidence=evidence, implementer_task=implementer_task,
@@ -1646,6 +1649,7 @@ async def evaluate_trace(
     role_configs: dict | None = None,
     api_key: str = "",
     workspace: str = "",
+    repository_context: str = "",
     evidence: str = "",
     run_id: str = "",
     max_plan_revisions: int = 2,
@@ -1713,7 +1717,8 @@ async def evaluate_trace(
                 recovery_candidate = None
             result = await evaluate(
                 agent, user_prompt, endpoint=role_endpoint, model=role_model,
-                api_key=api_key, workspace=workspace, temperature=temperature,
+                api_key=api_key, workspace=workspace, repository_context=repository_context,
+                temperature=temperature,
                 max_tokens=max_tokens, timeout=role_timeout, run_id=run_id,
                 scenario_rubric=scenario_rubric,
                 prompt_label=prompt_label, handoff_mode=handoff_mode,
@@ -2489,7 +2494,8 @@ async def evaluate_scenario_suite(
         for scenario_id, scenario in scenarios.items():
             if not isinstance(scenario, dict):
                 raise RoleEvalError(f"Scenario {scenario_id!r} must be an object.")
-            scenario_workspace = str(scenario.get("workspace_context") or workspace or "")
+            scenario_workspace = str(workspace or "")
+            scenario_repository_context = str(scenario.get("workspace_context") or "")
             trace = await _bounded_evaluate_trace(
                 str(scenario.get("user_prompt") or ""),
                 endpoint=endpoint,
@@ -2497,6 +2503,7 @@ async def evaluate_scenario_suite(
                 role_configs=role_configs,
                 api_key=api_key,
                 workspace=scenario_workspace,
+                repository_context=scenario_repository_context,
                 run_id=f"{run_id}:r{repetition}:{scenario_id}",
                 max_plan_revisions=max_plan_revisions,
                 planning_only=planning_only,

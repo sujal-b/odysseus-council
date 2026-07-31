@@ -54,8 +54,8 @@ def _raw(value) -> str:
     return value if isinstance(value, str) else json.dumps(value)
 
 
-def _user_message(prompt: str, workspace: Path) -> str:
-    envelope = build_context_envelope(workspace=str(workspace))
+def _user_message(prompt: str, workspace: Path, repository_context: str = "") -> str:
+    envelope = build_context_envelope(workspace=str(workspace), repository_context=repository_context)
     return f"{envelope}\n\n{prompt}" if envelope else prompt
 
 
@@ -731,6 +731,7 @@ async def run_live_scenario(
     result = {"scenario": name, "mode": "live", "workspace": str(workspace), "trace": trace}
     router = router or _live_router()
     prompt = scenario["user_prompt"]
+    repository_context = str(scenario.get("workspace_context") or "")
     try:
         chair, chair_data = await _live_stage(
             trace,
@@ -748,6 +749,7 @@ async def run_live_scenario(
                 "strategist",
                 prompt,
                 workspace=str(workspace),
+                repository_context=repository_context,
                 chair_reply=chair,
             ),
             router,
