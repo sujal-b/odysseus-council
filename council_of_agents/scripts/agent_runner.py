@@ -14,6 +14,7 @@ from council_of_agents.scripts.council_retry import (
     ErrorClass,
     classify_error,
 )
+from council_of_agents.scripts.council_recovery import classify_failure
 from council_of_agents.scripts.context_tracker import ContextBudgetExceededError
 from src.model_context import estimate_tokens
 
@@ -140,6 +141,91 @@ class AgentRunner:
         self.state = state
         self.emit = emit
         self.tracker = tracker or getattr(orchestrator, "_run_context_tracker", None)
+        self._recovery = None  # resolved per invoke (role-specific, evidence-gated)
+
+    def _resolve_recovery(self, role=None, overrides=None):
+        """One bounded recovery candidate from the shared resolver (fail closed).
+
+        The resolver is the SAME one used by evaluation (role_eval), so
+        production and evaluation agree on candidates, deny list, and the 3/3
+        evidence gate. Returns None when no eligible candidate exists.
+        """
+        role = role or getattr(self.state, "active_role", None)
+        try:
+            from council_of_agents.scripts.council_recovery import RecoveryResolver
+        except Exception:
+            return None
+        router = getattr(self.orchestrator, "_router", None)
+        primary_endpoint = primary_model = None
+        try:
+            if router is not None and role:
+                cfg = router.role_config(role, overrides or {})
+                primary_endpoint = getattr(cfg, "endpoint_url", None)
+                primary_model = getattr(cfg, "model", None)
+        except Exception:
+            pass
+        try:
+            return RecoveryResolver().recovery_for(
+                role or "",
+                overrides=overrides,
+                primary_endpoint=primary_endpoint,
+                primary_model=primary_model,
+            )
+        except Exception:
+            return None
+
+    async def _recovery_hop(self, role, messages, validation_role, recovery, **kwargs):
+        """Exactly ONE recovery attempt on a different provider.
+
+        Bounded: a single `_call_agent` call, no repair recursion, no further
+        hops. The result must pass the role's strict contract or the hop is a
+        failure (fail closed downstream). Never converts a provider failure
+        into a model success — callers still record the provider trigger.
+        """
+        overrides = dict(kwargs.get("overrides") or self.state.role_overrides.get(role, {}) or {})
+        overrides["endpoint_url"] = recovery["endpoint_url"]
+        overrides["model"] = recovery["model"]
+        if recovery.get("temperature") is not None:
+            overrides["temperature"] = recovery["temperature"]
+        if recovery.get("max_tokens") is not None:
+            overrides["max_tokens"] = recovery["max_tokens"]
+        if self.emit:
+            await self.emit(
+                event="recovery_hop",
+                status="IN_PROGRESS",
+                text=f"{role} retrying once with recovery model {recovery['model']}.",
+                agent=role,
+                extra={
+                    "trigger": kwargs.get("trigger", ""),
+                    "failure_class": kwargs.get("failure_class", ""),
+                    "recovery_endpoint": recovery["endpoint_url"],
+                    "recovery_model": recovery["model"],
+                },
+            )
+        raw = await self.orchestrator._call_agent(
+            role,
+            self.state.session_id,
+            overrides,
+            messages,
+            on_chunk=None,
+            emit_cb=self.emit,
+            disable_tools=validation_role in SCHEMA_MAP and validation_role != "implementer",
+        )
+        if validation_role in SCHEMA_MAP and not raw:
+            raise SchemaValidationError(
+                f"{validation_role} schema invalid: empty response (recovery hop)",
+                raw_text=raw or "",
+                validation_error="response was empty",
+            )
+        if raw:
+            validation = validate_agent_output(validation_role, raw, strict=True)
+            if not validation.success:
+                raise SchemaValidationError(
+                    f"{validation_role} schema invalid (recovery hop): {validation.error}",
+                    raw_text=raw,
+                    validation_error=validation.error,
+                )
+        return raw
 
     def _get_extractor(self, role: str):
         # Local import to prevent circular dependency
@@ -202,6 +288,10 @@ class AgentRunner:
             max_retries = self.orchestrator.AGENT_MAX_RETRIES.get(role, 1)
 
         validation_role = schema_role or role
+        # Recovery is role-specific and evidence-gated: resolve it for THIS
+        # invoke (production creates one runner per call, the canary reuses a
+        # runner across roles, and state.active_role is never set).
+        self._recovery = self._resolve_recovery(role, self.state.role_overrides.get(role, {}))
         original_messages = copy.deepcopy(messages)
         # Preserve the established first-attempt mutation semantics for normal
         # tool-enabled roles. Only a schema-repair pass switches to the clean
@@ -413,6 +503,22 @@ class AgentRunner:
             return result
 
         except SchemaValidationError as e:
+            recovery_used = False
+            recovery_error = ""
+            if self._recovery:
+                try:
+                    recovered = await self._recovery_hop(
+                        role, original_messages, validation_role, self._recovery,
+                        trigger="invalid_output", failure_class="invalid_output",
+                    )
+                    self._record_recovery_state(
+                        role, "invalid_output", schema_repair_used, recovery_used=True,
+                        recovery=self._recovery, final_outcome="RECOVERED",
+                    )
+                    return recovered
+                except Exception as recovery_exc:
+                    recovery_used = True
+                    recovery_error = str(recovery_exc)[:500]
             if hasattr(self.state, "metadata"):
                 if self.state.metadata is None:
                     self.state.metadata = {}
@@ -420,6 +526,9 @@ class AgentRunner:
                     "attempts": attempt_number,
                     "failure_kind": "SCHEMA_VALIDATION",
                     "repair_used": schema_repair_used,
+                    "recovery_attempted": bool(self._recovery),
+                    "recovery_used": recovery_used,
+                    "recovery_error": recovery_error[:1000],
                     "safe_fallback": "MANAGER_BLOCKED" if validation_role == "manager" else "",
                     "validation_error": str(e.validation_error or "")[:1000],
                 }
@@ -436,6 +545,7 @@ class AgentRunner:
                             "retryable": False,
                             "safe_fallback": "MANAGER_BLOCKED",
                             "attempts": attempt_number,
+                            "recovery_attempted": bool(self._recovery),
                         },
                     )
                 return fallback
@@ -448,6 +558,23 @@ class AgentRunner:
                 )
             raise
         except asyncio.TimeoutError as error:
+            if self._recovery:
+                try:
+                    recovered = await self._recovery_hop(
+                        role, original_messages, validation_role, self._recovery,
+                        trigger="provider", failure_class="provider",
+                    )
+                    self._record_recovery_state(
+                        role, "provider", False, recovery_used=True,
+                        recovery=self._recovery, final_outcome="RECOVERED",
+                    )
+                    return recovered
+                except Exception as recovery_exc:
+                    self._record_recovery_state(
+                        role, "provider", False, recovery_used=True,
+                        recovery=self._recovery, final_outcome="PROVIDER_INCONCLUSIVE",
+                        recovery_error=str(recovery_exc)[:500],
+                    )
             if self.emit:
                 await self.emit(
                     event="error",
@@ -490,6 +617,24 @@ class AgentRunner:
                     max_retries=0,
                     **retry_kwargs,
                 )
+            failure_class = classify_failure(e)
+            if failure_class in ("provider", "invalid_output") and self._recovery:
+                try:
+                    recovered = await self._recovery_hop(
+                        role, original_messages, validation_role, self._recovery,
+                        trigger=failure_class, failure_class=failure_class,
+                    )
+                    self._record_recovery_state(
+                        role, failure_class, schema_repair_used, recovery_used=True,
+                        recovery=self._recovery, final_outcome="RECOVERED",
+                    )
+                    return recovered
+                except Exception as recovery_exc:
+                    self._record_recovery_state(
+                        role, failure_class, schema_repair_used, recovery_used=True,
+                        recovery=self._recovery, final_outcome="PROVIDER_INCONCLUSIVE" if failure_class == "provider" else "MODEL_FAILURE",
+                        recovery_error=str(recovery_exc)[:500],
+                    )
             if self.emit:
                 await self.emit(
                     event="error",
@@ -498,3 +643,22 @@ class AgentRunner:
                     agent=role
                 )
             raise
+
+    def _record_recovery_state(self, role, failure_class, repair_used, *, recovery_used,
+                               recovery=None, final_outcome="", recovery_error=""):
+        """Observability only: recovery decisions must never be silent."""
+        try:
+            if not hasattr(self.state, "metadata") or self.state.metadata is None:
+                self.state.metadata = {}
+            self.state.metadata[f"{role}_recovery_state"] = {
+                "failure_class": failure_class,
+                "schema_repair_used": bool(repair_used),
+                "recovery_attempted": bool(recovery),
+                "recovery_used": bool(recovery_used),
+                "recovery_endpoint": (recovery or {}).get("endpoint_url", ""),
+                "recovery_model": (recovery or {}).get("model", ""),
+                "final_outcome": final_outcome,
+                "recovery_error": str(recovery_error or "")[:1000],
+            }
+        except Exception:
+            pass

@@ -1109,6 +1109,14 @@ def _get_ungrounded_issues(agent: str, data: dict, valid_task_ids: set[str]) -> 
     return invalid
 
 
+def _config_sha256(path: str | Path) -> str:
+    """SHA-256 of a config file for gate artifacts; empty when unavailable."""
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest().upper()
+    except Exception:
+        return ""
+
+
 def _get_harness_fingerprint(prompts_dir: str | Path | None = None) -> str:
     digest = hashlib.sha256()
     root = Path(__file__).resolve().parents[1]
@@ -1172,6 +1180,7 @@ async def evaluate(
     call=llm_call_async,
     _include_raw: bool = False,
     use_structured_output: bool = True,
+    recovery_fallback: dict | None = None,
 ) -> dict:
     agent = _role(agent)
     replies = {
@@ -1270,6 +1279,60 @@ async def evaluate(
             except EvalProviderError:
                 if retry_number == _PROVIDER_RETRY_LIMIT:
                     raise
+
+    async def invoke_recovery_once(recovery: dict, attempt_name: str = "recovery_hop") -> str:
+        """Exactly ONE bounded call on the recovery provider (no retries)."""
+        rec_url = str(recovery.get("endpoint_url") or endpoint)
+        rec_model = str(recovery.get("model") or model)
+        rec_temp = float(recovery["temperature"]) if recovery.get("temperature") is not None else temperature
+        rec_max = int(recovery["max_tokens"]) if recovery.get("max_tokens") is not None else max_tokens
+        attempt_started = time.monotonic()
+        request_chars = sum(len(str(message.get("content") or "")) for message in messages)
+        try:
+            response = await asyncio.wait_for(
+                call(
+                    url=rec_url,
+                    model=rec_model,
+                    messages=messages,
+                    temperature=rec_temp,
+                    max_tokens=rec_max,
+                    max_retries=0,
+                    timeout=effective_timeout,
+                    headers=build_headers(api_key or None, rec_url),
+                    trace_context={
+                        "run_id": run_id or f"role-eval-{agent}",
+                        "agent": agent,
+                        "route": "ROLE_EVAL",
+                        "attempt": attempt_name,
+                        **({"response_format": build_response_format(agent)} if use_structured_output else {}),
+                    },
+                ),
+                timeout=effective_timeout,
+            )
+        except Exception as exc:
+            error_text = (
+                f"provider call exceeded {effective_timeout:g}s"
+                if isinstance(exc, asyncio.TimeoutError)
+                else str(exc)
+            )
+            attempts.append({
+                "name": attempt_name,
+                "status": "PROVIDER_ERROR",
+                "duration_ms": round((time.monotonic() - attempt_started) * 1000),
+                "request_chars": request_chars,
+                "response_chars": 0,
+                "error": _redact_text(error_text)[:2000],
+            })
+            raise EvalProviderError(error_text, original=exc) from exc
+        value = _text(response)
+        attempts.append({
+            "name": attempt_name,
+            "status": "COMPLETED",
+            "duration_ms": round((time.monotonic() - attempt_started) * 1000),
+            "request_chars": request_chars,
+            "response_chars": len(value),
+        })
+        return value
 
     attempts_detail: list[dict] = []
     repair_kind = None
@@ -1392,6 +1455,72 @@ async def evaluate(
         failure_kind = "provider_error"
         error = _redact_text(str(exc))[:2000] or (attempts[-1].get("error", "") if attempts else "")
 
+    # Bounded recovery hop: exactly ONE call on a different provider, used
+    # only for provider failure or invalid structured output after the repair
+    # pass. Never for semantic failures (another model cannot repair
+    # reasoning) and never for context-window fallback (separate path).
+    recovery_used = False
+    recovery_succeeded = False
+    recovery_trigger = ""
+    recovery_endpoint = ""
+    recovery_model = ""
+    if (
+        recovery_fallback
+        and not contract_passed
+        and not (repair_attempted and repair_kind == "semantic_repair")
+        and failure_kind in ("provider_error", "schema_invalid", "empty_response", "garbage_response")
+    ):
+        recovery_used = True
+        recovery_trigger = failure_kind or "schema_invalid"
+        recovery_endpoint = _endpoint_label(str(recovery_fallback.get("endpoint_url") or endpoint))
+        recovery_model = str(recovery_fallback.get("model") or model)
+        try:
+            hop_raw = await invoke_recovery_once(recovery_fallback)
+        except EvalProviderError as exc:
+            recovery_succeeded = False
+            error = _redact_text(str(exc))[:2000]
+            attempts_detail.append({
+                "kind": "recovery_hop",
+                "status": "PROVIDER_ERROR",
+                "raw_response": "",
+                "canonical_output": None,
+                "normalization": {},
+                "contract_passed": False,
+                "semantic_passed": False,
+                "repair_reason": str(exc)[:500],
+                "recovery_endpoint": recovery_endpoint,
+                "recovery_model": recovery_model,
+                "recovery_trigger": recovery_trigger,
+            })
+        else:
+            hop_passed, hop_data, hop_err, hop_fail_kind, hop_norm_meta = _contract_validation(agent, hop_raw)
+            attempts_detail.append({
+                "kind": "recovery_hop",
+                "raw_response": _redact_text(hop_raw),
+                "canonical_output": _jsonable(hop_data) if hop_data else None,
+                "normalization": hop_norm_meta,
+                "contract_passed": hop_passed,
+                "semantic_passed": False,
+                "repair_reason": hop_err if not hop_passed else None,
+                "recovery_endpoint": recovery_endpoint,
+                "recovery_model": recovery_model,
+                "recovery_trigger": recovery_trigger,
+            })
+            if hop_passed:
+                # A provider failure never becomes a model success: the hop
+                # only repairs the output, provider_failed stays True and the
+                # stage outcome is classified separately.
+                output = hop_raw
+                validation_data = hop_data
+                final_normalization_metadata = hop_norm_meta
+                error = ""
+                failure_kind = ""
+                contract_passed = True
+                recovery_succeeded = True
+                final_messages = messages
+            else:
+                error = str(hop_err or "")[:2000]
+
     perspective_data = None
     if perspective_reply:
         prior_perspective = validate_agent_output("perspective_analyzer", perspective_reply, strict=True)
@@ -1455,6 +1584,11 @@ async def evaluate(
         "failure_kind": failure_kind,
         "error": _redact_text(error)[:2000],
         "initial_error": _redact_text(initial_error)[:2000],
+        "recovery_used": recovery_used,
+        "recovery_succeeded": recovery_succeeded,
+        "recovery_trigger": recovery_trigger,
+        "recovery_endpoint": recovery_endpoint,
+        "recovery_model": recovery_model,
         "handoff_integrity": handoff,
         "semantic_quality": semantic,
         "request_chars": sum(len(str(message.get("content") or "")) for message in final_messages),
@@ -1549,6 +1683,8 @@ async def evaluate_trace(
             "stage": stage_label, "status": "IN_PROGRESS",
             "contract_passed": False, "initial_contract_passed": False,
             "provider_failed": False, "failure_kind": "", "error": "",
+            "recovery_used": False, "recovery_succeeded": False,
+            "recovery_trigger": "", "recovery_endpoint": "", "recovery_model": "",
             "handoff_integrity": {"passed": True, "required": []},
             "semantic_quality": {"passed": False, "score": 0.0, "checks": []},
             "attempt_count": 0, "provider_error_count": 0,
@@ -1565,6 +1701,16 @@ async def evaluate_trace(
             )
             if not role_endpoint or not role_model:
                 raise RoleEvalError(f"No endpoint/model configured for {agent}.")
+            recovery_candidate = None
+            try:
+                from council_of_agents.scripts.council_recovery import RecoveryResolver
+                recovery_candidate = RecoveryResolver().recovery_for(
+                    agent,
+                    primary_endpoint=role_endpoint,
+                    primary_model=role_model,
+                )
+            except Exception:
+                recovery_candidate = None
             result = await evaluate(
                 agent, user_prompt, endpoint=role_endpoint, model=role_model,
                 api_key=api_key, workspace=workspace, temperature=temperature,
@@ -1572,7 +1718,7 @@ async def evaluate_trace(
                 scenario_rubric=scenario_rubric,
                 prompt_label=prompt_label, handoff_mode=handoff_mode,
                 prompts_dir=prompts_dir,
-                call=call, _include_raw=True, **kwargs,
+                call=call, _include_raw=True, recovery_fallback=recovery_candidate, **kwargs,
             )
         except EvalProviderError as exc:
             marker.update(status="PROVIDER_ERROR", provider_failed=True, failure_kind="provider_error",
@@ -1845,6 +1991,8 @@ def _trace_report(
         "run_id": run_id,
         "scenario_id": scenario_id,
         "harness_fingerprint": _get_harness_fingerprint(prompts_dir),
+        "scenario_config_sha256": _config_sha256(Path(__file__).resolve().parents[1] / "benchmarks" / "role_eval_scenarios_p2_1.json"),
+        "model_config_sha256": _config_sha256(Path(__file__).resolve().parents[1] / "config" / "models.json"),
         "termination": termination,
         "trace_budget_seconds": trace_budget_seconds,
         "trace_stage_count": _trace_stage_count(max_plan_revisions, planning_only),

@@ -12,6 +12,11 @@ class ModelConfig(BaseModel):
     # provider retries so a context failure is not replayed against the same
     # window.
     context_fallbacks: list[dict] = Field(default_factory=list)
+    # One bounded recovery model for provider outages and unrepaired invalid
+    # structured output. Must use a DIFFERENT provider than the role primary;
+    # validated at startup against the shared recovery resolver (see
+    # council_recovery). Separate from context_fallbacks on purpose.
+    recovery_fallbacks: list[dict] = Field(default_factory=list)
 
 class EscalationConfig(BaseModel):
     max_loops: int = 3
@@ -36,6 +41,17 @@ class CouncilRouter:
             with open(self._path, encoding="utf-8") as f:
                 self._config = CouncilConfig(**json.load(f))
             self._mtime = mtime
+            self._validate_recovery()
+
+    def _validate_recovery(self):
+        """Fail startup on an invalid recovery routing instead of failing a live run."""
+        try:
+            from council_of_agents.scripts.council_recovery import validate_recovery_config
+        except Exception:
+            return
+        errors = validate_recovery_config(self._path)
+        if errors:
+            raise ValueError("invalid council recovery configuration:\n" + "\n".join(errors))
 
     def get(self) -> CouncilConfig:
         self._reload()
