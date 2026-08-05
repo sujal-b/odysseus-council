@@ -196,6 +196,14 @@ class CouncilOrchestrator:
         resume_event: asyncio.Event,
     ) -> None:
         async def emit(**kwargs) -> None:
+            if kwargs.get("event") == "error":
+                if not isinstance(getattr(state, "metadata", None), dict):
+                    state.metadata = {}
+                state.metadata["_last_error"] = {
+                    "role": str(kwargs.get("agent") or ""),
+                    "stage": str(kwargs.get("agent") or ""),
+                    "reason": str(kwargs.get("text") or "terminal failure")[:1000],
+                }
             await event_queue.put(CouncilEvent(**kwargs))
 
         # A new run must never inherit an override from an earlier gate.
@@ -1885,7 +1893,8 @@ Report what you FIND, not what you think might exist."""
     def _terminal_failure(state, default, reason):
         metadata = getattr(state, "metadata", None) or {}
         failures = [value for key, value in metadata.items() if key.endswith("_failure") and isinstance(value, dict)]
-        failure = dict(failures[-1]) if failures else {}
+        last_error = metadata.get("_last_error") if isinstance(metadata.get("_last_error"), dict) else {}
+        failure = dict(failures[-1]) if failures else dict(last_error)
         failure["status"] = failure.get("terminal_state") or default
         failure["reason"] = failure.get("reason") or str(reason or "terminal failure")
         failure["checkpoint_eligible"] = bool(getattr(state, "status", "") == "IN_PROGRESS")

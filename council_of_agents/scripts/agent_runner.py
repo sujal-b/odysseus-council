@@ -3,6 +3,7 @@ Handles schema validation, retry backoffs, context budgets, and streaming extrac
 """
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import time
@@ -32,6 +33,15 @@ def _strategist_plan_error(tasks, user_prompt) -> str | None:
     except ValueError as exc:
         return str(exc)
     return None
+
+
+def _output_diagnostic(error: SchemaValidationError) -> dict:
+    raw = str(getattr(error, 'raw_text', '') or '')
+    return {
+        "output_chars": len(raw),
+        "output_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "schema_error": str(getattr(error, 'validation_error', '') or str(error))[:1000],
+    }
 
 
 _REPAIR_CONTRACTS = {
@@ -132,7 +142,7 @@ def _manager_blocked_fallback(error: str, raw_text: str) -> str:
             "task_id": "ALL",
             "description": str(error or "Manager response schema validation failed")[:1000],
             "suggestion": "Retry Manager review with a corrected structured response.",
-            "evidence": str(raw_text or "")[:2000],
+            "evidence": "Raw model output withheld.",
         }],
     }
     return json.dumps(payload, ensure_ascii=False)
@@ -309,9 +319,11 @@ class AgentRunner:
         attempt_messages = messages
         schema_repair_used = False
         attempt_number = 0
+        contract_attempts = []
+        semantic_rejection = False
 
         async def operation():
-            nonlocal attempt_messages, schema_repair_used, attempt_number
+            nonlocal attempt_messages, schema_repair_used, attempt_number, semantic_rejection
             attempt_number += 1
             reservation_id = None
             attempt_started = False
@@ -456,6 +468,13 @@ class AgentRunner:
                             validation_error=v.error
                         )
                     if validation_role == "strategist":
+                        from council_of_agents.scripts.task_dag import mutation_only_plan_error
+                        semantic_error = mutation_only_plan_error(
+                            (v.data or {}).get("tasks"), getattr(self.state, "user_prompt", None)
+                        )
+                        if semantic_error:
+                            semantic_rejection = True
+                            raise SchemaValidationError("strategist plan semantic invalid", result, semantic_error)
                         policy_error = _strategist_plan_error(
                             (v.data or {}).get("tasks"), getattr(self.state, "user_prompt", None)
                         )
@@ -463,6 +482,7 @@ class AgentRunner:
                             raise SchemaValidationError("strategist plan policy invalid", result, policy_error)
                 return result
             except SchemaValidationError as error:
+                contract_attempts.append({"attempt": attempt_number, "phase": "repair" if schema_repair_used else "primary", **_output_diagnostic(error)})
                 if not schema_repair_used:
                     schema_repair_used = True
                     attempt_messages = _schema_repair_messages(
@@ -516,13 +536,15 @@ class AgentRunner:
                 if not hasattr(self.state, "metadata") or self.state.metadata is None:
                     self.state.metadata = {}
                 self.state.metadata[f"{role}_retry_state"] = retry_state.errors
+            if contract_attempts:
+                self._record_contract_diagnostics(role, contract_attempts, schema_repair_used, "valid", False, "not_attempted", "", self._recovery)
 
             return result
 
         except SchemaValidationError as e:
             recovery_used = False
             recovery_error = ""
-            if self._recovery:
+            if self._recovery and not semantic_rejection:
                 try:
                     recovery_messages = _schema_repair_messages(
                         original_messages, validation_role, e.validation_error, e.raw_text,
@@ -531,6 +553,7 @@ class AgentRunner:
                         role, recovery_messages, validation_role, self._recovery,
                         trigger="invalid_output", failure_class="invalid_output",
                     )
+                    self._record_contract_diagnostics(role, contract_attempts, schema_repair_used, "invalid", True, "valid", "", self._recovery)
                     self._record_recovery_state(
                         role, "invalid_output", schema_repair_used, recovery_used=True,
                         recovery=self._recovery, final_outcome="RECOVERED",
@@ -539,9 +562,10 @@ class AgentRunner:
                 except Exception as recovery_exc:
                     recovery_used = True
                     recovery_error = str(recovery_exc)[:500]
+            self._record_contract_diagnostics(role, contract_attempts, schema_repair_used, "invalid" if schema_repair_used else "not_attempted", recovery_used, "invalid" if recovery_used else "not_attempted", recovery_error or str(e.validation_error or ""), self._recovery)
             self._record_recovery_state(
                 role, "invalid_output", schema_repair_used, recovery_used=recovery_used,
-                recovery=self._recovery, final_outcome="MODEL_FAILURE",
+                recovery=self._recovery if not semantic_rejection else None, final_outcome="MODEL_FAILURE",
                 recovery_error=recovery_error or str(e.validation_error or ""), attempts=attempt_number,
             )
             if hasattr(self.state, "metadata"):
@@ -551,7 +575,7 @@ class AgentRunner:
                     "attempts": attempt_number,
                     "failure_kind": "SCHEMA_VALIDATION",
                     "repair_used": schema_repair_used,
-                    "recovery_attempted": bool(self._recovery),
+                    "recovery_attempted": bool(self._recovery and not semantic_rejection),
                     "recovery_used": recovery_used,
                     "recovery_error": recovery_error[:1000],
                     "recovery_decision": self._recovery_decision,
@@ -571,7 +595,7 @@ class AgentRunner:
                             "retryable": False,
                             "safe_fallback": "MANAGER_BLOCKED",
                             "attempts": attempt_number,
-                            "recovery_attempted": bool(self._recovery),
+                            "recovery_attempted": bool(self._recovery and not semantic_rejection),
                         },
                     )
                 return fallback
@@ -674,6 +698,29 @@ class AgentRunner:
                     agent=role
                 )
             raise
+
+    def _record_contract_diagnostics(self, role, attempts, repair_attempted, repair_result, recovery_attempted, recovery_result, final_reason, recovery):
+        """Persist hash-only contract diagnostics in state and existing checkpoint."""
+        router = getattr(self.orchestrator, "_router", None)
+        cfg = router.role_config(role, self.state.role_overrides.get(role, {})) if router else None
+        payload = {
+            "role": role, "stage": role,
+            "provider": getattr(cfg, "endpoint_url", ""), "model": getattr(cfg, "model", ""),
+            "attempts": list(attempts), "repair_attempted": bool(repair_attempted),
+            "repair_result": repair_result, "recovery_candidate": {
+                "endpoint_url": (recovery or {}).get("endpoint_url", ""),
+                "model": (recovery or {}).get("model", ""),
+                "eligibility": self._recovery_decision,
+            },
+            "recovery_attempted": bool(recovery_attempted), "recovery_result": recovery_result,
+            "final_reason": str(final_reason or '')[:1000],
+        }
+        if not hasattr(self.state, "metadata") or self.state.metadata is None:
+            self.state.metadata = {}
+        self.state.metadata[f"{role}_contract_diagnostics"] = payload
+        checkpoint = getattr(self.orchestrator, "_checkpoint", None)
+        if checkpoint is not None:
+            checkpoint.record_diagnostic(role, payload)
 
     def _record_recovery_state(self, role, failure_class, repair_used, *, recovery_used,
                                recovery=None, final_outcome="", recovery_error="", attempts=0):

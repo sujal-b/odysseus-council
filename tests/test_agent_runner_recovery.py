@@ -180,12 +180,10 @@ async def test_strategist_duplicate_ids_trigger_schema_repair():
 
 
 @pytest.mark.asyncio
-async def test_recovery_hop_keeps_final_mutation_only_policy_error(monkeypatch):
+async def test_semantic_strategist_rejection_never_uses_recovery(monkeypatch):
     calls = []
     readonly = '{"tasks":[{"id":"T1","description":"Inspect the code","write_scope":[]}]}'
-    valid = '{"tasks":[{"id":"T1","description":"Modify the code","write_scope":["src/"]}]}'
     recovery = {"endpoint_url": "https://recovery.example/v1", "model": "recovery-model"}
-
     monkeypatch.setattr(AgentRunner, "_resolve_recovery", lambda *args: recovery)
 
     class Orchestrator:
@@ -194,25 +192,93 @@ async def test_recovery_hop_keeps_final_mutation_only_policy_error(monkeypatch):
 
         async def _call_agent(self, *args, **kwargs):
             calls.append((args, kwargs))
-            return valid if args[2].get("model") == "recovery-model" else readonly
+            return readonly
 
-    state = SimpleNamespace(
-        session_id="strategist-recovery-policy-context",
-        role_overrides={},
-        metadata={},
-        user_prompt=(
-            "Plan only file-modification tasks. "
-            "Do not plan inspection-only test-execution tasks."
-        ),
-    )
-    result = await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke(
-        "strategist", [{"role": "user", "content": state.user_prompt}]
-    )
+    state = SimpleNamespace(session_id="strategist-semantic", role_overrides={}, metadata={}, user_prompt="Plan only file-modification tasks. Do not plan inspection-only test-execution tasks.")
+    with pytest.raises(Exception, match="semantic invalid"):
+        await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke("strategist", [{"role": "user", "content": state.user_prompt}])
 
-    assert validate_agent_output("strategist", result).success
+    assert len(calls) == 2
+    assert all(args[2].get("model") != "recovery-model" for args, _ in calls)
+    assert state.metadata["strategist_contract_diagnostics"]["recovery_attempted"] is False
+
+
+@pytest.mark.asyncio
+async def test_task10_long_invalid_strategist_uses_one_qualified_recovery_without_raw_persistence(tmp_path, monkeypatch):
+    from council_of_agents.scripts.workflow_checkpoint import WorkflowCheckpoint
+
+    calls = []
+    invalid = "x" * 16033
+    valid = '{"tasks":[{"id":"T1","description":"Modify core/session_manager.py","write_scope":["core/"]}]}'
+    recovery = {"endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "nemotron-3-ultra-free"}
+    monkeypatch.setattr(AgentRunner, "_resolve_recovery", lambda *args: recovery)
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+        _checkpoint = WorkflowCheckpoint("task11-recovered", base_dir=tmp_path)
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return valid if args[2].get("model") == recovery["model"] else invalid
+
+    state = SimpleNamespace(session_id="task11-recovered", role_overrides={}, metadata={}, user_prompt="Fix core/session_manager.py")
+    result = await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke("strategist", [{"role": "user", "content": state.user_prompt}])
+
+    diagnostic = state.metadata["strategist_contract_diagnostics"]
+    assert validate_agent_output("strategist", result, strict=True).success
     assert len(calls) == 3
-    assert "file-modification tasks only" in calls[2][0][3][1]["content"]
+    assert diagnostic["attempts"][0]["output_chars"] == 16033
+    assert diagnostic["recovery_attempted"] is True
+    assert diagnostic["recovery_result"] == "valid"
+    assert invalid not in json.dumps(Orchestrator._checkpoint._data)
 
+
+@pytest.mark.asyncio
+async def test_invalid_qualified_recovery_fails_closed_with_exact_reason(monkeypatch):
+    calls = []
+    invalid = "x" * 16033
+    recovery = {"endpoint_url": "https://opencode.ai/zen/v1/chat/completions", "model": "nemotron-3-ultra-free"}
+    monkeypatch.setattr(AgentRunner, "_resolve_recovery", lambda *args: recovery)
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return invalid
+
+    state = SimpleNamespace(session_id="task11-invalid-recovery", role_overrides={}, metadata={}, user_prompt="Fix core/session_manager.py")
+    with pytest.raises(Exception):
+        await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke("strategist", [{"role": "user", "content": state.user_prompt}])
+
+    failure = state.metadata["strategist_failure"]
+    assert len(calls) == 3
+    assert failure["terminal_state"] == "MODEL_FAILURE"
+    assert failure["reason"]
+    assert state.metadata["strategist_contract_diagnostics"]["recovery_result"] == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_recovery_fails_closed_without_extra_call(monkeypatch):
+    calls = []
+    monkeypatch.setattr(AgentRunner, "_resolve_recovery", lambda *args: None)
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return "not a contract"
+
+    state = SimpleNamespace(session_id="task11-no-recovery", role_overrides={}, metadata={}, user_prompt="Fix core/session_manager.py")
+    with pytest.raises(Exception):
+        await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke("strategist", [{"role": "user", "content": state.user_prompt}])
+
+    assert len(calls) == 2
+    assert state.metadata["strategist_contract_diagnostics"]["recovery_attempted"] is False
 
 def test_manager_schema_repair_uses_the_compact_contract():
     from council_of_agents.scripts.agent_runner import _schema_repair_messages

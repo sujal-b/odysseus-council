@@ -83,3 +83,20 @@ def test_terminal_failure_and_checkpoint_keep_nonempty_reason(tmp_path):
     checkpoint.record_final(failure["status"], "", [], failure=failure)
     assert failure["reason"] == "schema invalid"
     assert checkpoint.final_state()["failure"]["reason"] == "schema invalid"
+
+def test_chair_primary_is_qualified_nvidia():
+    from council_of_agents.scripts.council_router import CouncilRouter
+
+    router = CouncilRouter(str(ROOT / "council_of_agents/config/models.json"))
+    chair = router.role_config("chair")
+    assert chair.endpoint_url == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert chair.model == "nvidia/nemotron-3-super-120b-a12b"
+
+def test_terminal_failure_uses_last_emitted_error():
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+
+    state = SessionState(session_id="task11-terminal", owner="test", user_prompt="fix", status="IN_PROGRESS")
+    state.metadata = {"_last_error": {"role": "strategist", "stage": "strategist", "reason": "plan does not select a target from repository reconnaissance evidence"}}
+    failure = CouncilOrchestrator._terminal_failure(state, "MODEL_FAILURE", "run exited without terminal state")
+    assert failure["role"] == "strategist"
+    assert failure["reason"] == "plan does not select a target from repository reconnaissance evidence"

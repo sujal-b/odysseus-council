@@ -48,6 +48,7 @@ class WorkflowCheckpoint:
             "dag": None,
             "reconnaissance": None,
             "tasks": {},
+            "diagnostics": {},
             "final": None,
             "updated_at": None,
         }
@@ -127,6 +128,13 @@ class WorkflowCheckpoint:
             )},
         }
         self.save()
+    # -- safe control-role diagnostics -------------------------------------------
+
+    def record_diagnostic(self, role: str, diagnostic: dict) -> None:
+        """Persist bounded metadata only; callers must never include raw output."""
+        self._data.setdefault("diagnostics", {})[str(role)] = dict(diagnostic or {})
+        self.save()
+
     # -- per-task attempts, tool results, artifact paths -------------------------
 
     def task(self, task_id: str) -> dict:
