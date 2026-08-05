@@ -180,6 +180,11 @@ class CouncilOrchestrator:
             "COUNCIL_WORKFLOW_CHECKPOINT", "off"
         ).strip().lower() in ("on", "1", "true")
         self._checkpoint = None
+        # Task ids a resumed run deterministically closed at restore time
+        # (verification spec passed against the current on-disk workspace).
+        # The completeness auditor is told these are already satisfied and
+        # cannot grade them back to unmet.
+        self._restore_verification_passed = set()
         self._trace_context = None
         from council_of_agents.scripts.prompt_composer import PromptComposer
         self._composer = PromptComposer()
@@ -488,6 +493,7 @@ Report what you FIND, not what you think might exist."""
                         await emit(event="code_update", agent="implementer", status="IN_PROGRESS",
                                    text="Direct execution complete.", code=code, file_path=file_path)
                         state.report = impl_reply
+                        state.status = "COMPLETE"
                         await emit(event="complete", status="COMPLETE", text="Council run finished (DIRECT).")
                         # Record outcome for DIRECT path
                         outcome = CouncilOutcome(
@@ -581,10 +587,11 @@ Report what you FIND, not what you think might exist."""
                 strat_reply = chair_reply
 
             try:
-                dag, tasks = self._task_dag_from_plan(strat_reply)
+                dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt)
                 self._restore_dag_from_checkpoint(dag)
                 if ledger_runtime is not None:
                     ledger_runtime.sync_dag(dag, workspace=workspace)
+                await self._close_restored_terminal_tasks(dag, workspace, emit)
                 state.dag = dag.to_dict()
                 await emit(event="dag_update", agent="strategist", status="IN_PROGRESS",
                            text=f"Task graph: {len(tasks)} nodes.", extra={"dag": state.dag})
@@ -699,10 +706,11 @@ Report what you FIND, not what you think might exist."""
                         await emit(event="thought", agent="strategist", status="IN_PROGRESS",
                                    text=self._clean_thought_text("strategist", revised_reply))
                         try:
-                            dag, tasks = self._task_dag_from_plan(revised_reply)
+                            dag, tasks = self._task_dag_from_plan(revised_reply, state.user_prompt)
                             self._restore_dag_from_checkpoint(dag)
                             if ledger_runtime is not None:
                                 ledger_runtime.sync_dag(dag, workspace=workspace)
+                            await self._close_restored_terminal_tasks(dag, workspace, emit)
                             state.dag = dag.to_dict()
                             await emit(event="dag_update", agent="strategist", status="IN_PROGRESS",
                                        text=f"Task graph revised: {len(tasks)} nodes.", extra={"dag": state.dag})
@@ -840,6 +848,13 @@ Report what you FIND, not what you think might exist."""
                         text=f"Approved plan rejected by contract gate: {exc}",
                     )
                     return
+                if self._checkpoint is not None:
+                    # Persist the sealed plan before any Implementer work.
+                    # A restart immediately after Manager approval must retain
+                    # the DAG even when no task has reached a terminal state.
+                    self._checkpoint.record_dag(dag.to_dict())
+                    # Let an external restart/cancel observer stop here.
+                    await asyncio.sleep(0.05)
                 from council_of_agents.scripts.ledger_models import RunStatus
                 completed_outputs: dict[str, str] = {
                     node.id: node.output
@@ -1116,8 +1131,7 @@ Report what you FIND, not what you think might exist."""
 
                             from src.teacher_escalation import evaluate_turn_regex
                             verdict, reason = evaluate_turn_regex(tool_results, impl_reply)
-                            if verdict == "failure":
-                                raise Exception(f"Task verification failed: {reason}")
+                            regex_failure = reason if verdict == "failure" else None
 
                             if (
                                 work_packet.verification is not None
@@ -1191,19 +1205,32 @@ Report what you FIND, not what you think might exist."""
                                         f"{deterministic_evidence.failure_signature}"
                                     )
 
+                            # The regex gate is a refusal heuristic for unmonitored
+                            # student turns; transient tool errors (an edit_file
+                            # "old_string not found" the implementer recovered
+                            # from) match its patterns. Once deterministic
+                            # evidence passed, the artifact is provably correct —
+                            # the regex adds only false positives (slice run
+                            # wfa-1785674440522: correct diff, regex hard-fail).
+                            if self._regex_failure_actionable(regex_failure, deterministic_evidence):
+                                raise Exception(f"Task verification failed: {regex_failure}")
+
                             # Per-task Manager review (quality gate)
                             if complexity in ("MEDIUM", "COMPLEX"):
                                 task_review = await self._invoke_agent_safe(
                                     "manager", state,
                                     [{"role": "system",  "content": self._load_prompt("validator_task")},
-                                     {"role": "user",    "content": f"Task: {t_node.id} — {t_node.description}\n\n{self._envelope_user_msg(state.user_prompt, workspace=workspace)}"},
-                                     {"role": "assistant", "content": impl_reply},
-                                     {"role": "user",    "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence)},
-                                     {"role": "user",    "content": self._task_gate_contract_line(t_node)}],
+                                     {"role": "user", "content": self._task_gate_contract_line(t_node)},
+                                     {"role": "user", "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence, t_node)},
+                                     {"role": "assistant", "content": impl_reply}],
                                     emit, owner=owner, written_paths=written_paths
                                 )
                                 if task_review:
-                                    review_verdict = self._parse_manager_verdict(task_review)
+                                    review_verdict = self._task_gate_verdict(
+                                        task_review,
+                                        getattr(deterministic_evidence, "passed", None),
+                                        t_node.id,
+                                    )
                                     if review_verdict == "REVISE":
                                         raise Exception(f"Manager rejected task {t_node.id}: {task_review}")
 
@@ -2623,15 +2650,19 @@ Report what you FIND, not what you think might exist."""
         return reply
 
     @staticmethod
-    def _task_dag_from_plan(plan):
+    def _task_dag_from_plan(plan, user_prompt=None):
         """Validate a strategist plan before it can reach Manager or execution."""
         from council_of_agents.scripts.council_schemas import validate_agent_output
+        from council_of_agents.scripts.task_dag import mutation_only_plan_error
         validation = validate_agent_output("strategist", plan)
         if not validation.success or not validation.data:
             raise ValueError(validation.error or "missing tasks")
         tasks = validation.data.get("tasks") or []
         if not tasks:
             raise ValueError("missing tasks")
+        policy_error = mutation_only_plan_error(tasks, user_prompt)
+        if policy_error:
+            raise ValueError(policy_error)
         dag = TaskDAG.from_task_list(tasks)
         dag.validate_contracts()
         return dag, tasks
@@ -2661,6 +2692,55 @@ Report what you FIND, not what you think might exist."""
             current.failure_category = node.get("failure_category")
             current.execution_retry = node.get("execution_retry")
             current.accumulated_writes = set(node.get("accumulated_writes") or [])
+
+    async def _close_restored_terminal_tasks(self, dag, workspace, emit) -> None:
+        """Deterministically close restored terminal tasks whose deliverable is
+        already verifiably on disk.
+
+        A resumed run skips the DAG execution loop entirely (``all_complete``
+        is already true), so a task that FAILED before the interrupt or was
+        BLOCKED by failure propagation never re-executes and never re-verifies.
+        The interrupted run's artifacts may be complete and correct on disk:
+        the original FAILED can be a gate-loop artifact (a read-only task
+        REVISE'd for "verification" despite a correct report) and a dependent
+        BLOCKED is then phantom propagation from it. Run each terminal task's
+        own verification spec against the current workspace; a pass is ground
+        truth that the deliverable exists, so the task is marked DONE and the
+        completeness auditor is told the criterion is already satisfied. A
+        fail (or a spec that cannot run, e.g. ``cat`` on Windows) leaves the
+        terminal status intact — the run still fails honestly.
+        """
+        if dag is None or not self._checkpoint:
+            return
+        from council_of_agents.scripts.verification_engine import VerificationEngine
+        from council_of_agents.scripts.ledger_models import VerificationSpec
+        from council_of_agents.scripts.task_dag import normalize_verification
+        engine = VerificationEngine(workspace)
+        for node in dag._nodes.values():
+            if node.status not in ("FAILED", "BLOCKED"):
+                continue
+            spec_dict = normalize_verification(node.verification)
+            if not spec_dict:
+                continue
+            try:
+                spec = VerificationSpec.model_validate(spec_dict)
+                evidence = await engine.verify(spec, criterion_id=node.id, task_id=node.id)
+            except Exception as exc:
+                logger.warning("Restore closure verification for %s failed: %s", node.id, exc)
+                continue
+            if not evidence.passed:
+                continue
+            dag.mark_done(
+                node.id,
+                output=node.output or f"Restored task; deterministic verification passed.",
+            )
+            self._restore_verification_passed.add(node.id)
+            await emit(
+                event="verification_result", agent="manager", status="COMPLETE",
+                text=f"Deterministic verification passed for restored task {node.id}.",
+                extra={"task_id": node.id, "criterion_id": node.id,
+                       "evidence_id": evidence.id, "restored": True},
+            )
 
     def _artifact_paths_for(self, verification_engine, deterministic_evidence) -> list:
         """Absolute artifact file paths recorded for one task's verification."""
@@ -2697,10 +2777,12 @@ Report what you FIND, not what you think might exist."""
             pass
         return out
 
-    def _ground_audit(self, audit: dict, written_paths) -> dict:
+    def _ground_audit(self, audit: dict, written_paths, forced_met_ids=()) -> dict:
         """Keep the auditor honest: recompute completeness from the per-criterion
         `met` flags (don't trust the model's arithmetic) and demote an optimistic
-        `met` when its own detail admits a stub/TODO."""
+        `met` when its own detail admits a stub/TODO. Criteria whose task was
+        deterministically verified at restore are pinned to `met` — ground
+        truth cannot be graded away by the model."""
         crits = audit.get("criteria", []) or []
         for c in crits:
             if c.get("met"):
@@ -2709,6 +2791,11 @@ Report what you FIND, not what you think might exist."""
                     c["met"] = False
                     if c.get("gap_type") != "needs_user":
                         c["gap_type"] = "broken"
+        forced = set(forced_met_ids or ())
+        for c in crits:
+            if c.get("id") in forced:
+                c["met"] = True
+                c["gap_type"] = "verified"
         total = len(crits)
         met = sum(1 for c in crits if c.get("met"))
         audit["completeness"] = (met / total) if total else 0.0
@@ -2788,13 +2875,24 @@ Report what you FIND, not what you think might exist."""
         checklist = "\n".join(
             f"- id={c['id']}: {c['description']} | acceptance: {c['acceptance']}" for c in criteria
         )
+        closure_lines = [
+            f"- id={c['id']}: deterministic verification PASSED on the current "
+            "workspace (this task's own verification command); this criterion "
+            "is objectively satisfied. Do NOT mark it unmet."
+            for c in criteria if c.get("id") in self._restore_verification_passed
+        ]
+        closure_note = (
+            "\n\nDeterministically verified criteria (already closed on disk):\n"
+            + "\n".join(closure_lines)
+        ) if closure_lines else ""
         files = ", ".join(sorted(written_paths)) if written_paths else "(none recorded)"
         audit_prompt = (
             f"User request:\n{state.user_prompt}\n\n"
             f"Acceptance criteria checklist:\n{checklist}\n\n"
             f"Files written: {files}\n\n"
             f"Delivered artifact (implementer output):\n{(impl_reply or '')[:6000]}\n\n"
-            "Grade only the supplied evidence. Output the strict JSON described in your instructions."
+            f"Grade only the supplied evidence. Output the strict JSON described in your instructions."
+            f"{closure_note}"
         )
         reply = await self._invoke_agent_safe(
             "completeness_auditor", state,
@@ -2808,7 +2906,9 @@ Report what you FIND, not what you think might exist."""
         v = validate_agent_output("completeness_auditor", reply)
         if not (v.success and v.data):
             return None
-        return self._ground_audit(v.data, written_paths)
+        return self._ground_audit(
+            v.data, written_paths, forced_met_ids=self._restore_verification_passed
+        )
 
     async def _ask_user_decision(self, state, question, emit, resume_event, criterion_id="", options=None):
         """Pause the run on a critical fork and ask the user; return their answer.
@@ -2929,6 +3029,23 @@ Report what you FIND, not what you think might exist."""
             if gap_reply:
                 impl_reply = f"{impl_reply}\n\n# === gap-fill (round {_it + 1}) ===\n{gap_reply}"
                 gaps_attempted += len(fillable)
+        # Resume reconciliation: a restored terminal READ-ONLY task whose
+        # criterion the final audit judged met has no on-disk deliverable
+        # left to produce — the pre-interrupt FAILED was a gate-loop artifact,
+        # not a deliverable gap. Promote it so the run can complete. Tasks
+        # requiring mutation stay FAILED/BLOCKED unless deterministically
+        # closed at restore (their deliverable must be provable, not assumed).
+        last_audit_criteria = (completeness or {}).get("criteria") or []
+        met_ids = {str(c.get("id")) for c in last_audit_criteria if c.get("met")}
+        for n in dag._nodes.values():
+            if n.status in ("FAILED", "BLOCKED") and not TaskDAG.requires_mutation(n):
+                if n.id in met_ids:
+                    dag.mark_done(
+                        n.id,
+                        output=n.output or n.reason or f"Restored task {n.id} closed by completeness audit.",
+                    )
+                    await emit(event="log", status="IN_PROGRESS", agent="completeness_auditor",
+                               text=f"Restored read-only task {n.id} closed: criterion verified met by audit.")
         metrics = None
         if completeness is not None:
             metrics = {
@@ -3195,7 +3312,6 @@ Report what you FIND, not what you think might exist."""
                 return "BLOCKED"
         except Exception as e:
             logger.warning("JSON parse of manager verdict failed: %s. Falling back to substring match.", e)
-
         clean = text.strip().replace("*", "").upper()
         if clean.startswith("APPROVED") or clean.startswith("ACCEPT"):
             return "APPROVED"
@@ -3207,6 +3323,66 @@ Report what you FIND, not what you think might exist."""
         # approval. AgentRunner normally supplies a safe BLOCKED fallback, but
         # this parser is also used by legacy/direct paths.
         return "BLOCKED"
+
+    @staticmethod
+    def _regex_failure_actionable(regex_failure, deterministic_evidence) -> bool:
+        """Whether a turn-regex failure still warrants a hard task failure.
+
+        The regex is a refusal heuristic for unmonitored student turns; a
+        transient tool error the implementer recovered from matches its
+        patterns. Once deterministic evidence passed, the artifact is
+        provably correct, so the regex adds only false positives.
+        """
+        return bool(regex_failure) and not (
+            deterministic_evidence is not None
+            and bool(getattr(deterministic_evidence, "passed", False))
+        )
+
+    def _manager_review_issues(self, text: str) -> list:
+        """Extract the issues array from a Manager task review JSON payload."""
+        if not str(text or "").strip():
+            return []
+        try:
+            clean = text.strip()
+            if "```json" in clean:
+                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+            elif clean.startswith("```"):
+                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
+            if "{" in clean:
+                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
+            issues = json.loads(clean).get("issues")
+            return issues if isinstance(issues, list) else []
+        except Exception:
+            return []
+
+    def _task_gate_verdict(
+        self, task_review: str, evidence_passed: bool | None, task_id: str = "",
+    ) -> str:
+        """Per-task Manager review verdict for the quality gate.
+
+        A REVISE verdict with no cited issues is un-actionable after
+        deterministic verification already passed: the implementer gets no
+        defect to fix, so consuming the bounded retry budget would fail a
+        correct task (vertical slice wfa-1785671796454: correct artifact,
+        two empty-issues REVISE verdicts, retry budget exhausted -> FAILED).
+        Treat it as approval; a real rejection must name an issue.
+        """
+        verdict = self._parse_manager_verdict(task_review)
+        issues = self._manager_review_issues(task_review)
+        off_task = bool(task_id and issues) and all(
+            isinstance(issue, dict)
+            and str(issue.get("task_id") or "").strip()
+            and str(issue.get("task_id") or "").strip().upper() != "ALL"
+            and str(issue.get("task_id") or "").strip() != task_id
+            for issue in issues
+        )
+        if verdict == "REVISE" and evidence_passed and (not issues or off_task):
+            logger.warning(
+                "Manager REVISE without cited issues treated as approval "
+                "(deterministic verification passed): %s", str(task_review)[:200],
+            )
+            return "APPROVED"
+        return verdict
 
     @staticmethod
     def _classify_perspective_evidence(text: str) -> str:
@@ -3388,13 +3564,14 @@ Report what you FIND, not what you think might exist."""
         request.
         """
         return (
+            f"Task {getattr(task, 'id', '')}: {getattr(task, 'description', '')}\n"
             f"Task contract: acceptance = {getattr(task, 'acceptance', '') or '(unspecified)'}; "
             f"write scope = {sorted(task.write_scope or [])}. Judge ONLY against this task's "
             "acceptance; deliverables owned by other tasks in the plan are not part of this task."
         )
 
     @staticmethod
-    def _task_gate_evidence_line(task_written_paths, deterministic_evidence=None) -> str:
+    def _task_gate_evidence_line(task_written_paths, deterministic_evidence=None, task=None) -> str:
         """Guard-approved writes and verification result for the task gate.
 
         The gate used to see only the implementer's self-report, so a
@@ -3412,6 +3589,16 @@ Report what you FIND, not what you think might exist."""
             )
         else:
             parts.append("Actual files written by this task's attempt: NONE")
+        if task is not None and getattr(task, "accumulated_writes", None):
+            parts.append(
+                "Files on disk from ALL attempts of this task (guard-approved, "
+                "already delivered): "
+                f"{sorted(task.accumulated_writes)}. This attempt added no new "
+                "writes because the deliverable is already on disk; the "
+                "deterministic verification above ran against the current "
+                "on-disk state. Judge the deliverable on disk, not whether "
+                "this attempt re-wrote it."
+            )
         if deterministic_evidence is not None:
             passed = bool(getattr(deterministic_evidence, "passed", False))
             parts.append(

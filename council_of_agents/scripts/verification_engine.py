@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 import hashlib
 import os
 from dataclasses import dataclass, field
@@ -16,7 +17,8 @@ from council_of_agents.scripts.ledger_models import Evidence, VerificationSpec
 
 
 DEFAULT_ALLOWED_EXECUTABLES = {
-    "pytest", "ruff", "mypy", "npm", "pnpm", "yarn", "cargo", "go", "dotnet"
+    "python", "python3", "py",
+    "pytest", "ruff", "mypy", "npm", "pnpm", "yarn", "cargo", "go", "dotnet",
 }
 DEFAULT_OUTPUT_LIMIT = 16 * 1024
 _SENSITIVE_TERMS = ("token", "password", "passwd", "secret", "api_key", "api-key")
@@ -160,6 +162,18 @@ class VerificationEngine:
             hashes[details["path"]] = details["sha256"]
         return hashes
 
+    @staticmethod
+    def _validate_command_argv(argv: list[str]) -> None:
+        if len(argv) >= 3 and argv[0].lower() in ("python", "python3", "py") and argv[1] == "-c":
+            try:
+                ast.parse(argv[2])
+            except SyntaxError as exc:
+                raise VerificationPolicyError(
+                    "verification command is malformed: python -c code does not parse "
+                    f"({exc.msg} at line {exc.lineno}); the task artifact cannot be "
+                    "blamed for a broken verification spec"
+                ) from exc
+
     def _scoped_path(self, raw_path: Any) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():
             raise VerificationPolicyError("file adapter requires a non-empty relative path")
@@ -220,6 +234,7 @@ class VerificationEngine:
         allowed = {_executable_name(v) for v in self.policy.allowed_executables}
         if executable not in allowed:
             raise VerificationPolicyError(f"verification executable is not allowed: {executable}")
+        self._validate_command_argv(argv)
         timeout = float(config.get("timeout_seconds", self.policy.max_timeout_seconds))
         if timeout <= 0 or timeout > self.policy.max_timeout_seconds:
             raise VerificationPolicyError("verification timeout exceeds policy")

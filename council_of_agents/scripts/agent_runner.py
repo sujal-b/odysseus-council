@@ -20,6 +20,20 @@ from src.model_context import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
+
+def _strategist_plan_error(tasks, user_prompt) -> str | None:
+    """Return the existing DAG/policy error before a plan reaches Manager."""
+    from council_of_agents.scripts.task_dag import TaskDAG, mutation_only_plan_error
+    error = mutation_only_plan_error(tasks, user_prompt)
+    if error:
+        return error
+    try:
+        TaskDAG.from_task_list(tasks or []).validate_contracts()
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
 _REPAIR_CONTRACTS = {
     "chair": '{"complexity":"SIMPLE|MEDIUM|COMPLEX","route":"DIRECT|PIPELINE","action":"read|write|search|command|analyze|unknown","target":"...","reason":"..."}',
     "strategist": '{"tasks":[{"id":"T1","description":"...","depends_on":[],"acceptance":"...","write_scope":["src/"]}],"risks":[]}',
@@ -226,6 +240,12 @@ class AgentRunner:
                     raw_text=raw,
                     validation_error=validation.error,
                 )
+            if validation_role == "strategist":
+                policy_error = _strategist_plan_error(
+                    (validation.data or {}).get("tasks"), getattr(self.state, "user_prompt", None)
+                )
+                if policy_error:
+                    raise SchemaValidationError("strategist plan policy invalid (recovery hop)", raw, policy_error)
         return raw
 
     def _get_extractor(self, role: str):
@@ -446,6 +466,12 @@ class AgentRunner:
                             raw_text=result,
                             validation_error=v.error
                         )
+                    if validation_role == "strategist":
+                        policy_error = _strategist_plan_error(
+                            (v.data or {}).get("tasks"), getattr(self.state, "user_prompt", None)
+                        )
+                        if policy_error:
+                            raise SchemaValidationError("strategist plan policy invalid", result, policy_error)
                 return result
             except SchemaValidationError as error:
                 if not schema_repair_used:
@@ -509,8 +535,11 @@ class AgentRunner:
             recovery_error = ""
             if self._recovery:
                 try:
+                    recovery_messages = _schema_repair_messages(
+                        original_messages, validation_role, e.validation_error, e.raw_text,
+                    )
                     recovered = await self._recovery_hop(
-                        role, original_messages, validation_role, self._recovery,
+                        role, recovery_messages, validation_role, self._recovery,
                         trigger="invalid_output", failure_class="invalid_output",
                     )
                     self._record_recovery_state(

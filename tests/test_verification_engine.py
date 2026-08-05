@@ -27,6 +27,62 @@ async def test_file_adapter_records_hash_and_content_evidence(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_command_rejects_corrupted_python_c_argv(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "def health():\n    return {'status': 'ok'}\n", encoding="utf-8"
+    )
+    engine = VerificationEngine(tmp_path)
+    corrupted_code = "import src.app; assert hasattr(src.app, 'health'); assert src.app.health() == {'status': 'ok'}}},"
+    evidence = await engine.verify(
+        VerificationSpec(adapter="command", config={
+            "argv": ["python", "-c", corrupted_code, "{"],
+        }),
+        criterion_id="AC-9",
+    )
+    assert evidence.passed is False
+    assert "malformed" in evidence.details["error"]
+
+
+@pytest.mark.asyncio
+async def test_command_rejects_syntax_error_in_python_c_code(tmp_path):
+    engine = VerificationEngine(tmp_path)
+    evidence = await engine.verify(
+        VerificationSpec(adapter="command", config={
+            "argv": ["python", "-c", "if True print('oops'"],
+        }),
+        criterion_id="AC-10",
+    )
+    assert evidence.passed is False
+    assert "does not parse" in evidence.details["error"]
+
+
+@pytest.mark.asyncio
+async def test_command_accepts_valid_python_c_with_semicolons(tmp_path):
+    engine = VerificationEngine(tmp_path)
+    evidence = await engine.verify(
+        VerificationSpec(adapter="command", config={
+            "argv": ["python", "-c", "x = 1; assert x == 1; print('ok')"],
+        }),
+        criterion_id="AC-11",
+    )
+    assert evidence.passed is True
+    assert evidence.details["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_command_does_not_gate_non_python_argv(tmp_path):
+    engine = VerificationEngine(tmp_path, _python_policy())
+    evidence = await engine.verify(
+        VerificationSpec(adapter="command", config={
+            "argv": [sys.executable, "-c", "import sys; print(sys.version_info[0])"],
+        }),
+        criterion_id="AC-12",
+    )
+    assert evidence.passed is True
+
+
+@pytest.mark.asyncio
 async def test_file_adapter_rejects_workspace_escape(tmp_path):
     engine = VerificationEngine(tmp_path)
     evidence = await engine.verify(
@@ -68,6 +124,24 @@ async def test_command_adapter_rejects_unapproved_executable(tmp_path):
     )
     assert evidence.passed is False
     assert "not allowed" in evidence.details["error"]
+
+
+@pytest.mark.asyncio
+async def test_default_policy_allows_workspace_python_interpreter(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "def health():\n    return {'status': 'ok'}\n", encoding="utf-8"
+    )
+    engine = VerificationEngine(tmp_path)
+    evidence = await engine.verify(
+        VerificationSpec(adapter="command", config={
+            "argv": ["python", "-c",
+                     "from src.app import health; assert health() == {'status': 'ok'}"]
+        }),
+        criterion_id="AC-8",
+    )
+    assert evidence.passed is True
+    assert evidence.details["exit_code"] == 0
 
 
 @pytest.mark.asyncio

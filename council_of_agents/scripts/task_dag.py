@@ -1,4 +1,5 @@
 from __future__ import annotations
+import ast
 import hashlib
 import json
 import re
@@ -8,6 +9,57 @@ from enum import Enum
 from pathlib import PurePosixPath
 
 from council_of_agents.scripts.ledger_models import TaskResult, WorkPacket
+
+
+def verification_command_error(command: str) -> str | None:
+    """Return a deterministic reason a verification command cannot run, or None.
+
+    Mirrors verification_engine._validate_command_argv so plan ingestion and
+    the execution engine agree on what is provably broken: a command that
+    cannot split (unbalanced quotes) or a ``python -c`` code argument that
+    does not parse. The JSON quote-bleed corruption from slice run 10 lands
+    here as a ``}}, {`` fragment swallowed into the code argument, which
+    shlex.split happily keeps and ast.parse rejects.
+    """
+    try:
+        argv = shlex.split(command)
+    except ValueError as exc:
+        return f"unbalanced quotes: {exc}"
+    if len(argv) >= 3 and argv[0].lower() in ("python", "python3", "py") and argv[1] == "-c":
+        try:
+            ast.parse(argv[2])
+        except SyntaxError as exc:
+            return f"python -c code does not parse ({exc.msg})"
+    return None
+
+
+def mutation_only_plan_error(tasks, user_prompt: str | None) -> str | None:
+    """Return a plan-policy error for an explicit mutation-only request.
+
+    Read-only discovery is valid for unknown-target work. Enforce this only
+    when the user supplies the complete, unambiguous no-inspection directive.
+    """
+    prompt = " ".join(str(user_prompt or "").casefold().split())
+    directive = all((
+        re.search(r"\bplan\s+only\s+file(?:-|\s+)modification\s+tasks?\b", prompt),
+        re.search(r"\bdo\s+not\s+plan\s+inspection(?:-|\s+)only\b", prompt),
+        re.search(r"\btest(?:-|\s+)execution\s+tasks?\b", prompt),
+    ))
+    if not directive:
+        return None
+    readonly = [
+        str(task.get("id") or "(unnamed)")
+        for task in tasks or []
+        if isinstance(task, dict)
+        and not task.get("workspace_root")
+        and not task.get("write_scope")
+    ]
+    if readonly:
+        return (
+            "user requires file-modification tasks only; read-only tasks are not allowed: "
+            + ", ".join(readonly)
+        )
+    return None
 
 
 def normalize_verification(raw) -> dict | None:
@@ -27,14 +79,12 @@ def normalize_verification(raw) -> dict | None:
     if "adapter" in raw and isinstance(raw.get("config"), dict):
         return raw
     if raw.get("type") in ("shell", "command") and isinstance(raw.get("command"), str):
-        try:
-            argv = shlex.split(raw["command"])
-        except ValueError:
-            # Malformed command (e.g. unbalanced quote from the model):
-            # drop verification rather than crash the run (slice run 7:
-            # the shadow ledger sync caught this first, the production
-            # path would have crashed at packet build).
+        if verification_command_error(raw["command"]) is not None:
+            # Provably broken command (unbalanced quotes, or `python -c`
+            # code that cannot parse after quote-bleed): drop verification
+            # rather than ship garbage argv to execution (slice run 10).
             return None
+        argv = shlex.split(raw["command"])
         if argv:
             return {"adapter": "command", "config": {"argv": argv, "timeout_seconds": 600}}
     if raw.get("type") == "file" and isinstance(raw.get("path"), str):

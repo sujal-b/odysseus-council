@@ -209,6 +209,25 @@ class StrategistTask(BaseModel):
             raise ValueError("write_scope entries must be workspace-relative directories ending in '/'")
         return self
 
+    @model_validator(mode="after")
+    def validate_verification_command(self):
+        # Reject provably broken verification commands at plan ingestion so
+        # they never reach execution (slice run 10: JSON quote-bleed produced
+        # a `python -c` command that failed ast.parse at runtime and burned
+        # every task retry). A raise here fails validate_agent_output, which
+        # the agent runner turns into a schema-repair replan.
+        from council_of_agents.scripts.task_dag import verification_command_error
+        verif = self.verification
+        if (
+            isinstance(verif, dict)
+            and verif.get("type") in ("shell", "command")
+            and isinstance(verif.get("command"), str)
+        ):
+            reason = verification_command_error(verif["command"])
+            if reason is not None:
+                raise ValueError(f"verification command is malformed: {reason}")
+        return self
+
 
 class StrategistResponseNormalizer:
     """Normalize only unambiguous Strategist response shapes."""

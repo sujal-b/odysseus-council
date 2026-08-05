@@ -116,6 +116,104 @@ async def test_strategist_schema_repair_corrects_scope_before_plan_handoff():
     assert "(omitted; rebuild the compact plan from the decision context)" in calls[1][0][3][1]["content"]
 
 
+@pytest.mark.asyncio
+async def test_strategist_mutation_only_policy_repairs_once_with_a_write_scope():
+    calls = []
+    readonly = '{"tasks":[{"id":"T1","description":"Inspect the code","write_scope":[]}]}'
+    valid = '{"tasks":[{"id":"T1","description":"Modify the code","write_scope":["src/"]}]}'
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return readonly if len(calls) == 1 else valid
+
+    state = SimpleNamespace(
+        session_id="strategist-mutation-only-repair",
+        role_overrides={},
+        metadata={},
+        user_prompt=(
+            "Plan only file-modification tasks. "
+            "Do not plan inspection-only test-execution tasks."
+        ),
+    )
+    result = await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke(
+        "strategist", [{"role": "user", "content": state.user_prompt}]
+    )
+
+    assert validate_agent_output("strategist", result).success
+    assert len(calls) == 2
+    assert calls[1][1]["disable_tools"] is True
+    assert "file-modification tasks only" in calls[1][0][3][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_strategist_duplicate_ids_trigger_schema_repair():
+    calls = []
+    duplicate = (
+        '{"tasks":[{"id":"T1","description":"Modify the app","write_scope":["src/"]},'
+        '{"id":"T1","description":"Test the app","write_scope":["tests/"]}]}'
+    )
+    valid = (
+        '{"tasks":[{"id":"T1","description":"Modify the app","write_scope":["src/"]},'
+        '{"id":"T2","description":"Test the app","write_scope":["tests/"]}]}'
+    )
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return duplicate if len(calls) == 1 else valid
+
+    state = SimpleNamespace(session_id="strategist-duplicate-id-repair", role_overrides={}, metadata={})
+    result = await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke(
+        "strategist", [{"role": "user", "content": "plan the work"}]
+    )
+
+    assert [task["id"] for task in json.loads(result)["tasks"]] == ["T1", "T2"]
+    assert len(calls) == 2
+    assert calls[1][1]["disable_tools"] is True
+
+
+@pytest.mark.asyncio
+async def test_recovery_hop_keeps_final_mutation_only_policy_error(monkeypatch):
+    calls = []
+    readonly = '{"tasks":[{"id":"T1","description":"Inspect the code","write_scope":[]}]}'
+    valid = '{"tasks":[{"id":"T1","description":"Modify the code","write_scope":["src/"]}]}'
+    recovery = {"endpoint_url": "https://recovery.example/v1", "model": "recovery-model"}
+
+    monkeypatch.setattr(AgentRunner, "_resolve_recovery", lambda *args: recovery)
+
+    class Orchestrator:
+        AGENT_TIMEOUTS = {}
+        AGENT_MAX_RETRIES = {"strategist": 1}
+
+        async def _call_agent(self, *args, **kwargs):
+            calls.append((args, kwargs))
+            return valid if args[2].get("model") == "recovery-model" else readonly
+
+    state = SimpleNamespace(
+        session_id="strategist-recovery-policy-context",
+        role_overrides={},
+        metadata={},
+        user_prompt=(
+            "Plan only file-modification tasks. "
+            "Do not plan inspection-only test-execution tasks."
+        ),
+    )
+    result = await AgentRunner(Orchestrator(), state, emit=None, tracker=None).invoke(
+        "strategist", [{"role": "user", "content": state.user_prompt}]
+    )
+
+    assert validate_agent_output("strategist", result).success
+    assert len(calls) == 3
+    assert "file-modification tasks only" in calls[2][0][3][1]["content"]
+
+
 def test_manager_schema_repair_uses_the_compact_contract():
     from council_of_agents.scripts.agent_runner import _schema_repair_messages
 

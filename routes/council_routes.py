@@ -449,6 +449,9 @@ def _make_orchestrator_wrapped(webhook_manager=None):
     async def _run_orchestrator_wrapped(session_id: str, state, proxy_queue, resume_event):
         try:
             orchestrator = CouncilOrchestrator(_router_cfg)
+            # Council sessions are durable workflows. Keep checkpointing local
+            # to this production route rather than relying on process env.
+            orchestrator._workflow_checkpoint_enabled = True
             await orchestrator.run(state, proxy_queue, resume_event)
             fire_event("council_completed", state.owner)
             if webhook_manager:
@@ -491,6 +494,18 @@ def _make_orchestrator_wrapped(webhook_manager=None):
 from src.constants import DATA_DIR
 from council_of_agents.scripts.task_dag import TaskDAG
 
+
+def _has_resumable_checkpoint(session_id: str) -> bool:
+    """Resume only a Manager-approved workflow with no recorded final state."""
+    try:
+        from council_of_agents.scripts.workflow_checkpoint import WorkflowCheckpoint
+
+        checkpoint = WorkflowCheckpoint(session_id)
+        return checkpoint.path.exists() and checkpoint.approved() and checkpoint.final_state() is None
+    except Exception:
+        return False
+
+
 def _recover_orphaned_sessions():
     session_dir = os.path.join(DATA_DIR, "council_sessions")
     if not os.path.exists(session_dir):
@@ -503,9 +518,12 @@ def _recover_orphaned_sessions():
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             if data.get("status") in ("IN_PROGRESS", "BLOCKED"):
+                sid = data.get("session_id")
+                if sid and _has_resumable_checkpoint(sid):
+                    logger.warning("Resumable workflow checkpoint found: %s", sid)
+                    continue
                 data["status"] = "FAILED"
                 data["report"] = data.get("report", "") + "\n\n[System] Interrupted by server restart."
-                sid = data.get("session_id")
                 if sid:
                     state = _store.load(sid)
                     if state:
@@ -627,26 +645,37 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
         queue = asyncio.Queue()
         _queues[session_id] = queue
 
-        is_running = session_id in _running_sessions
-        # A run is auto-launched ONLY when the session has never started
-        # (status PENDING with an empty log). Reconnecting to a session that has
-        # already produced events — e.g. after a page refresh — must never spawn
-        # a fresh orchestrator run: the orchestrator has no mid-pipeline resume
-        # and would re-execute from the Chair. That re-execution is exactly the
-        # "workflow restarts on refresh" bug.
+        live_task = _running_tasks.get(session_id)
+        is_running = live_task is not None and not live_task.done()
+        # Reconnects never create a fresh run after emitted events. Only an
+        # approved, nonterminal checkpoint may resume below.
+        # All other stale sessions remain fail-closed.
         never_started = state.status == "PENDING" and not state.log
         # Replay exactly one durable gate only while a live worker still owns
-        # the run. A stale blocked session is converted to an explicit
-        # interrupted failure below instead of rendering a dead gate.
+        # the run. Stale approved checkpoints launch below; other stale gates
+        # become an explicit interrupted failure instead of a dead prompt.
         if is_running and state.status == "BLOCKED":
             replay_gate = _gate_event(state)
             if replay_gate is not None:
                 await queue.put(replay_gate)
         if not is_running:
-            if never_started:
+            if live_task is not None:
+                _running_tasks.pop(session_id, None)
+            _running_sessions.discard(session_id)
+            _resumes.pop(session_id, None)
+
+            resumable = (
+                state.status in ("IN_PROGRESS", "BLOCKED")
+                and _has_resumable_checkpoint(session_id)
+            )
+            if never_started or resumable:
+                if resumable:
+                    # Checkpoint approval supersedes any stale in-memory gate.
+                    state.status = "IN_PROGRESS"
+                    state.pending_gate = None
+                    _store.save(state)
                 _running_sessions.add(session_id)
-                if session_id not in _resumes:
-                    _resumes[session_id] = asyncio.Event()
+                _resumes[session_id] = asyncio.Event()
 
                 proxy_queue = SessionQueueProxy(session_id, state)
                 task = asyncio.create_task(_run_orchestrator_wrapped(session_id, state, proxy_queue, _resumes[session_id]))
