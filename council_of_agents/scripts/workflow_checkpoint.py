@@ -11,6 +11,7 @@ orchestrator behaves exactly as before.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -45,6 +46,7 @@ class WorkflowCheckpoint:
             "created_at": time.time(),
             "stages": {},
             "dag": None,
+            "reconnaissance": None,
             "tasks": {},
             "final": None,
             "updated_at": None,
@@ -105,6 +107,26 @@ class WorkflowCheckpoint:
         self._data["dag"] = dag_dict
         self.save()
 
+    # -- repository reconnaissance ---------------------------------------------
+
+    def reconnaissance(self) -> dict | None:
+        entry = self._data.get("reconnaissance")
+        return dict(entry) if isinstance(entry, dict) else None
+
+    def record_reconnaissance(self, facts: dict) -> None:
+        capsule = str((facts or {}).get("capsule") or "")
+        digest = str((facts or {}).get("sha256") or "")
+        if not capsule or hashlib.sha256(capsule.encode("utf-8")).hexdigest() != digest:
+            raise ValueError("invalid repository reconnaissance capsule")
+        self._data["reconnaissance"] = {
+            "capsule": capsule,
+            "sha256": digest,
+            "audit": {key: (facts or {}).get(key) for key in (
+                "status", "search_terms", "selected_paths", "truncated", "limits",
+                "allowed_workspace_scope", "discovery_required",
+            )},
+        }
+        self.save()
     # -- per-task attempts, tool results, artifact paths -------------------------
 
     def task(self, task_id: str) -> dict:

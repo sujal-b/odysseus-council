@@ -318,6 +318,27 @@ def record_handoff(
     _enqueue(record)
 
 
+def record_reconnaissance(
+    context: Mapping[str, Any] | None, *, facts: Mapping[str, Any], capsule_sha256: str,
+) -> None:
+    """Trace sanitized repository discovery metadata only."""
+    if trace_mode() == "off" or not isinstance(context, Mapping):
+        return
+    record = {
+        "schema_version": _SCHEMA_VERSION,
+        "kind": "repository_reconnaissance",
+        "timestamp": time.time(),
+        "run_id": _trace_id(context),
+        "session_id": context.get("session_id"),
+        "status": str(facts.get("status") or ""),
+        "search_terms": list(facts.get("search_terms") or []),
+        "selected_paths": list(facts.get("selected_paths") or []),
+        "truncated": bool(facts.get("truncated")),
+        "limits": dict(facts.get("limits") or {}),
+        "capsule_sha256": str(capsule_sha256 or ""),
+    }
+    _enqueue(record)
+
 def record_scope_violation(
     context: Mapping[str, Any] | None,
     *,

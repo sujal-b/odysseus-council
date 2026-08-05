@@ -270,6 +270,8 @@ def test_cancel_after_durable_approval_stops_before_implementer(tmp_path):
         metadata={},
         status="IN_PROGRESS",
     )
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "service.py").write_text("def service(): pass\n", encoding="utf-8")
     checkpoint = MagicMock()
     checkpoint.stage_done.return_value = False
     checkpoint.dag_snapshot.return_value = {}
@@ -288,7 +290,7 @@ def test_cancel_after_durable_approval_stops_before_implementer(tmp_path):
     responses = {
         "chair": ('{"complexity":"MEDIUM","route":"PIPELINE","action":"read",'
                   '"target":"service","reason":"inspection"}'),
-        "strategist": ('{"tasks":[{"id":"T1","description":"Inspect the service",'
+        "strategist": ('{"tasks":[{"id":"T1","description":"Inspect src/service.py",'
                        '"acceptance":"Findings documented","read_scope":["src/"],'
                        '"write_scope":[]}]}'),
         "perspective_analyzer": ('{"security":{"score":0.9,"issues":[]},'

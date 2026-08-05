@@ -62,6 +62,48 @@ def mutation_only_plan_error(tasks, user_prompt: str | None) -> str | None:
     return None
 
 
+def reconnaissance_plan_error(tasks, facts: dict | None) -> str | None:
+    """Require plans to bind writes to bounded repository evidence."""
+    if not isinstance(facts, dict):
+        return None
+    status = str(facts.get("status") or "")
+    selected = [str(path) for path in facts.get("selected_paths") or []]
+    scopes = [str(scope) for scope in facts.get("allowed_workspace_scope") or []]
+    if status == "blocked" or not scopes:
+        return "repository reconnaissance found no safe target"
+
+    def in_scope(value: str) -> bool:
+        return any(value == scope or value.startswith(scope) for scope in scopes)
+
+    def text(task: dict) -> str:
+        return " ".join(str(task.get(key) or "") for key in ("description", "acceptance")).lower()
+
+    mutation = [task for task in tasks if task.get("write_scope") or task.get("workspace_root")]
+    for task in mutation:
+        if task.get("workspace_root") or any(not in_scope(str(scope)) for scope in task.get("write_scope") or []):
+            return "plan write scope is outside repository reconnaissance evidence"
+    if selected:
+        combined = " ".join(text(task) for task in tasks)
+        if not any(path.lower() in combined for path in selected):
+            return "plan does not select a target from repository reconnaissance evidence"
+        if len(selected) > 1 and mutation and not re.search(r"\b(select|selection|criteria|inspect|evidence)\b", combined):
+            return "ambiguous repository matches require explicit selection criteria"
+        return None
+    if not facts.get("discovery_required"):
+        return "repository reconnaissance did not produce a safe target"
+    discovery = [
+        task for task in tasks
+        if not task.get("write_scope") and not task.get("workspace_root")
+        and any(in_scope(str(scope)) for scope in task.get("read_scope") or [])
+        and "discover" in text(task)
+    ]
+    ids = {str(task.get("id") or "") for task in discovery}
+    if not ids:
+        return "zero repository matches require a bounded read-only discovery task"
+    if not any(ids.intersection({str(dep) for dep in task.get("depends_on") or []}) for task in mutation):
+        return "implementation task must depend on bounded discovery output"
+    return None
+
 def normalize_verification(raw) -> dict | None:
     """Translate plan-contract verification shapes to the ledger VerificationSpec.
 

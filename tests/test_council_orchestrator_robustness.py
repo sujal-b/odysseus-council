@@ -416,7 +416,7 @@ async def test_direct_uses_implementer_direct_prompt():
     assert "implementer_direct" in loaded_prompts, "DIRECT path must load implementer_direct.md"
 
 @pytest.mark.asyncio
-async def test_direct_fallback_to_pipeline():
+async def test_direct_fallback_to_pipeline(tmp_path):
     """When DIRECT fails, orchestrator should fall back to PIPELINE."""
     mock_router = MagicMock()
     cfg = MagicMock()
@@ -430,6 +430,9 @@ async def test_direct_fallback_to_pipeline():
     mock_state.user_prompt = "read and fix the bug in auth.py"
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
+    mock_state.workspace = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "auth.py").write_text("def auth(): pass\n", encoding="utf-8")
 
     chair_reply = '{"complexity": "MEDIUM", "route": "DIRECT", "action": "read", "target": "auth.py", "reason": "read-only"}'
     # Implementer returns a failure signal
@@ -467,7 +470,7 @@ async def test_direct_fallback_to_pipeline():
                     return direct_impl_reply
                 return pipeline_impl_reply
             elif role == "strategist":
-                return '```tasks\n[{"id":"T1","description":"Fix auth.py","write_scope":[]}]\n```'
+                return '```tasks\n[{"id":"T1","description":"Fix src/auth.py using repository evidence.","acceptance":"src/auth.py fixed.","read_scope":["src/"],"write_scope":[]}]\n```'
             elif role == "perspective_analyzer":
                 return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
             elif role == "manager":
@@ -489,7 +492,7 @@ async def test_direct_fallback_to_pipeline():
 
 
 @pytest.mark.asyncio
-async def test_direct_timeout_escalates_to_pipeline():
+async def test_direct_timeout_escalates_to_pipeline(tmp_path):
     """A transient implementer timeout on the DIRECT path must escalate to
     PIPELINE, not kill the production run (regression: the vertical slice
     failed end-to-end when the DIRECT implementer endpoint stopped answering
@@ -507,6 +510,9 @@ async def test_direct_timeout_escalates_to_pipeline():
     mock_state.user_prompt = "Add a health endpoint and a regression test."
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
+    mock_state.workspace = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def health(): pass\\n", encoding="utf-8")
 
     chair_reply = '{"complexity": "SIMPLE", "route": "DIRECT", "action": "read", "target": "src/app.py", "reason": "read-only"}'
     pipeline_impl_reply = "Added the health endpoint and its regression test."
@@ -538,7 +544,7 @@ async def test_direct_timeout_escalates_to_pipeline():
                     )
                 return pipeline_impl_reply
             elif role == "strategist":
-                return '```tasks\n[{"id":"T1","description":"Add health endpoint","write_scope":[]}]\n```'
+                return '```tasks\n[{"id":"T1","description":"Inspect src/app.py","acceptance":"src/app.py inspected.","read_scope":["src/"],"write_scope":[]}]\n```'
             elif role == "perspective_analyzer":
                 return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
             elif role == "manager":
@@ -576,10 +582,14 @@ async def test_pipeline_rechecks_perspective_before_manager_revision_review(tmp_
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
     mock_state.workspace = str(tmp_path)
+    (tmp_path / "core").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "core" / "session_manager.py").write_text("class SessionManager:\\n    def load_sessions(self): return 0\\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_session_manager.py").write_text("def test_session(): pass\\n", encoding="utf-8")
 
     chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"session reload","reason":"existing-code fix"}'
-    plan = '{"tasks":[{"id":"T1","description":"Inspect the existing session loader","acceptance":"The failure path is identified","read_scope":["core/"],"write_scope":[]}]}'
-    revised_plan = '{"tasks":[{"id":"T1","description":"Inspect the existing session loader and tests","acceptance":"The failure path is identified with regression coverage","read_scope":["core/","tests/"],"write_scope":[]}]}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect core/session_manager.py existing session loader","acceptance":"The failure path is identified","read_scope":["core/"],"write_scope":[]}]}'
+    revised_plan = '{"tasks":[{"id":"T1","description":"Inspect core/session_manager.py existing session loader and tests","acceptance":"The failure path is identified with regression coverage","read_scope":["core/","tests/"],"write_scope":[]}]}'
     perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Original plan evidence."}'
     perspective_recheck = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Revised plan evidence."}'
     manager_revise = '{"verdict":"REVISE","confidence":0.4,"summary":"Add regression coverage.","issues":[{"severity":"warning","task_id":"T1","description":"Tests are missing.","suggestion":"Inspect and cover the existing regression path.","evidence":"T1 read scope omits tests/."}]}'
@@ -628,7 +638,7 @@ async def test_pipeline_rechecks_perspective_before_manager_revision_review(tmp_
     assert "Original plan evidence." not in revised_manager_messages
 
 @pytest.mark.asyncio
-async def test_unparseable_plan_revision_falls_through_to_override_gate():
+async def test_unparseable_plan_revision_falls_through_to_override_gate(tmp_path):
     """A schema-invalid strategist revision (bounded retries exhausted) must
     degrade to the Manager override gate, not crash the run (regression: the
     vertical slice died when a revision reply could not be normalized and the
@@ -646,10 +656,14 @@ async def test_unparseable_plan_revision_falls_through_to_override_gate():
     mock_state.user_prompt = "Add a health endpoint and a regression test."
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
-    mock_state.workspace = None
+    mock_state.workspace = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def health(): pass\\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text("def test_health(): pass\\n", encoding="utf-8")
 
     chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"health endpoint","reason":"code change"}'
-    plan = '{"tasks":[{"id":"T1","description":"Inspect the service","acceptance":"The failure path is identified","read_scope":["src/"],"write_scope":[]}]}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect src/app.py","acceptance":"src/app.py failure path is identified","read_scope":["src/"],"write_scope":[]}]}'
     perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"Original plan evidence."}'
     manager_revise = '{"verdict":"REVISE","confidence":0.4,"summary":"Add regression coverage.","issues":[{"severity":"warning","task_id":"T1","description":"Tests are missing.","suggestion":"Inspect and cover the existing regression path.","evidence":"T1 read scope omits tests/."}]}'
 
@@ -713,7 +727,7 @@ async def test_unparseable_plan_revision_falls_through_to_override_gate():
 
 
 @pytest.mark.asyncio
-async def test_direct_fallback_max_once():
+async def test_direct_fallback_max_once(tmp_path):
     """Fallback from DIRECT to PIPELINE should only happen once (no loops)."""
     mock_router = MagicMock()
     cfg = MagicMock()
@@ -724,9 +738,12 @@ async def test_direct_fallback_max_once():
 
     mock_state = MagicMock()
     mock_state.session_id = "test-fallback-max"
-    mock_state.user_prompt = "ambiguous task"
+    mock_state.user_prompt = "Read src/app.py"
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
+    mock_state.workspace = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def app(): pass\\n", encoding="utf-8")
 
     chair_reply = '{"complexity": "SIMPLE", "route": "DIRECT", "action": "read", "target": "files", "reason": "read-only"}'
     # Both DIRECT and PIPELINE implementer return failure
@@ -760,7 +777,7 @@ async def test_direct_fallback_max_once():
                 call_count["implementer"] += 1
                 return fail_reply
             elif role == "strategist":
-                return '```tasks\n[{"id":"T1","description":"Fix the task","write_scope":[]}]\n```'
+                return '```tasks\n[{"id":"T1","description":"Inspect src/app.py","acceptance":"src/app.py inspected.","read_scope":["src/"],"write_scope":[]}]\n```'
             elif role == "perspective_analyzer":
                 return '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
             elif role == "manager":
@@ -1431,7 +1448,7 @@ def test_scope_violation_retry_gives_explicit_compliance_guidance():
     assert "read-only" in readonly["instruction"]
 
 @pytest.mark.asyncio
-async def test_task_gate_receives_actual_written_files_evidence():
+async def test_task_gate_receives_actual_written_files_evidence(tmp_path):
     """Regression: the per-task Manager gate must see the guard-approved write
     record, not just the implementer's self-report (slice runs 8-10: the gate
     REVISE'd completed tasks for "verification" it had no evidence for)."""
@@ -1447,10 +1464,14 @@ async def test_task_gate_receives_actual_written_files_evidence():
     mock_state.user_prompt = "Add a health endpoint and a regression test."
     mock_state.role_overrides = {}
     mock_state.owner = "test-user"
-    mock_state.workspace = None
+    mock_state.workspace = str(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "src" / "app.py").write_text("def health(): pass\n", encoding="utf-8")
+    (tmp_path / "tests" / "test_app.py").write_text("def test_health(): pass\n", encoding="utf-8")
 
     chair = '{"complexity":"MEDIUM","route":"PIPELINE","action":"write","target":"health endpoint","reason":"code change"}'
-    plan = '{"tasks":[{"id":"T1","description":"Inspect the service","acceptance":"Findings documented","read_scope":["src/"],"write_scope":[]}]}'
+    plan = '{"tasks":[{"id":"T1","description":"Inspect src/app.py","acceptance":"src/app.py findings documented","read_scope":["src/"],"write_scope":[]}]}'
     perspective = '{"security":{"score":0.9,"issues":[]},"performance":{"score":0.9,"issues":[]},"maintainability":{"score":0.9,"issues":[]},"overall_score":0.9,"synthesis":"clear"}'
     manager_approve = '{"verdict":"APPROVED","confidence":0.9,"summary":"ok"}'
     audit_done = '{"done": true, "completeness": 1.0, "criteria": [{"id": "C1", "met": true}]}'

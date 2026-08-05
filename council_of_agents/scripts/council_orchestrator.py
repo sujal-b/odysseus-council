@@ -528,7 +528,37 @@ Report what you FIND, not what you think might exist."""
                                    agent="chair", extra={"route": route, "quality_reason": quality_reason})
 
             dag = None
-            
+            from council_of_agents.scripts.context_envelope import build_repository_capsule
+            stored_reconnaissance = self._checkpoint.reconnaissance() if self._checkpoint else None
+            if not isinstance(stored_reconnaissance, dict):
+                stored_reconnaissance = None
+            if stored_reconnaissance:
+                capsule = str(stored_reconnaissance.get("capsule") or "")
+                digest = str(stored_reconnaissance.get("sha256") or "")
+                if not capsule or hashlib.sha256(capsule.encode("utf-8")).hexdigest() != digest:
+                    await emit(event="error", status="FAILED", agent="strategist",
+                               text="Repository reconnaissance checkpoint is invalid; planning stopped.")
+                    return
+                reconnaissance = dict(stored_reconnaissance.get("audit") or {})
+                reconnaissance.update({"capsule": capsule, "sha256": digest})
+            else:
+                try:
+                    reconnaissance = build_repository_capsule(workspace, state.user_prompt)
+                except (OSError, RuntimeError) as exc:
+                    await emit(event="error", status="FAILED", agent="strategist",
+                               text=f"Repository reconnaissance failed; planning stopped ({exc}).")
+                    return
+                if self._checkpoint:
+                    self._checkpoint.record_reconnaissance(reconnaissance)
+            if reconnaissance.get("status") == "blocked":
+                await emit(event="error", status="FAILED", agent="strategist",
+                           text="Repository reconnaissance found no safe bounded target; planning stopped.")
+                return
+            self._reconnaissance = reconnaissance
+            state.repository_context = reconnaissance["capsule"]
+            from src.context_trace import record_reconnaissance
+            record_reconnaissance(self._trace_context, facts=reconnaissance,
+                                  capsule_sha256=reconnaissance["sha256"])
             if complexity in ("MEDIUM", "COMPLEX"):
                 await emit(event="active_agent", agent="strategist", status="IN_PROGRESS",
                            text="Strategist is planning…")
@@ -587,7 +617,7 @@ Report what you FIND, not what you think might exist."""
                 strat_reply = chair_reply
 
             try:
-                dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt)
+                dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
                 self._restore_dag_from_checkpoint(dag)
                 if ledger_runtime is not None:
                     ledger_runtime.sync_dag(dag, workspace=workspace)
@@ -613,7 +643,7 @@ Report what you FIND, not what you think might exist."""
                     else await self._invoke_agent_safe(
                         "perspective_analyzer", state,
                         [{"role": "system", "content": self._load_prompt("perspective_analyzer")},
-                         {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
+                         {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None))},
                          {"role": "user", "content": (
                              f"Strategist plan to audit:\n{self._contract('strategist', strat_reply)}\n\n"
                              "Return the Perspective Analyzer JSON now."
@@ -630,7 +660,7 @@ Report what you FIND, not what you think might exist."""
                     else await self._invoke_agent_safe(
                         "manager", state,
                         [{"role": "system", "content": self._load_prompt("manager")},
-                         {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
+                         {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None))},
                          {"role": "user", "content": (
                              f"Chair decision data:\n{self._contract('chair', chair_reply)}\n\n"
                              f"Strategist plan to review:\n{self._contract('strategist', strat_reply)}\n\n"
@@ -706,7 +736,7 @@ Report what you FIND, not what you think might exist."""
                         await emit(event="thought", agent="strategist", status="IN_PROGRESS",
                                    text=self._clean_thought_text("strategist", revised_reply))
                         try:
-                            dag, tasks = self._task_dag_from_plan(revised_reply, state.user_prompt)
+                            dag, tasks = self._task_dag_from_plan(revised_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
                             self._restore_dag_from_checkpoint(dag)
                             if ledger_runtime is not None:
                                 ledger_runtime.sync_dag(dag, workspace=workspace)
@@ -728,7 +758,7 @@ Report what you FIND, not what you think might exist."""
                         perspective_reply = await self._invoke_agent_safe(
                             "perspective_analyzer", state,
                             [{"role": "system", "content": self._load_prompt("perspective_analyzer")},
-                             {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
+                             {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None))},
                              {"role": "user", "content": (
                                  f"Chair decision data:\n{self._contract('chair', chair_reply)}\n\n"
                                  f"Revised Strategist plan to re-audit:\n{self._contract('strategist', strat_reply)}\n\n"
@@ -748,7 +778,7 @@ Report what you FIND, not what you think might exist."""
                         manager_reply = await self._invoke_agent_safe(
                             "manager", state,
                             [{"role": "system", "content": self._load_prompt("manager")},
-                             {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
+                             {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None))},
                              {"role": "user", "content": (
                                  f"Chair decision data:\n{self._contract('chair', chair_reply)}\n\n"
                                  f"Revised Strategist plan:\n{self._contract('strategist', strat_reply)}\n\n"
@@ -2650,17 +2680,17 @@ Report what you FIND, not what you think might exist."""
         return reply
 
     @staticmethod
-    def _task_dag_from_plan(plan, user_prompt=None):
+    def _task_dag_from_plan(plan, user_prompt=None, reconnaissance=None):
         """Validate a strategist plan before it can reach Manager or execution."""
         from council_of_agents.scripts.council_schemas import validate_agent_output
-        from council_of_agents.scripts.task_dag import mutation_only_plan_error
+        from council_of_agents.scripts.task_dag import mutation_only_plan_error, reconnaissance_plan_error
         validation = validate_agent_output("strategist", plan)
         if not validation.success or not validation.data:
             raise ValueError(validation.error or "missing tasks")
         tasks = validation.data.get("tasks") or []
         if not tasks:
             raise ValueError("missing tasks")
-        policy_error = mutation_only_plan_error(tasks, user_prompt)
+        policy_error = mutation_only_plan_error(tasks, user_prompt) or reconnaissance_plan_error(tasks, reconnaissance)
         if policy_error:
             raise ValueError(policy_error)
         dag = TaskDAG.from_task_list(tasks)
