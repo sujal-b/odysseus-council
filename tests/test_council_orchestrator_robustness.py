@@ -801,16 +801,19 @@ def test_implementer_direct_prompt_loads():
 
 
 def test_workspace_placeholder_replaced():
-    """Verify workspace is injected via context envelope, not prompt substitution."""
+    """Relative labels are safe context; prompts remain static."""
     from council_of_agents.scripts.context_envelope import build_context_envelope
-    envelope = build_context_envelope(workspace="/test/workspace")
+    envelope = build_context_envelope(workspace="workspace-label")
     assert "<workspace>" in envelope
-    assert "/test/workspace" in envelope
-    # The system prompt should NOT contain workspace — it's static
+    assert "workspace-label" in envelope
     mock_router = MagicMock()
     orchestrator = CouncilOrchestrator(mock_router)
-    result = orchestrator._load_prompt("implementer")
-    assert "/test/workspace" not in result
+    assert "workspace-label" not in orchestrator._load_prompt("implementer")
+
+
+def test_absolute_workspace_is_omitted_from_provider_context():
+    from council_of_agents.scripts.context_envelope import build_context_envelope
+    assert build_context_envelope(workspace="/test/workspace") == ""
 
 
 def test_workspace_placeholder_no_workspace():

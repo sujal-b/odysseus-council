@@ -4,6 +4,8 @@ All dynamic context (workspace, session state, task info) lives here,
 not in the system prompt. The system prompt is 100% static.
 """
 
+import os
+
 
 def build_context_envelope(
     workspace: str = None,
@@ -24,14 +26,13 @@ def build_context_envelope(
 
     Returns empty string if no context is provided.
 
-    ``workspace`` is the workspace root path. ``repository_context`` is
-    read-only repository evidence (e.g. a capsule of known authoritative
-    paths, framework, tests, constraints) that agents must ground plans in; it
-    is forwarded alongside ``workspace`` and never substitutes for it.
+    ``workspace`` may be a relative label; absolute local paths are omitted
+    from provider-bound context. ``repository_context`` is read-only evidence
+    that agents must ground plans in and never substitutes for local tool scope.
     """
     sections = []
 
-    if workspace:
+    if workspace and not os.path.isabs(workspace):
         sections.append(f"<workspace>\n{workspace}\n</workspace>")
 
     if repository_context:

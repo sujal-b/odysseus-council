@@ -73,7 +73,7 @@ def _semantic(agent, data, raw, *, rubric=None, **kw):
 def test_repository_context_reaches_strategist():
     messages = build_messages(
         "strategist", "Add a health endpoint to the service.",
-        workspace="/tmp/ws", repository_context=CAPSULE, chair_reply=CHAIR,
+        workspace="workspace-label", repository_context=CAPSULE, chair_reply=CHAIR,
     )
     first_user = next(m["content"] for m in messages if m["role"] == "user")
     assert "<workspace>" in first_user
@@ -84,7 +84,7 @@ def test_repository_context_reaches_strategist():
 
 def test_repository_context_is_optional_and_does_not_leak_into_workspace_tag():
     messages = build_messages(
-        "strategist", "Add a health endpoint.", workspace="/tmp/ws", chair_reply=CHAIR,
+        "strategist", "Add a health endpoint.", workspace="workspace-label", chair_reply=CHAIR,
     )
     first_user = next(m["content"] for m in messages if m["role"] == "user")
     assert "<workspace>" in first_user

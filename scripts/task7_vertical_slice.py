@@ -29,6 +29,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -37,11 +38,6 @@ EVIDENCE_ROOT = ROOT / "data" / "council_agent_evals" / "phase-a" / "task7-slice
 SLICES_DIR = ROOT / "data" / "task7-slices"
 EVIDENCE_DIR: Path | None = None
 
-os.environ.setdefault("COUNCIL_WORKFLOW_CHECKPOINT", "on")
-# The ledger (shadow mode) drives the verification engine that produces the
-# deterministic evidence and artifact paths the checkpoint records per task.
-# Without it the vertical slice would run without artifact verification.
-os.environ.setdefault("COUNCIL_LEDGER_MODE", "shadow")
 
 PROMPT = (
     "Extend the small service with a health endpoint and a regression test. "
@@ -124,7 +120,50 @@ def _write_evidence_json(name: str, payload: dict) -> Path:
     return path
 
 
+def _gate_audit_metadata(trace: dict, outcome) -> dict:
+    """Hash live requests without persisting their contents."""
+    requests = []
+    for record in trace.get("trace") or []:
+        messages = record.get("final_messages") or record.get("messages")
+        if not messages:
+            continue
+        encoded = json.dumps(messages, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        requests.append({
+            "agent": record.get("agent"),
+            "stage": record.get("stage"),
+            "provider": record.get("endpoint"),
+            "model": record.get("model"),
+            "payload_sha256": hashlib.sha256(encoded).hexdigest(),
+        })
+    trace_bytes = json.dumps(trace, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "requests": requests,
+        "trace_sha256": hashlib.sha256(trace_bytes).hexdigest(),
+        "outcome": outcome,
+    }
+
+
+_ALLOWED_GATE_HOSTS = {"integrate.api.nvidia.com", "opencode.ai"}
+
+
+def _live_gate_context(case: dict) -> dict:
+    """Only repository hints, never a local workspace path, leave this process."""
+    return {"workspace": "", "repository_context": case.get("repository_context", "")}
+
+
+def _approved_gate_endpoints(endpoints: set[str]) -> set[str]:
+    unexpected = sorted(
+        endpoint for endpoint in endpoints
+        if urlsplit(endpoint).hostname not in _ALLOWED_GATE_HOSTS
+    )
+    if unexpected:
+        raise RuntimeError("GATE3 provider is not approved")
+    return endpoints
+
+
 def _configure_context_trace() -> Path:
+    os.environ.setdefault("COUNCIL_WORKFLOW_CHECKPOINT", "on")
+    os.environ.setdefault("COUNCIL_LEDGER_MODE", "shadow")
     trace_dir = _evidence_dir() / "context-traces"
     trace_dir.mkdir(exist_ok=True)
     # Metrics traces preserve call/guard evidence without copying prompts or
@@ -346,6 +385,7 @@ def _live_p26_gate_trace() -> dict:
         for role in PLANNING_ROLES
     }
     endpoints.discard("")
+    _approved_gate_endpoints(endpoints)
     api_key = _resolve_api_key_for_endpoints(endpoints)
 
     async def go():
@@ -353,8 +393,7 @@ def _live_p26_gate_trace() -> dict:
             GATE3["user_prompt"],
             role_configs=role_configs,
             api_key=api_key,
-            workspace=GATE3.get("workspace", ""),
-            repository_context=GATE3.get("repository_context", ""),
+            **_live_gate_context(GATE3),
             run_id=f"{_evidence_dir().name}-p26-gate",
             max_plan_revisions=1,
             planning_only=True,
@@ -401,6 +440,7 @@ def phase_gate() -> int:
     )
     _write_evidence_json("planning-unknown-target-session-bug.json", {
         "live": True,
+        "audit": _gate_audit_metadata(trace, outcome),
         "checks": {
             "grounded_plan": grounded_plan,
             "manager_approved": str(summary.get("final_manager_verdict") or "") == "APPROVED",
