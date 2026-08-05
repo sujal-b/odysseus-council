@@ -156,36 +156,25 @@ class AgentRunner:
         self.emit = emit
         self.tracker = tracker or getattr(orchestrator, "_run_context_tracker", None)
         self._recovery = None  # resolved per invoke (role-specific, evidence-gated)
+        self._recovery_decision = "not evaluated"
 
     def _resolve_recovery(self, role=None, overrides=None):
-        """One bounded recovery candidate from the shared resolver (fail closed).
-
-        The resolver is the SAME one used by evaluation (role_eval), so
-        production and evaluation agree on candidates, deny list, and the 3/3
-        evidence gate. Returns None when no eligible candidate exists.
-        """
+        """One bounded, evidence-gated recovery candidate with its decision."""
         role = role or getattr(self.state, "active_role", None)
+        self._recovery_decision = "recovery resolver unavailable"
         try:
             from council_of_agents.scripts.council_recovery import RecoveryResolver
-        except Exception:
-            return None
-        router = getattr(self.orchestrator, "_router", None)
-        primary_endpoint = primary_model = None
-        try:
-            if router is not None and role:
-                cfg = router.role_config(role, overrides or {})
-                primary_endpoint = getattr(cfg, "endpoint_url", None)
-                primary_model = getattr(cfg, "model", None)
-        except Exception:
-            pass
-        try:
-            return RecoveryResolver().recovery_for(
-                role or "",
-                overrides=overrides,
-                primary_endpoint=primary_endpoint,
-                primary_model=primary_model,
+            router = getattr(self.orchestrator, "_router", None)
+            cfg = router.role_config(role, overrides or {}) if router is not None and role else None
+            candidate, decision = RecoveryResolver().recovery_decision(
+                role or "", overrides=overrides,
+                primary_endpoint=getattr(cfg, "endpoint_url", None),
+                primary_model=getattr(cfg, "model", None),
             )
-        except Exception:
+            self._recovery_decision = decision
+            return candidate
+        except Exception as exc:
+            self._recovery_decision = f"recovery resolution failed: {exc}"
             return None
 
     async def _recovery_hop(self, role, messages, validation_role, recovery, **kwargs):
@@ -550,6 +539,11 @@ class AgentRunner:
                 except Exception as recovery_exc:
                     recovery_used = True
                     recovery_error = str(recovery_exc)[:500]
+            self._record_recovery_state(
+                role, "invalid_output", schema_repair_used, recovery_used=recovery_used,
+                recovery=self._recovery, final_outcome="MODEL_FAILURE",
+                recovery_error=recovery_error or str(e.validation_error or ""), attempts=attempt_number,
+            )
             if hasattr(self.state, "metadata"):
                 if self.state.metadata is None:
                     self.state.metadata = {}
@@ -560,6 +554,7 @@ class AgentRunner:
                     "recovery_attempted": bool(self._recovery),
                     "recovery_used": recovery_used,
                     "recovery_error": recovery_error[:1000],
+                    "recovery_decision": self._recovery_decision,
                     "safe_fallback": "MANAGER_BLOCKED" if validation_role == "manager" else "",
                     "validation_error": str(e.validation_error or "")[:1000],
                 }
@@ -606,6 +601,11 @@ class AgentRunner:
                         recovery=self._recovery, final_outcome="PROVIDER_INCONCLUSIVE",
                         recovery_error=str(recovery_exc)[:500],
                     )
+            if not self._recovery:
+                self._record_recovery_state(
+                    role, "provider", False, recovery_used=False,
+                    final_outcome="PROVIDER_INCONCLUSIVE", recovery_error=str(error), attempts=attempt_number,
+                )
             if self.emit:
                 await self.emit(
                     event="error",
@@ -676,20 +676,27 @@ class AgentRunner:
             raise
 
     def _record_recovery_state(self, role, failure_class, repair_used, *, recovery_used,
-                               recovery=None, final_outcome="", recovery_error=""):
-        """Observability only: recovery decisions must never be silent."""
+                               recovery=None, final_outcome="", recovery_error="", attempts=0):
+        """Persist one bounded recovery decision and terminal classification."""
         try:
             if not hasattr(self.state, "metadata") or self.state.metadata is None:
                 self.state.metadata = {}
+            router = getattr(self.orchestrator, "_router", None)
+            cfg = router.role_config(role, self.state.role_overrides.get(role, {})) if router else None
             self.state.metadata[f"{role}_recovery_state"] = {
-                "failure_class": failure_class,
-                "schema_repair_used": bool(repair_used),
-                "recovery_attempted": bool(recovery),
-                "recovery_used": bool(recovery_used),
+                "failure_class": failure_class, "schema_repair_used": bool(repair_used),
+                "recovery_attempted": bool(recovery), "recovery_used": bool(recovery_used),
                 "recovery_endpoint": (recovery or {}).get("endpoint_url", ""),
                 "recovery_model": (recovery or {}).get("model", ""),
-                "final_outcome": final_outcome,
-                "recovery_error": str(recovery_error or "")[:1000],
+                "recovery_decision": self._recovery_decision, "final_outcome": final_outcome,
+                "recovery_error": str(recovery_error or "")[:1000], "attempts": int(attempts or 0),
+            }
+            self.state.metadata[f"{role}_failure"] = {
+                "role": role, "stage": role, "provider": getattr(cfg, "endpoint_url", ""),
+                "model": getattr(cfg, "model", ""), "attempts": int(attempts or 0),
+                "failure_class": failure_class, "reason": str(recovery_error or "")[:1000],
+                "recovery_decision": self._recovery_decision, "checkpoint_eligible": False,
+                "terminal_state": final_outcome,
             }
         except Exception:
             pass

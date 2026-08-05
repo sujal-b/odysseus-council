@@ -49,7 +49,7 @@ class CouncilRouter:
             from council_of_agents.scripts.council_recovery import validate_recovery_config
         except Exception:
             return
-        errors = validate_recovery_config(self._path)
+        errors = validate_recovery_config(self._path, required_roles=("chair", "strategist", "perspective_analyzer", "manager", "implementer", "completeness_auditor"))
         if errors:
             raise ValueError("invalid council recovery configuration:\n" + "\n".join(errors))
 

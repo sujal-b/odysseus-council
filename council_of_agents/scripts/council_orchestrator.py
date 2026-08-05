@@ -1849,16 +1849,26 @@ Report what you FIND, not what you think might exist."""
 
         except asyncio.CancelledError:
             state.status = "CANCELLED"
+            if self._checkpoint is not None:
+                self._checkpoint.record_final("CANCELLED", "", [], failure={"reason": "cancelled", "checkpoint_eligible": bool(self._checkpoint.approved())})
             try:
                 await emit(event="complete", status="FAILED", text="Run cancelled by user.")
             except Exception:
                 pass
             raise
         except Exception as e:
-            state.status = "FAILED"
+            failure = self._terminal_failure(state, "MODEL_FAILURE", str(e))
+            state.status = failure["status"]
+            if self._checkpoint is not None:
+                self._checkpoint.record_final(state.status, "", [], failure=failure)
             logger.exception("CouncilOrchestrator error")
             await emit(event="error", status="FAILED", text=str(e))
         finally:
+            if getattr(state, "status", "") in ("", "PENDING", "IN_PROGRESS"):
+                failure = self._terminal_failure(state, "MODEL_FAILURE", "run exited without terminal state")
+                state.status = failure["status"]
+                if self._checkpoint is not None:
+                    self._checkpoint.record_final(state.status, "", [], failure=failure)
             try:
                 if ledger_runtime is not None:
                     ledger_runtime.finalize()
@@ -1870,6 +1880,16 @@ Report what you FIND, not what you think might exist."""
                     logger.exception("Council terminal trace write failed")
                 self._ledger_runtime = None
                 await event_queue.put(None)
+
+    @staticmethod
+    def _terminal_failure(state, default, reason):
+        metadata = getattr(state, "metadata", None) or {}
+        failures = [value for key, value in metadata.items() if key.endswith("_failure") and isinstance(value, dict)]
+        failure = dict(failures[-1]) if failures else {}
+        failure["status"] = failure.get("terminal_state") or default
+        failure["reason"] = failure.get("reason") or str(reason or "terminal failure")
+        failure["checkpoint_eligible"] = bool(getattr(state, "status", "") == "IN_PROGRESS")
+        return failure
 
     async def _invoke_agent_safe(self, role, state, messages, emit, **kwargs):
         from council_of_agents.scripts.agent_runner import AgentRunner

@@ -271,6 +271,39 @@ class RecoveryResolver:
         except Exception:
             return {}
 
+    def recovery_decision(
+        self,
+        role: str,
+        overrides: Optional[dict] = None,
+        primary_endpoint: Optional[str] = None,
+        primary_model: Optional[str] = None,
+        require_evidence: bool = True,
+    ) -> tuple[Optional[dict], str]:
+        """Return one eligible recovery candidate and auditable rejection reason."""
+        roles = self._roles()
+        config = roles.get(role) if isinstance(roles.get(role), dict) else {}
+        candidates = config.get("recovery_fallbacks") or []
+        if not candidates:
+            return None, "no recovery candidate configured"
+        if not isinstance(candidates, list) or len(candidates) > 1:
+            return None, "recovery candidates are not bounded"
+        candidate = candidates[0] if candidates else {}
+        if not isinstance(candidate, dict):
+            return None, "recovery candidate is invalid"
+        url = str(candidate.get("endpoint_url") or "").strip()
+        model = str(candidate.get("model") or "").strip()
+        if not url or not model:
+            return None, "recovery candidate lacks endpoint or model"
+        if primary_endpoint and endpoint_host(url) == endpoint_host(primary_endpoint):
+            return None, f"{model} shares provider with primary {primary_endpoint}"
+        if primary_model and model == primary_model:
+            return None, f"{model} equals primary model"
+        if model in DENY_RECOVERY_MODELS.get(role, frozenset()) and not self.evidence.deny_override(role, model):
+            return None, f"{model} is denied (NVIDIA Nano; no fresh 3/3 evidence)"
+        if require_evidence and not self.evidence.eligible(role, url, model):
+            return None, f"{model} lacks 3/3 initial-contract+semantic evidence"
+        return {"endpoint_url": url, "model": model, "temperature": candidate.get("temperature"), "max_tokens": candidate.get("max_tokens")}, "eligible"
+
     def recovery_for(
         self,
         role: str,
@@ -279,57 +312,20 @@ class RecoveryResolver:
         primary_model: Optional[str] = None,
         require_evidence: bool = True,
     ) -> Optional[dict]:
-        """Return ONE recovery candidate for a role, or None (fail closed).
-
-        Rules enforced here:
-        * bounded: at most one configured fallback is ever returned
-        * different provider: candidate host must differ from the primary host
-        * deny list: NVIDIA Nano is rejected for Strategist/Manager unless the
-          3/3 evidence ledger overrides prior failures
-        * evidence: without 3/3 initial-contract + semantic evidence on the
-          exact failing handoff the candidate is not used
-        """
-        roles = self._roles()
-        config = roles.get(role) if isinstance(roles.get(role), dict) else {}
-        candidates = config.get("recovery_fallbacks") or []
-        if not isinstance(candidates, list) or len(candidates) > 1:
-            return None
-        for candidate in candidates:
-            if not isinstance(candidate, dict):
-                continue
-            url = str(candidate.get("endpoint_url") or "").strip()
-            model = str(candidate.get("model") or "").strip()
-            if not url or not model:
-                continue
-            if primary_endpoint and endpoint_host(url) == endpoint_host(primary_endpoint):
-                _get_logger().warning(
-                    "recovery rejected for %s: %s shares provider with primary %s",
-                    role, model, primary_endpoint,
-                )
-                continue
-            if primary_model and model == primary_model:
-                continue
-            if model in DENY_RECOVERY_MODELS.get(role, frozenset()) and not self.evidence.deny_override(role, model):
-                _get_logger().warning(
-                    "recovery rejected for %s: %s is denied (NVIDIA Nano; no fresh 3/3 evidence)",
-                    role, model,
-                )
-                continue
-            if require_evidence and not self.evidence.eligible(role, url, model):
-                _get_logger().warning(
-                    "recovery rejected for %s: %s lacks 3/3 initial-contract+semantic evidence",
-                    role, model,
-                )
-                continue
-            return {"endpoint_url": url, "model": model, "temperature": candidate.get("temperature"),
-                    "max_tokens": candidate.get("max_tokens")}
-        return None
-
-    def validate_config(self, require_evidence: bool = True) -> list[str]:
+        """Return ONE recovery candidate for a role, or None (fail closed)."""
+        candidate, reason = self.recovery_decision(role, overrides, primary_endpoint, primary_model, require_evidence)
+        if candidate is None:
+            _get_logger().warning("recovery rejected for %s: %s", role, reason)
+        return candidate
+    def validate_config(self, require_evidence: bool = True, required_roles=()) -> list[str]:
         """Validate recovery routing at startup. Returns error strings
         (empty = valid). Never silently accepts a bad recovery config."""
         roles = self._roles()
         errors = []
+        for role in required_roles:
+            config = roles.get(role)
+            if not isinstance(config, dict) or not str(config.get("endpoint_url") or "").strip() or not str(config.get("model") or "").strip():
+                errors.append(f"{role}: required role lacks a usable primary route")
         for role, config in roles.items():
             if not isinstance(config, dict):
                 continue
@@ -377,6 +373,8 @@ class RecoveryResolver:
         return errors
 
 
-def validate_recovery_config(models_config_path=None, evidence_path=None, require_evidence: bool = True) -> list[str]:
+def validate_recovery_config(models_config_path=None, evidence_path=None, require_evidence: bool = True, required_roles=()) -> list[str]:
     """Standalone startup validation used by router and CLI entry points."""
-    return RecoveryResolver(models_config_path, evidence_path).validate_config(require_evidence=require_evidence)
+    return RecoveryResolver(models_config_path, evidence_path).validate_config(
+        require_evidence=require_evidence, required_roles=required_roles,
+    )

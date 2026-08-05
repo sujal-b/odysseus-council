@@ -165,11 +165,14 @@ class WorkflowCheckpoint:
     def final_state(self) -> dict | None:
         return self._data.get("final")
 
-    def record_final(self, status: str, report: str, artifact_paths: list) -> None:
+    def record_final(self, status: str, report: str, artifact_paths: list,
+                     *, failure: dict | None = None) -> None:
         self._data["final"] = {
             "status": status,
             "report": report,
             "artifact_paths": artifact_paths,
             "recorded_at": time.time(),
         }
+        if failure:
+            self._data["final"]["failure"] = dict(failure)
         self.save()
