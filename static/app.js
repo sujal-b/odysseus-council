@@ -4180,7 +4180,7 @@ if (document.readyState === 'loading') {
       }
       panel.hidden = false;
       var sidebar = document.getElementById('sidebar');
-      if (sidebar && sidebar.classList.contains('hidden')) {
+      if (window.innerWidth > 768 && sidebar && sidebar.classList.contains('hidden')) {
         sidebar.classList.remove('hidden');
         if (window.syncRailSide) window.syncRailSide();
       }

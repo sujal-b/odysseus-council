@@ -220,7 +220,7 @@ export function initSidebarLayout(Storage, opts) {
   }
 
   // Auto-collapse sidebar when window gets small or chat area is squeezed
-  const AUTO_COLLAPSE_WIDTH = 700;
+  const AUTO_COLLAPSE_WIDTH = 768;
   const MIN_CHAT_WIDTH = 380; // collapse sidebar if chat gets narrower than this
 
   function checkSidebarAutoCollapse() {
