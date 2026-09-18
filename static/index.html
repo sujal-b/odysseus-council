@@ -963,14 +963,10 @@
           <div class="compass-node-body">
             <span class="compass-node-inner">M</span>
           </div>
-        </div>
+        </button>
       </div>
 
       <div class="compass-active-label" id="compass-active-label"></div>
-      <div class="council-workspace-row" style="display: flex; flex-direction: column; gap: 6px;">
-        <input type="text" id="council-workspace-input" placeholder="Workspace directory (optional)" title="Root directory for council project files" autocomplete="off" spellcheck="false" />
-        <input type="number" id="council-budget-input" placeholder="Token budget (optional)" title="Hard token budget limit for the session (0 = unlimited)" autocomplete="off" spellcheck="false" />
-      </div>
     </div>
     <div class="sidebar-user-bar" id="sidebar-user-bar">
       <div class="user-bar-left" id="user-bar-profile">
@@ -1049,11 +1045,11 @@
 
   <div id="council-panel" class="council-panel" hidden>
 
-    <header class="council-runbar" aria-label="Council run summary">
+    <header class="council-runbar" id="council-runbar" aria-label="Council run summary">
       <div class="council-run-identity">
         <div class="council-run-kicker">Council run</div>
         <div class="council-run-title-row">
-          <span id="council-run-status" class="council-run-status" role="status" aria-live="polite">Ready</span>
+          <span id="council-run-status" class="council-run-status" role="status">Ready</span>
           <span id="council-run-stage" class="council-run-stage">Waiting for a task</span>
         </div>
       </div>
@@ -1067,6 +1063,16 @@
         <div><dt>Context</dt><dd id="council-run-budget">0</dd></div>
         <div><dt>Compacts</dt><dd id="council-run-compacts">0</dd></div>
       </dl>
+      <div class="council-workspace-row" id="council-workspace-row">
+        <div class="council-run-param">
+          <label class="council-run-param-label" for="council-workspace-input">Workspace</label>
+          <input type="text" id="council-workspace-input" placeholder="Optional path" title="Root directory for council project files" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="council-run-param">
+          <label class="council-run-param-label" for="council-budget-input">Budget</label>
+          <input type="number" id="council-budget-input" placeholder="Tokens (0=max)" title="Hard token budget limit for the session (0 = unlimited)" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
       <button type="button" id="council-run-cancel-btn" class="council-run-stop" disabled aria-label="Stop Council run">Stop</button>
     </header>
 
@@ -1091,7 +1097,7 @@
         </div>
 
         <!-- RESIZER 1: Between Code Pane and Ghost Pane -->
-        <div class="council-resizer" id="council-resizer-code-ghost"></div>
+        <div class="council-resizer" id="council-resizer-code-ghost" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize changes and stream panes"></div>
 
         <!-- Ghost Editor pane -->
         <div class="council-ghost-pane">
@@ -1107,17 +1113,17 @@
           <!-- New Ghost Editor Stream Workspace -->
           <div id="council-ghost-editor" class="ghost-editor-stream idle">
             <!-- Scrollable stream ledger -->
-            <div class="ghost-stream-ledger scroll-container" id="council-ghost-stream-ledger"></div>
+            <div class="ghost-stream-ledger scroll-container" id="council-ghost-stream-ledger" role="log" aria-label="Execution stream"></div>
             <!-- Bottom Metric Status Bar Footer -->
             <div class="ghost-editor-footer" id="council-ghost-footer">
               <div class="ghost-footer-metrics">
-                <span>Speed <span id="council-stream-speed" style="color: var(--log-text-dim);">0 tok/s</span></span>
-                <span class="ghost-footer-separator">|</span>
-                <span>Buffer <span id="council-stream-buffer" style="color: var(--log-text-dim);">0 chars</span></span>
-                <span class="ghost-footer-separator">|</span>
-                <span>Last event <span id="council-last-response" style="color: var(--log-text-dim);">--</span></span>
+                <span class="ghost-footer-speed-metric"><span class="ghost-metric-lbl">Speed </span><span id="council-stream-speed" style="color: var(--log-text-dim);">0 tok/s</span></span>
+                <span class="ghost-footer-separator" aria-hidden="true"></span>
+                <span class="ghost-footer-buf-metric"><span class="ghost-metric-lbl">Buffer </span><span id="council-stream-buffer" style="color: var(--log-text-dim);">0 chars</span></span>
+                <span class="ghost-footer-separator ghost-footer-last-sep" aria-hidden="true"></span>
+                <span class="ghost-footer-last-event"><span class="ghost-metric-lbl">Last event </span><span id="council-last-response" style="color: var(--log-text-dim);">--</span></span>
               </div>
-              <span class="ghost-footer-kill-hint">Esc stops the active run</span>
+              <span class="ghost-footer-kill-hint">Esc stop &middot; Space follow &middot; G graph</span>
             </div>
           </div>
         </div>
@@ -1168,7 +1174,7 @@
     </section>
 
     <!-- RESIZER 2: Between Left/Center Workspace and Captain's Log -->
-    <div class="council-resizer" id="council-resizer-center-log"></div>
+    <div class="council-resizer" id="council-resizer-center-log" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize workspace and run events log"></div>
 
     <!-- RIGHT: Captain's Log -->
     <aside class="council-log-sidebar">
@@ -1178,15 +1184,15 @@
           <h2 class="council-log-title">Run events</h2>
         </div>
         <span class="council-log-sid" id="council-log-session-id">ID: PENDING</span>
-        <button type="button" class="council-log-close" id="council-cancel-btn" title="Stop run" aria-label="Stop run">&times;</button>
+        <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close run events">&times;</button>
       </div>
-      <div class="council-log-body" id="council-captains-log"></div>
+      <div class="council-log-body" id="council-captains-log" role="log" aria-label="Run events log"></div>
       <div class="council-log-footer">
         <div class="log-footer-stats">
           <span>Estimated context</span>
           <span id="council-log-tokens">0 TOKENS</span>
         </div>
-        <button class="council-revert-btn" id="council-revert-btn" disabled>Stop run</button>
+        <button class="council-revert-btn" id="council-revert-btn" disabled>Restart from brief</button>
       </div>
     </aside>
 
