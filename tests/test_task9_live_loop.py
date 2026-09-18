@@ -1,4 +1,5 @@
 import asyncio
+from argparse import ArgumentTypeError
 import json
 from pathlib import Path
 
@@ -100,3 +101,10 @@ def test_terminal_failure_uses_last_emitted_error():
     failure = CouncilOrchestrator._terminal_failure(state, "MODEL_FAILURE", "run exited without terminal state")
     assert failure["role"] == "strategist"
     assert failure["reason"] == "plan does not select a target from repository reconnaissance evidence"
+
+def test_launcher_timeout_rejects_executor_kill_window():
+    from scripts.task9_live_restart import _run_timeout
+
+    assert _run_timeout("2400") == 2400
+    with pytest.raises(ArgumentTypeError):
+        _run_timeout("124")
