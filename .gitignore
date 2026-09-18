@@ -116,6 +116,7 @@ docs/windows-port/
 .gemini/
 .claude/
 .agents/
+.omo/
 **/grill-logs/
 **/.system_generated/
 
@@ -138,6 +139,7 @@ reference.html
 odys.ps1
 .grill/
 .workbuddy-ai/
+bridge/
 .pytest-tmp*/
 GOAL.md
 LOOP_LOG.md
