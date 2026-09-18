@@ -2353,7 +2353,7 @@ class CouncilUI {
           typeof fileVer.current === 'string'
         );
 
-        // el.classList.remove('has-state-container');
+        el.classList.remove('has-state-container');
         el.style.padding = '';
         if (linenosEl) linenosEl.style.display = '';
 
@@ -2401,7 +2401,7 @@ class CouncilUI {
       } else {
         // NO FILES - DETECT OTHER STATE MACHINE STATES
         if (linenosEl) linenosEl.style.display = 'none';
-        // el.classList.add('has-state-container');
+        el.classList.add('has-state-container');
         el.style.padding = '0'; // Let the state container take full layout
         
         if (state.status === 'FAILED') {
