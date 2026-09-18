@@ -137,6 +137,7 @@ code.html
 reference.html
 odys.ps1
 .grill/
+.workbuddy-ai/
 .pytest-tmp*/
 GOAL.md
 LOOP_LOG.md

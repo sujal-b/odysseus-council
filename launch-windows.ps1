@@ -127,10 +127,14 @@ Write-Step "Installing dependencies (first run can take a few minutes)"
 & $venvPy -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { Fail "Dependency install failed. Scroll up for the pip error." }
 
+# 3b. Editable install so the global `odysseus` command is available (idempotent re-install; warn-not-fail).
+& $venvPy -m pip install -e . --no-deps
+if ($LASTEXITCODE -ne 0) { Write-Host "WARNING: editable install failed - 'odysseus' command may be unavailable. Continuing to server start." -ForegroundColor Yellow }
+
 # 4. First-time setup (creates data dirs, DB, .env, admin user)
 Write-Step "Running first-time setup"
-& $venvPy setup.py
-if ($LASTEXITCODE -ne 0) { Fail "setup.py failed." }
+& $venvPy first_run.py
+if ($LASTEXITCODE -ne 0) { Fail "first_run.py failed." }
 
 # 5. Friendly note about Git Bash (full Cookbook / agent-shell parity)
 if (-not (Find-GitBash)) {

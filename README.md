@@ -80,7 +80,7 @@ cd odysseus
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python setup.py
+python first_run.py
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
 ```
 Requirements: Python 3.11+. Cookbook also needs `tmux` for background model
@@ -272,6 +272,11 @@ cd odysseus
 powershell -ExecutionPolicy Bypass -File .\launch-windows.ps1
 ```
 
+The launcher also runs `venv\Scripts\pip install -e . --no-deps`, which exposes
+the global `odysseus` command (`odysseus --version` works in any terminal via
+[project.scripts] `odysseus=odysseus_cli:main`). Setup still runs via
+`python first_run.py`.
+
 Or do it by hand:
 
 ```powershell
@@ -280,7 +285,7 @@ cd odysseus
 py -3.11 -m venv venv
 venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-python setup.py
+python first_run.py
 python -m uvicorn app:app --host 127.0.0.1 --port 7000
 ```
 

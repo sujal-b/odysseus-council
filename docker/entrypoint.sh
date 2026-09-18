@@ -81,9 +81,9 @@ export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
 export PATH="/app/.local/bin:$PATH"
 
 # Run first-time setup as the app user so data/ files get the right ownership.
-# setup.py is idempotent — skips auth.json / .env if they already exist.
+# first_run.py is idempotent — skips auth.json / .env if they already exist.
 # || true so a setup failure never prevents the container from starting.
-gosu "$PUID:$PGID" python /app/setup.py || true
+gosu "$PUID:$PGID" python /app/first_run.py || true
 
 # Drop root and run the actual app. `gosu` is preferred over `su` /
 # `sudo` because it cleans up the process tree (no extra shell layer)

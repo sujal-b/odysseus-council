@@ -147,6 +147,9 @@ else
   echo "▶ Python packages up to date — skipping install"
 fi
 
+# 3b. Editable install so the global `odysseus` command is available (idempotent re-install; warn-not-fail, never aborts under `set -e`).
+"$VENV_PY" -m pip install -e . --no-deps || { echo "  ⚠ Editable install failed — 'odysseus' command may be unavailable. Continuing to server start."; true; }
+
 # chromadb-client (HTTP-only) conflicts with the full chromadb package. If
 # it got installed (e.g., from an older requirements-optional.txt), remove
 # it to prevent ChromaDB from silently failing in HTTP-only mode.
@@ -160,7 +163,7 @@ fi
 #    the first time (idempotent — does nothing if already set up). Suppress its
 #    manual run hint — we launch the server ourselves just below.
 echo "▶ Preparing Odysseus…"
-ODYSSEUS_SKIP_RUN_HINT=1 ./venv/bin/python setup.py
+ODYSSEUS_SKIP_RUN_HINT=1 ./venv/bin/python first_run.py
 
 # Local provider bootstrap.
 #     On Apple Silicon macOS, Apfel is treated as a sibling local model server

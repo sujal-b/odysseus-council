@@ -89,7 +89,7 @@ die_gui() {
 cd $INSTALL_DIR
 python3.11 -m venv venv
 ./venv/bin/pip install -r requirements.txt
-./venv/bin/python setup.py"
+./venv/bin/python first_run.py"
 
 # Open the UI in a chrome-less app window (Chromium browsers), else default browser.
 open_ui() {

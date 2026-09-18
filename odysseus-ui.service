@@ -9,7 +9,15 @@ Type=simple
 # CHANGE THESE to match your user and install path:
 User=YOURUSER
 WorkingDirectory=/home/YOURUSER/odysseus-ui
-ExecStart=/home/YOURUSER/odysseus-ui/venv/bin/uvicorn app:app --port 7000 --host 0.0.0.0
+# Invoke uvicorn via `python -m`, NOT via venv/bin/uvicorn.
+#
+# A venv console script carries a shebang holding the ABSOLUTE path of the
+# interpreter it was created from, and venv/bin/python is itself an absolute
+# symlink to that base. So moving this directory, or rebuilding the venv from a
+# different Python, silently breaks `venv/bin/uvicorn` - the unit then fails at
+# start with a confusing interpreter error. `python -m uvicorn` resolves the
+# module through the venv's own interpreter and has no baked-in path.
+ExecStart=/home/YOURUSER/odysseus-ui/venv/bin/python -m uvicorn app:app --port 7000 --host 0.0.0.0
 Restart=always
 RestartSec=3
 EnvironmentFile=-/home/YOURUSER/odysseus-ui/.env
