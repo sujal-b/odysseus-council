@@ -39,13 +39,38 @@ class CouncilState {
     this.actualTokens    = 0;
     this.lastResponseTime = null;
     this.lastHeartbeatText = '';
+    this.connectionState = 'disconnected'; // 'connected' | 'reconnecting' | 'disconnected'
+    this.fileVersions = {};           // filepath -> { original: string, current: string }
+    this.telemetry = null;
     this._listeners    = new Set();
   }
 
   update(data) {
     if (!data || typeof data !== 'object') return;
 
-    this.lastResponseTime = Date.now();
+    // Timestamp hygiene: do not stamp lastResponseTime on empty or cosmetic updates.
+    // Only stamp when data carries genuine progress, events, or heartbeats.
+    const keys = Object.keys(data);
+    const isCosmeticOrEmpty = keys.length === 0 || keys.every(k => (
+      k === 'showThinking' || k === 'showDAG' || k === 'selectedFile' || k === 'connectionState'
+    ));
+    const hasGenuineProgress = Boolean(
+      data.event ||
+      data.status ||
+      data.agent ||
+      data.active_agent ||
+      data.activeTool ||
+      data.text ||
+      data.code ||
+      data.dag ||
+      data.complexity ||
+      data.completeness !== undefined
+    );
+    if (!isCosmeticOrEmpty && hasGenuineProgress) {
+      this.lastResponseTime = Date.now();
+    }
+
+    if (data.connectionState) this.connectionState = String(data.connectionState);
 
     if (data.event === 'heartbeat') {
       if (data.status) this.status = String(data.status);
@@ -110,6 +135,13 @@ class CouncilState {
       this.lastCode = typeof data.code === 'string' ? data.code : '';
       this.lastFile = typeof data.file_path === 'string' ? data.file_path : '';
       if (this.lastFile) {
+        if (!this.fileVersions[this.lastFile]) {
+          const original = data.original_code || data.extra?.original_code || (this.generatedFiles[this.lastFile] !== undefined ? this.generatedFiles[this.lastFile] : '');
+          this.fileVersions[this.lastFile] = { original, current: this.lastCode };
+        } else {
+          this.fileVersions[this.lastFile].original = this.fileVersions[this.lastFile].current;
+          this.fileVersions[this.lastFile].current = this.lastCode;
+        }
         this.generatedFiles[this.lastFile] = this.lastCode;
         this.selectedFile = this.lastFile;
       }
@@ -247,11 +279,143 @@ class CouncilState {
   unsubscribe(fn) { this._listeners.delete(fn); }
 }
 
+/* ─── Telemetry Engine (Decoupled 250ms interval) ─────────────────── */
+class CouncilTelemetry {
+  constructor(state) {
+    this._state = state;
+    this._interval = null;
+    this._tokenDeltas = []; // [{ time: number, tokens: number }]
+    this._totalBytes = 0;
+    this._speed = 0;
+  }
+
+  start() {
+    if (this._interval) return;
+    this._interval = setInterval(() => this.tick(), 250);
+  }
+
+  stop() {
+    if (this._interval) {
+      clearInterval(this._interval);
+      this._interval = null;
+    }
+  }
+
+  reset() {
+    this._tokenDeltas = [];
+    this._totalBytes = 0;
+    this._speed = 0;
+    this.updateUI();
+  }
+
+  recordDelta(text) {
+    if (!text || typeof text !== 'string') return;
+    const bytes = new TextEncoder().encode(text).length;
+    this._totalBytes += bytes;
+    // Estimate tokens from text (~3.8 chars per token)
+    const tokens = Math.max(1, Math.round(text.length / 3.8));
+    this._tokenDeltas.push({ time: Date.now(), tokens });
+  }
+
+  recordRawBytes(bytes) {
+    if (typeof bytes === 'number' && bytes > 0) {
+      this._totalBytes += bytes;
+    }
+  }
+
+  tick() {
+    const now = Date.now();
+    const cutoff = now - 2000; // 2.0s rolling window
+    this._tokenDeltas = this._tokenDeltas.filter(d => d.time >= cutoff);
+
+    const isRunning = this._state.status === 'IN_PROGRESS' || this._state.status === 'BLOCKED';
+    if (!isRunning || this._tokenDeltas.length === 0) {
+      this._speed = 0;
+    } else {
+      const sumTokens = this._tokenDeltas.reduce((acc, d) => acc + d.tokens, 0);
+      const oldest = this._tokenDeltas[0].time;
+      const spanSec = Math.max(0.5, Math.min(2.0, (now - oldest) / 1000));
+      this._speed = sumTokens / spanSec;
+    }
+    this.updateUI();
+  }
+
+  _formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+
+  updateUI() {
+    const speedEl = document.getElementById('council-stream-speed');
+    const bufferEl = document.getElementById('council-stream-buffer');
+    if (speedEl) {
+      speedEl.textContent = `${Math.round(this._speed)} tok/s`;
+    }
+    if (bufferEl) {
+      bufferEl.textContent = this._formatBytes(this._totalBytes);
+    }
+  }
+}
+
 /* ─── Session (API + SSE) ────────────────────────────────────────── */
 class CouncilSession {
   constructor(state) {
     this._state = state;
     this._es    = null;
+  }
+
+  startStream(sessionId) {
+    if (this._es) {
+      this._es.close();
+      this._es = null;
+    }
+    this._state.connectionState = 'connecting';
+    this._state.update({ event: 'connection_state', connectionState: 'connecting' });
+
+    this._es = new EventSource(`/api/council/stream/${sessionId}`);
+
+    this._es.onopen = () => {
+      this._state.connectionState = 'connected';
+      this._state.update({ event: 'connection_state', connectionState: 'connected' });
+    };
+
+    this._es.addEventListener('council_event', e => {
+      this._state.connectionState = 'connected';
+      try {
+        const data = JSON.parse(e.data);
+        if (this._state.telemetry) {
+          const rawByteLen = new TextEncoder().encode(e.data).length;
+          this._state.telemetry.recordRawBytes(rawByteLen);
+          if (data.event === 'thought_delta' && data.text) {
+            this._state.telemetry.recordDelta(data.text);
+          }
+        }
+        this._state.update(data);
+      } catch (err) {
+        console.error('[Council] SSE parse error:', err);
+      }
+    });
+
+    this._es.onerror = () => {
+      // Let native EventSource retry automatically upon transient network drops.
+      // Do not close the stream or mark status as FAILED!
+      if (this._es && this._es.readyState === EventSource.CONNECTING) {
+        this._state.connectionState = 'reconnecting';
+        this._state.update({ event: 'connection_state', connectionState: 'reconnecting' });
+      } else {
+        this._state.connectionState = 'disconnected';
+        this._state.update({ event: 'connection_state', connectionState: 'disconnected' });
+      }
+    };
+
+    this._es.onmessage = e => {
+      if (e.data === '[DONE]') {
+        this._state.connectionState = 'disconnected';
+        this._es.close();
+        this._es = null;
+      }
+    };
   }
 
   async start(prompt) {
@@ -270,15 +434,7 @@ class CouncilSession {
     this._state.sessionId = session_id;
     this._state.lastResponseTime = Date.now();
 
-    this._es = new EventSource(`/api/council/stream/${session_id}`);
-    this._es.addEventListener('council_event', e => {
-      this._state.update(JSON.parse(e.data));
-    });
-    this._es.onerror = () => {
-      this._state.update({ event: 'error', status: 'FAILED', text: 'Connection lost.' });
-      this._es.close();
-    };
-    this._es.onmessage = e => { if (e.data === '[DONE]') this._es.close(); };
+    this.startStream(session_id);
   }
 
   async respond(choice, notes = '') {
@@ -521,15 +677,7 @@ class CouncilSession {
 
       // If still in progress/blocked, reconnect SSE stream to listen for real-time updates
       if (this._state.status === 'IN_PROGRESS' || this._state.status === 'BLOCKED') {
-        this._es = new EventSource(`/api/council/stream/${sessionId}`);
-        this._es.addEventListener('council_event', e => {
-          this._state.update(JSON.parse(e.data));
-        });
-        this._es.onerror = () => {
-          this._state.update({ event: 'error', status: 'FAILED', text: 'Connection lost.' });
-          this._es.close();
-        };
-        this._es.onmessage = e => { if (e.data === '[DONE]') this._es.close(); };
+        this.startStream(sessionId);
       }
     } catch (err) {
       console.error('[Council] Load failed, resetting state:', err);
@@ -562,7 +710,11 @@ class CouncilSession {
   }
 
   close() {
-    this._es?.close();
+    this._state.connectionState = 'disconnected';
+    if (this._es) {
+      this._es.close();
+      this._es = null;
+    }
     // Clear blocking UI state when SSE closes (session switch, deletion, etc.)
     if (this._state.pendingPermission) {
       this._state.pendingPermission = null;
@@ -597,6 +749,16 @@ class CouncilUI {
     this._renderRaf = null;
     this._queuedState = null;
     this._queuedEventType = null;
+    // _compileImplementerFiles derives an immutable display snapshot from the
+    // current log/DAG. Cache it between structural renders so repeated DAG
+    // events do not rescan the entire session log inside the block-building
+    // pass. reset() clears this explicitly at the session boundary.
+    this._implementerFilesCache = null;
+    this._autoFollow = true;
+    this._dagOverlayOpen = false;
+    this._telemetry = new CouncilTelemetry(this._state);
+    this._state.telemetry = this._telemetry;
+    this._telemetry.start();
   }
 
   /* ── Particle engine: dots flowing along the active edge ── */
@@ -652,6 +814,13 @@ class CouncilUI {
     if (this._renderRaf) { cancelAnimationFrame(this._renderRaf); this._renderRaf = null; }
     this._queuedState = null;
     this._queuedEventType = null;
+    this._implementerFilesCache = null;
+    this._telemetry?.reset();
+    this._autoFollow = true;
+    this._state.fileVersions = {};
+    if (this._dagOverlayOpen) {
+      this._toggleDagOverlay(false);
+    }
     this._state.sessionId = null;
     this._state.thoughts = '';
     this._state.activeTool = null;
@@ -1027,11 +1196,24 @@ class CouncilUI {
 
   /* Helper to compile implementer file actions from log tool calls and completed DAG tasks */
   _compileImplementerFiles(state) {
+    const log = Array.isArray(state.log) ? state.log : [];
+    const cache = this._implementerFilesCache;
+    if (
+      cache &&
+      cache.state === state &&
+      cache.log === log &&
+      cache.logLength === log.length &&
+      cache.dag === state.dag &&
+      cache.generatedFiles === state.generatedFiles
+    ) {
+      return cache.files;
+    }
+
     const filesList = [];
     const seenFiles = new Set();
 
     // 1. Scan tool calls for read_file
-    state.log.forEach(e => {
+    log.forEach(e => {
       if (e && e.agent === 'implementer' && (e.event === 'tool_start' || e.event === 'tool_output')) {
         const tool = (e.extra?.tool || e.tool || '').toLowerCase();
         if (tool === 'read_file') {
@@ -1085,8 +1267,8 @@ class CouncilUI {
       });
     }
 
-    // 3. Attach computed stats
-    return filesList.map(f => {
+    // 3. Attach computed stats and retain the immutable display snapshot.
+    const files = filesList.map(f => {
       const stats = this._getFileStats(f.name, state);
       return {
         name: f.name,
@@ -1096,6 +1278,15 @@ class CouncilUI {
         removed: stats.removed
       };
     });
+    this._implementerFilesCache = {
+      state,
+      log,
+      logLength: log.length,
+      dag: state.dag,
+      generatedFiles: state.generatedFiles,
+      files
+    };
+    return files;
   }
 
   /* Helper to parse Manager verdict, summary, and issues */
@@ -1217,13 +1408,29 @@ class CouncilUI {
       }
     }
 
-    // Once the live card exists, streamed tokens only change liveness state.
-    // Rebuilding expanded burst bodies for every token is needless.
-    if (eventType === 'thought_delta' && ledger.querySelector('[data-live-stream]')) return;
+    // Once the live card exists, streamed tokens update the live card content in-place.
+    // This provides lightning-fast streaming with zero full-ledger rebuilds.
+    if (eventType === 'thought_delta' && ledger.querySelector('[data-live-stream]')) {
+      const liveCard = ledger.querySelector('[data-live-stream]');
+      if (liveCard) {
+        const textEl = liveCard.querySelector('.ghost-chair-text, .ghost-think-text');
+        if (textEl) {
+          textEl.innerHTML = _ghostMd(state.thoughts) + '<span class="ghost-typing-cursor"></span>';
+        }
+        if (this._autoFollow !== false) {
+          ledger.scrollTop = ledger.scrollHeight;
+        }
+        return;
+      }
+    }
 
     // Parse blocks sequentially
     const blocks = [];
     let lastAgent = null;
+    let latestStratBlock = null;
+    let latestImplBlock = null;
+    const runningToolCallsByScope = new Map();
+    const _toolScope = (agent, taskId, tool) => `${agent || 'system'}|${taskId || ''}|${tool || ''}`;
 
     // Helper: parse JSON args from command string (declared here so it is
     // available in the block-building loop below AND the render section).
@@ -1246,10 +1453,16 @@ class CouncilUI {
 
       // Block Type Matching - same logic as before up to pushing blocks
       if (e.event === 'status_changed' && agent === 'chair') {
+        const dur = (() => {
+          if (e.extra?.duration_ms) return _fmtElapsed(e.extra.duration_ms);
+          if (e.duration_ms) return _fmtElapsed(e.duration_ms);
+          return '';
+        })();
         blocks.push({
           type: 'chair',
           complexity: e.complexity || 'SIMPLE',
-          reason: compactAgentActivity('chair')
+          reason: compactAgentActivity('chair'),
+          duration: dur
         });
       }
       else if (e.event === 'thought') {
@@ -1260,11 +1473,28 @@ class CouncilUI {
           const review = this._parseManagerReview(e, state.log);
           outcome = `Review ${String(review.verdict || 'received').toLowerCase()}`;
         }
+        const dur = (() => {
+          if (e.extra?.duration_ms) return _fmtElapsed(e.extra.duration_ms);
+          if (e.duration_ms) return _fmtElapsed(e.duration_ms);
+          const curTime = Date.parse(e.timestamp || e.ts);
+          if (Number.isFinite(curTime)) {
+            for (let prevIdx = eventIndex - 1; prevIdx >= 0; prevIdx--) {
+              const pe = state.log[prevIdx];
+              const pt = Date.parse(pe?.timestamp || pe?.ts);
+              if (Number.isFinite(pt) && curTime >= pt) {
+                const diff = curTime - pt;
+                if (diff >= 200 && diff < 3600000) return _fmtElapsed(diff);
+              }
+            }
+          }
+          return '';
+        })();
         blocks.push({
           type: 'think',
           agent: agent,
           text: compactAgentActivity(agent),
-          outcome: outcome
+          outcome: outcome,
+          duration: dur
         });
       }
       else if (e.event === 'dag_update' || e.event === 'task_status_update') {
@@ -1273,16 +1503,22 @@ class CouncilUI {
           t: n.summary || compactTaskLabel(n.description, n.id),
           dp: n.depends_on || []
         }));
-        let lastStrat = [...blocks].reverse().find(b => b.type === 'strat');
-        if (lastStrat) { lastStrat.tasks = tasks; }
-        else { blocks.push({ type: 'strat', tasks: tasks }); }
+        if (latestStratBlock) {
+          latestStratBlock.tasks = tasks;
+        } else {
+          latestStratBlock = { type: 'strat', tasks };
+          blocks.push(latestStratBlock);
+        }
 
         const doneNodes = (e.extra?.dag?.nodes || []).filter(n => n.status === 'DONE');
         if (doneNodes.length > 0) {
           const files = this._compileImplementerFiles(state);
-          let lastImpl = [...blocks].reverse().find(b => b.type === 'impl');
-          if (lastImpl) { lastImpl.files = files; }
-          else { blocks.push({ type: 'impl', files: files }); }
+          if (latestImplBlock) {
+            latestImplBlock.files = files;
+          } else {
+            latestImplBlock = { type: 'impl', files };
+            blocks.push(latestImplBlock);
+          }
         }
       }
       else if (e.event === 'review_required') {
@@ -1300,7 +1536,7 @@ class CouncilUI {
         // to parsing the command string for backward compat with old log replays.
         const args = (e.extra?.args && typeof e.extra.args === 'object' && !Array.isArray(e.extra.args))
           ? e.extra.args : _parseArgs(cmd);
-        blocks.push({
+        const toolBlock = {
           type: 'tool_call',
           tool: typeof e.extra?.tool === 'string' ? e.extra.tool : '',
           command: cmd,
@@ -1309,17 +1545,19 @@ class CouncilUI {
           taskId: typeof e.extra?.task_id === 'string' ? e.extra.task_id : '',
           sourceIndex: eventIndex,
           agent: agent
-        });
+        };
+        blocks.push(toolBlock);
+        runningToolCallsByScope.set(_toolScope(agent, toolBlock.taskId, toolBlock.tool), toolBlock);
       }
       else if (e.event === 'tool_output') {
         const toolName = typeof e.extra?.tool === 'string' ? e.extra.tool : '';
         const taskId = typeof e.extra?.task_id === 'string' ? e.extra.task_id : '';
-        let lastTool = [...blocks].reverse().find(b =>
-          b.type === 'tool_call' && b.tool === toolName && b.taskId === taskId
-        );
+        const scope = _toolScope(agent, taskId, toolName);
+        const lastTool = runningToolCallsByScope.get(scope);
         if (lastTool && lastTool.status === 'RUNNING') {
           lastTool.status = e.exit_code === 0 || e.exit_code === null ? 'SUCCESS' : 'FAILED';
           lastTool.output = typeof e.extra?.output === 'string' ? e.extra.output : '';
+          runningToolCallsByScope.delete(scope);
         } else {
           const cmd = typeof e.extra?.command === 'string' ? e.extra.command : '';
           const args = (e.extra?.args && typeof e.extra.args === 'object' && !Array.isArray(e.extra.args))
@@ -1421,30 +1659,34 @@ class CouncilUI {
     }
     // ────────────────────────────────────────────────────────────────────────
 
-    // Handle active live streaming thought/code delta (SAME LOGIC)
+    // Append the active block to the collection that is actually rendered.
+    // finalBlocks is normally a compacted copy, not an alias of blocks; pushing
+    // into blocks here orphaned the live card and kept the thought_delta guard
+    // above from ever seeing [data-live-stream].
     if (running && state.activeAgent && state.thoughts) {
       if (lastAgent && lastAgent !== state.activeAgent && lastAgent !== 'system') {
-        blocks.push({ type: 'handoff', from: lastAgent, to: state.activeAgent });
+        finalBlocks.push({ type: 'handoff', from: lastAgent, to: state.activeAgent });
       }
+      const dur = state.activeAgentSince ? _fmtElapsed(Date.now() - state.activeAgentSince) : '';
       if (state.activeAgent === 'chair') {
-        blocks.push({
+        finalBlocks.push({
           type: 'chair', complexity: state.complexity || 'PENDING',
-          reason: compactAgentActivity('chair'), streaming: true
+          reason: state.thoughts, streaming: true, duration: dur
         });
       } else if (state.activeAgent === 'strategist') {
-        blocks.push({
+        finalBlocks.push({
           type: 'think', agent: 'strategist',
-          text: compactAgentActivity('strategist'), streaming: true
+          text: state.thoughts, streaming: true, duration: dur
         });
       } else if (state.activeAgent === 'implementer') {
-        blocks.push({
+        finalBlocks.push({
           type: 'think', agent: 'implementer',
-          text: compactAgentActivity('implementer', state.activeTool), streaming: true
+          text: state.thoughts, streaming: true, duration: dur
         });
       } else if (state.activeAgent === 'manager') {
-        blocks.push({
+        finalBlocks.push({
           type: 'think', agent: 'manager',
-          text: compactAgentActivity('manager'), streaming: true
+          text: state.thoughts, streaming: true, duration: dur
         });
       }
     }
@@ -1592,18 +1834,42 @@ class CouncilUI {
 
         if (b.type === 'chair') {
           const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--pass)';
-          html += `
-          ${_sectionHeader('Chair Evaluation', 'var(--chair)')}
-          <div style="margin-bottom:4px">
-            <span style="font-size:9px;font-family:var(--font);background:var(--bg-highlight,#1c1510);padding:2px 6px;border-radius:3px;color:${cl};border:1px solid var(--border)">${_esc(b.complexity)}</span>
-          </div>
-          <div class="ghost-md ghost-chair-text">${_ghostMd(b.reason)}${b.streaming ? '<span class="ghost-typing-cursor"></span>' : ''}</div>`;
+          if (!b.streaming) {
+            const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
+            html += `
+            <div class="ghost-think-collapsed" style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);line-height:1.4;">
+              <span class="ghost-section-dot" style="background:var(--chair);"></span>
+              <span style="font-weight:600;color:var(--chair);font-size:10px;text-transform:uppercase;">CHAIR</span>
+              <span style="font-size:9px;font-family:var(--font);background:var(--bg-highlight,#1c1510);padding:1px 4px;border-radius:3px;color:${cl};border:1px solid var(--border)">${_esc(b.complexity)}</span>
+              <span>${_esc(b.reason)}</span>
+              ${durBadge}
+            </div>`;
+          } else {
+            html += `
+            ${_sectionHeader('Chair Evaluation' + (b.duration ? ` · ${b.duration}` : ''), 'var(--chair)')}
+            <div style="margin-bottom:4px">
+              <span style="font-size:9px;font-family:var(--font);background:var(--bg-highlight,#1c1510);padding:2px 6px;border-radius:3px;color:${cl};border:1px solid var(--border)">${_esc(b.complexity)}</span>
+            </div>
+            <div class="ghost-md ghost-chair-text">${_ghostMd(b.reason)}<span class="ghost-typing-cursor"></span></div>`;
+          }
         }
         else if (b.type === 'think') {
-          html += `
-          ${_sectionHeader('System Thought', 'var(--think)')}
-          <div class="ghost-md ghost-think-text">${_ghostMd(b.text)}${b.streaming ? '<span class="ghost-typing-cursor"></span>' : ''}</div>
-          ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}`;
+          if (!b.streaming) {
+            const durBadge = b.duration ? `<span class="ghost-think-duration" style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
+            html += `
+            <div class="ghost-think-collapsed" style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);line-height:1.4;">
+              <span class="ghost-section-dot" style="background:var(--think);"></span>
+              <span style="font-weight:600;color:var(--think);font-size:10px;text-transform:uppercase;">${_esc(b.agent)}</span>
+              <span>${_esc(b.text)}</span>
+              ${b.outcome ? `<span style="color:var(--muted);font-size:10px;">→ ${_esc(b.outcome)}</span>` : ''}
+              ${durBadge}
+            </div>`;
+          } else {
+            html += `
+            ${_sectionHeader('System Thought' + (b.duration ? ` · ${b.duration}` : ''), 'var(--think)')}
+            <div class="ghost-md ghost-think-text">${_ghostMd(b.text)}<span class="ghost-typing-cursor"></span></div>
+            ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}`;
+          }
         }
         else if (b.type === 'strat') {
           const _taskCount = b.tasks.length;
@@ -1805,72 +2071,148 @@ class CouncilUI {
     ledger.innerHTML = html;
 
     // ── Scroll management ────────────────────────────────────────────────────
-    // Cancel any rAF queued by the previous render so we never accumulate
-    // pending scroll callbacks (at 114 tok/s this would grow unboundedly).
     if (this._scrollRaf) { cancelAnimationFrame(this._scrollRaf); this._scrollRaf = null; }
-    if (_atBottom) {
-      // Pin to bottom. rAF lets the browser lay out the new HTML first so
-      // scrollHeight is correct before we read it.
+    if (this._autoFollow && _atBottom) {
       this._scrollRaf = requestAnimationFrame(() => {
         ledger.scrollTop = ledger.scrollHeight;
         this._scrollRaf = null;
       });
-    } else {
-      // Restore the user's reading position. innerHTML resets scrollTop to 0,
-      // so we have to put it back immediately (no rAF needed — no layout read).
+    } else if (!_atBottom) {
       ledger.scrollTop = _savedScrollTop;
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Update bottom status footer
-    const speedEl = document.getElementById('council-stream-speed');
-    const bufferEl = document.getElementById('council-stream-buffer');
-    if (bufferEl) bufferEl.textContent = `~${(totalChars / 1000).toFixed(1)}k chars`;
-    if (speedEl) speedEl.textContent = running ? '114 tok/s' : '0 tok/s';
+    // Update bottom status footer via decoupled telemetry engine
+    if (this._telemetry) {
+      this._telemetry.updateUI();
+    }
+    this._updateAutoFollowIndicator();
   }
 
+  /* Panel 2 Identity (Decision 3): Execution stream permanently owns the body */
   _renderDAGView(state) {
     const container = document.getElementById('council-dag-view');
     const ghostEl   = document.getElementById('council-ghost-editor');
     const titleEl   = document.getElementById('council-ghost-title');
     const toggleBtn = document.getElementById('council-thinking-toggle');
 
-    if (!container) return;
+    if (ghostEl) ghostEl.style.display = '';
+    if (container) container.style.display = 'none';
+    if (titleEl) titleEl.textContent = 'Execution stream';
 
-    if (state.showDAG && state.dag) {
-      if (toggleBtn) {
-        toggleBtn.hidden = false;
-        toggleBtn.textContent = state.showThinking ? 'Hide thinking ▴' : 'Show thinking ▾';
-      }
-
-      if (toggleBtn && !toggleBtn._wired) {
+    if (toggleBtn) {
+      const hasDag = Boolean(state.dag && Array.isArray(state.dag.nodes) && state.dag.nodes.length > 0);
+      toggleBtn.hidden = !hasDag;
+      toggleBtn.textContent = 'Task Graph [G]';
+      toggleBtn.title = 'Open full task dependency graph overlay (G)';
+      if (!toggleBtn._wired) {
         toggleBtn._wired = true;
         toggleBtn.addEventListener('click', () => {
-          state.showThinking = !state.showThinking;
-          state.update({});
+          this._toggleDagOverlay();
         });
       }
+    }
 
-      if (state.showThinking) {
-        if (ghostEl) ghostEl.style.display = '';
-        container.style.display = 'none';
-        if (titleEl) titleEl.textContent = 'Execution stream';
-      } else {
-        if (ghostEl) ghostEl.style.display = 'none';
-        container.style.display = '';
-        if (titleEl) titleEl.textContent = 'Task Graph';
-        this._renderDAGSVG(container, state.dag);
+    this._renderDAGRail(state);
+
+    if (this._dagOverlayOpen && state.dag) {
+      const overlayContainer = document.getElementById('council-dag-overlay-container');
+      if (overlayContainer) {
+        this._renderDAGSVG(overlayContainer, state.dag, true);
       }
-    } else {
-      container.style.display = 'none';
-      container.innerHTML = '';
-      if (ghostEl) ghostEl.style.display = '';
-      if (titleEl) titleEl.textContent = 'Execution stream';
-      if (toggleBtn) toggleBtn.hidden = true;
     }
   }
 
-  _renderDAGSVG(container, dag) {
+  /* ~28px horizontal DAG task rail below pane header */
+  _renderDAGRail(state) {
+    const ghostPane = document.querySelector('.council-ghost-pane');
+    if (!ghostPane) return;
+
+    let railEl = document.getElementById('council-dag-rail');
+    if (!railEl) {
+      railEl = document.createElement('div');
+      railEl.id = 'council-dag-rail';
+      railEl.className = 'council-dag-rail';
+      const header = ghostPane.querySelector('.council-pane-header');
+      if (header && header.nextSibling) {
+        ghostPane.insertBefore(railEl, header.nextSibling);
+      } else {
+        ghostPane.prepend(railEl);
+      }
+      railEl.addEventListener('click', (e) => {
+        // Clicking anywhere on the rail opens the full interactive SVG DAG overlay
+        this._toggleDagOverlay(true);
+      });
+    }
+
+    const nodes = (state.dag && Array.isArray(state.dag.nodes)) ? state.dag.nodes : [];
+    if (!nodes.length) {
+      railEl.style.display = 'none';
+      return;
+    }
+
+    railEl.style.display = 'flex';
+    let pillsHtml = '';
+    nodes.forEach(n => {
+      const status = String(n.status || 'PENDING').toUpperCase();
+      const statusCls = status === 'DONE' ? 'done' : (status === 'IN_PROGRESS' || status === 'RUNNING') ? 'in-progress' : status === 'FAILED' ? 'failed' : status === 'BLOCKED' ? 'blocked' : 'pending';
+      const summary = n.summary || compactTaskLabel(n.description, n.id);
+      pillsHtml += `
+        <button type="button" class="council-dag-pill dag-pill--${statusCls}" data-task-id="${_esc(n.id)}" title="${_esc(n.id)}: ${_esc(n.description || '')}">
+          <span class="dag-pill-dot"></span>
+          <span class="dag-pill-id">${_esc(n.id)}</span>
+          <span class="dag-pill-summary">${_esc(summary)}</span>
+        </button>`;
+    });
+    railEl.innerHTML = pillsHtml;
+  }
+
+  /* Interactive DAG modal overlay with backdrop scrim */
+  _toggleDagOverlay(forceState) {
+    let overlay = document.getElementById('council-dag-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'council-dag-overlay';
+      overlay.className = 'council-dag-overlay';
+      overlay.style.display = 'none';
+      overlay.setAttribute('role', 'dialog');
+      overlay.setAttribute('aria-modal', 'true');
+      overlay.setAttribute('aria-label', 'Task Dependency Graph');
+      overlay.innerHTML = `
+        <div class="council-dag-backdrop"></div>
+        <div class="council-dag-modal">
+          <div class="council-dag-modal-header">
+            <div style="display:flex;align-items:center;gap:12px;">
+              <span class="council-pane-title" style="font-weight:700;letter-spacing:.08em;">TASK DEPENDENCY GRAPH</span>
+              <span style="font-size:10px;color:var(--muted);background:var(--bg);padding:2px 8px;border-radius:4px;border:1px solid var(--border);">Press [G] or [Esc] to close</span>
+            </div>
+            <button type="button" class="council-dag-modal-close" aria-label="Close task graph">&times;</button>
+          </div>
+          <div class="council-dag-modal-body scroll-container" id="council-dag-overlay-container"></div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.querySelector('.council-dag-backdrop')?.addEventListener('click', () => this._toggleDagOverlay(false));
+      overlay.querySelector('.council-dag-modal-close')?.addEventListener('click', () => this._toggleDagOverlay(false));
+    }
+
+    const isCurrentlyOpen = this._dagOverlayOpen;
+    const shouldOpen = forceState !== undefined ? Boolean(forceState) : !isCurrentlyOpen;
+    this._dagOverlayOpen = shouldOpen;
+
+    if (shouldOpen) {
+      overlay.style.display = 'flex';
+      const container = document.getElementById('council-dag-overlay-container');
+      if (container && this._state.dag) {
+        this._renderDAGSVG(container, this._state.dag, true);
+      }
+    } else {
+      overlay.style.display = 'none';
+    }
+  }
+
+  _renderDAGSVG(container, dag, isOverlay = false) {
     const nodes = (dag && Array.isArray(dag.nodes)) ? dag.nodes : [];
     if (!nodes.length) {
       container.innerHTML = '<div style="color:var(--fg);opacity:.4;text-align:center;padding:40px;">No tasks</div>';
@@ -1910,10 +2252,15 @@ class CouncilUI {
 
     const layerKeys = Object.keys(layerGroups).map(Number).sort((a, b) => a - b);
 
-    const nodeW = 160, nodeH = 48, padX = 32, padY = 24, marginX = 24, marginY = 20;
+    const nodeW = isOverlay ? 220 : 160;
+    const nodeH = isOverlay ? 60 : 48;
+    const padX = isOverlay ? 44 : 32;
+    const padY = isOverlay ? 36 : 24;
+    const marginX = isOverlay ? 40 : 24;
+    const marginY = isOverlay ? 36 : 20;
     const maxLayerWidth = Math.max(...layerKeys.map(k => layerGroups[k].length));
-    const svgW = Math.max(300, maxLayerWidth * (nodeW + padX) + marginX * 2);
-    const svgH = Math.max(200, layerKeys.length * (nodeH + padY) + marginY * 2);
+    const svgW = Math.max(isOverlay ? 600 : 300, maxLayerWidth * (nodeW + padX) + marginX * 2);
+    const svgH = Math.max(isOverlay ? 360 : 200, layerKeys.length * (nodeH + padY) + marginY * 2);
 
     const positions = {};
     layerKeys.forEach((layerIdx, row) => {
@@ -1954,11 +2301,12 @@ class CouncilUI {
       const p = positions[n.id];
       if (!p) return;
       const desc = typeof n.description === 'string' ? n.description : (n.description != null ? String(n.description) : '');
-      const truncDesc = desc.length > 40 ? desc.slice(0, 37) + '…' : desc;
+      const maxChars = isOverlay ? 75 : 40;
+      const truncDesc = desc.length > maxChars ? desc.slice(0, maxChars - 3) + '…' : desc;
       svg += `<g class="dag-node ${statusClass(n.status)}" transform="translate(${p.x},${p.y})">
         <rect class="dag-node-rect" width="${nodeW}" height="${nodeH}"/>
-        <text class="dag-node-id" x="${nodeW/2}" y="16">${_esc(n.id)}</text>
-        <text class="dag-node-desc" x="${nodeW/2}" y="34">${_esc(truncDesc)}</text>
+        <text class="dag-node-id" x="${nodeW/2}" y="${isOverlay ? 20 : 16}">${_esc(n.id)}</text>
+        <text class="dag-node-desc" x="${nodeW/2}" y="${isOverlay ? 40 : 34}">${_esc(truncDesc)}</text>
       </g>`;
     });
 
@@ -1974,6 +2322,10 @@ class CouncilUI {
     const headerContainer = document.getElementById('council-code-header-container');
 
     const files = Object.keys(state.generatedFiles || {});
+
+    // Snapshot scroll positions before DOM updates to prevent viewport jumping
+    const savedCodeScrollTop = el ? el.scrollTop : 0;
+    const savedLinenosScrollTop = linenosEl ? linenosEl.scrollTop : 0;
 
     // Determine selected file
     let selectedFile = state.selectedFile || state.lastFile;
@@ -1992,20 +2344,64 @@ class CouncilUI {
         const safeCode = (selectedFile && state.generatedFiles[selectedFile] !== undefined)
           ? state.generatedFiles[selectedFile]
           : (typeof state.lastCode === 'string' ? state.lastCode : '');
-        
-        el.textContent = safeCode;
-        if (linenosEl) {
-          const lines = safeCode ? safeCode.split('\n') : [];
-          const lineCount = Math.max(lines.length, 1);
+
+        const fileVer = state.fileVersions ? state.fileVersions[selectedFile] : null;
+        const hasDiff = Boolean(
+          fileVer &&
+          fileVer.original !== undefined &&
+          fileVer.original !== fileVer.current &&
+          typeof fileVer.current === 'string'
+        );
+
+        // el.classList.remove('has-state-container');
+        el.style.padding = '';
+        if (linenosEl) linenosEl.style.display = '';
+
+        if (hasDiff) {
+          const diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
+          let codeHtml = '';
           let linenosHtml = '';
-          for (let i = 1; i <= lineCount; i++) {
-            linenosHtml += `<div>${i}</div>`;
+          diffLines.forEach(item => {
+            if (item.type === 'add') {
+              codeHtml += `<div class="diff-line diff-line-add"><span class="diff-gutter" style="color:var(--impl,#4eb870);user-select:none;margin-right:6px;font-weight:700;">+</span>${_esc(item.text)}</div>`;
+              linenosHtml += `<div class="diff-line-add" style="color:var(--impl,#4eb870);">${item.lineNum != null ? item.lineNum : '+'}</div>`;
+            } else if (item.type === 'del') {
+              codeHtml += `<div class="diff-line diff-line-del"><span class="diff-gutter" style="color:var(--fail,#e05858);user-select:none;margin-right:6px;font-weight:700;">-</span>${_esc(item.text)}</div>`;
+              linenosHtml += `<div class="diff-line-del" style="color:var(--fail,#e05858);">-</div>`;
+            } else {
+              codeHtml += `<div class="diff-line diff-line-equal"><span class="diff-gutter" style="opacity:0.3;user-select:none;margin-right:6px;"> </span>${_esc(item.text)}</div>`;
+              linenosHtml += `<div>${item.lineNum != null ? item.lineNum : ''}</div>`;
+            }
+          });
+          el.innerHTML = codeHtml;
+          if (linenosEl) linenosEl.innerHTML = linenosHtml;
+        } else {
+          el.textContent = safeCode;
+          if (linenosEl) {
+            const lines = safeCode ? safeCode.split('\n') : [];
+            const lineCount = Math.max(lines.length, 1);
+            let linenosHtml = '';
+            for (let i = 1; i <= lineCount; i++) {
+              linenosHtml += `<div>${i}</div>`;
+            }
+            linenosEl.innerHTML = linenosHtml;
           }
-          linenosEl.innerHTML = linenosHtml;
+        }
+
+        // Restore scroll positions to prevent jumping
+        el.scrollTop = savedCodeScrollTop;
+        if (linenosEl) linenosEl.scrollTop = savedLinenosScrollTop;
+
+        if (linenosEl && !el._linenosWired) {
+          el._linenosWired = true;
+          el.addEventListener('scroll', () => {
+            linenosEl.scrollTop = el.scrollTop;
+          });
         }
       } else {
         // NO FILES - DETECT OTHER STATE MACHINE STATES
         if (linenosEl) linenosEl.style.display = 'none';
+        // el.classList.add('has-state-container');
         el.style.padding = '0'; // Let the state container take full layout
         
         if (state.status === 'FAILED') {
@@ -2024,7 +2420,7 @@ class CouncilUI {
               <div class="error-message">${_esc(errorMessage)}</div>
               <div class="error-hint">Check the Captain's Log on the right for full trace details.</div>
             </div>
-          `;
+          `.trim();
         } else if (state.status === 'IN_PROGRESS' || state.activeAgent === 'implementer') {
           // LOADING STATE
           el.innerHTML = `
@@ -2041,7 +2437,7 @@ class CouncilUI {
                 <div class="skeleton-line pulsing" style="width: 40%"></div>
               </div>
             </div>
-          `;
+          `.trim();
         } else if (state.status === 'PENDING') {
           // IDLE STATE
           el.innerHTML = `
@@ -2051,7 +2447,7 @@ class CouncilUI {
                 <span class="terminal-cursor">_</span>
               </div>
             </div>
-          `;
+          `.trim();
         } else {
           // EMPTY STATE (Orchestrator complete but no files output)
           el.innerHTML = `
@@ -2060,7 +2456,7 @@ class CouncilUI {
               <div class="empty-title">No Code Output</div>
               <div class="empty-subtitle">The implementation task executed, but did not generate or edit any workspace files.</div>
             </div>
-          `;
+          `.trim();
         }
       }
     }
@@ -2131,20 +2527,35 @@ class CouncilUI {
     // 2. Update session ID display
     const sidEl = document.getElementById('council-log-session-id');
     if (sidEl) {
-      sidEl.textContent = `ID: ${state.sessionId || 'PENDING'}`;
+      const fullId = state.sessionId || 'PENDING';
+      const shortId = fullId.length > 12 ? `${fullId.slice(0, 8)}…` : fullId;
+      sidEl.textContent = `ID: ${shortId}`;
+      sidEl.title = `Session ID: ${fullId} (click to copy)`;
+      sidEl.style.cursor = 'pointer';
+      if (!sidEl.dataset.hasCopyListener) {
+        sidEl.dataset.hasCopyListener = 'true';
+        sidEl.addEventListener('click', () => {
+          if (state.sessionId) {
+            navigator.clipboard?.writeText(state.sessionId);
+            const orig = sidEl.textContent;
+            sidEl.textContent = 'COPIED!';
+            setTimeout(() => { sidEl.textContent = orig; }, 1200);
+          }
+        });
+      }
     }
 
     // 3. Update footer button text and state
     const revertBtn = document.getElementById('council-revert-btn');
     if (revertBtn) {
       if (state.status === 'IN_PROGRESS' || state.status === 'BLOCKED') {
-        revertBtn.textContent = 'Stop run';
+        revertBtn.textContent = 'Restart run';
         revertBtn.disabled = false;
       } else if (state.status === 'COMPLETE') {
         revertBtn.textContent = 'Restart from last brief';
         revertBtn.disabled = false;
       } else {
-        revertBtn.textContent = 'Stop run';
+        revertBtn.textContent = 'Restart from brief';
         revertBtn.disabled = true;
       }
     }
@@ -3029,6 +3440,145 @@ class CouncilUI {
         revert.disabled = (s.status !== 'IN_PROGRESS' && s.status !== 'BLOCKED' && s.status !== 'COMPLETE');
       }
     });
+
+    // Global keyboard contract (Decision 5)
+    document.addEventListener('keydown', e => this._handleGlobalKeydown(e, session));
+
+    // Ledger manual scroll listener for auto-follow toggle
+    const ledger = document.getElementById('council-ghost-stream-ledger');
+    if (ledger && !ledger._scrollFollowWired) {
+      ledger._scrollFollowWired = true;
+      ledger.addEventListener('scroll', () => {
+        const atBottom = (ledger.scrollHeight - ledger.scrollTop - ledger.clientHeight) < 40;
+        if (!atBottom && this._autoFollow) {
+          this._autoFollow = false;
+          this._updateAutoFollowIndicator();
+        } else if (atBottom && !this._autoFollow) {
+          this._autoFollow = true;
+          this._updateAutoFollowIndicator();
+        }
+      });
+    }
+  }
+
+  _updateAutoFollowIndicator() {
+    let pill = document.getElementById('council-stream-autofollow');
+    if (!pill) {
+      const footer = document.getElementById('council-ghost-footer');
+      if (footer) {
+        pill = document.createElement('span');
+        pill.id = 'council-stream-autofollow';
+        pill.className = 'council-autofollow-pill';
+        pill.title = 'Press Space to toggle auto-scroll';
+        pill.addEventListener('click', () => {
+          this._autoFollow = !this._autoFollow;
+          this._updateAutoFollowIndicator();
+          if (this._autoFollow) {
+            const ledger = document.getElementById('council-ghost-stream-ledger');
+            if (ledger) ledger.scrollTop = ledger.scrollHeight;
+          }
+        });
+        const metrics = footer.querySelector('.ghost-footer-metrics');
+        if (metrics) metrics.appendChild(pill);
+        else footer.appendChild(pill);
+      }
+    }
+    if (pill) {
+      pill.style.background = '';
+      pill.style.color = '';
+      pill.style.border = '';
+      if (this._autoFollow) {
+        pill.textContent = 'Auto: ON';
+        pill.className = 'council-autofollow-pill active';
+      } else {
+        pill.textContent = 'Auto: OFF';
+        pill.className = 'council-autofollow-pill paused';
+      }
+    }
+  }
+
+  _handleGlobalKeydown(e, session) {
+    const target = e.target;
+    // Mindful check: Ensure hotkeys are completely suppressed when the user
+    // is actively typing in any input, textarea, or contenteditable element!
+    if (
+      target && (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'SELECT' ||
+        target.isContentEditable ||
+        Boolean(target.closest?.('[contenteditable="true"]'))
+      )
+    ) {
+      return;
+    }
+
+    // Escape: Trigger cancellation if run is active (IN_PROGRESS or BLOCKED),
+    // or close DAG overlay if open
+    if (e.key === 'Escape') {
+      if (this._dagOverlayOpen) {
+        e.preventDefault();
+        this._toggleDagOverlay(false);
+        return;
+      }
+      const isRunning = this._state.status === 'IN_PROGRESS' || this._state.status === 'BLOCKED';
+      if (isRunning) {
+        e.preventDefault();
+        session.respond('cancel');
+      }
+      return;
+    }
+
+    // Do not capture modified key chords (Ctrl, Alt, Meta)
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+    // Space: Toggle stream auto-follow (pause/resume autoscroll) and update footer pill
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      this._autoFollow = !this._autoFollow;
+      this._updateAutoFollowIndicator();
+      if (this._autoFollow) {
+        const ledger = document.getElementById('council-ghost-stream-ledger');
+        if (ledger) ledger.scrollTop = ledger.scrollHeight;
+      }
+      return;
+    }
+
+    // G / g: Toggle DAG overlay view
+    if (e.key === 'g' || e.key === 'G') {
+      e.preventDefault();
+      this._toggleDagOverlay();
+      return;
+    }
+
+    // 1 / 2 / 3: Focus Changes pane, Stream pane, and Captain's Log panel
+    if (e.key === '1') {
+      e.preventDefault();
+      const p = document.getElementById('council-code-panel') || document.querySelector('.council-code-pane');
+      if (p) {
+        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
+        p.focus();
+      }
+      return;
+    }
+    if (e.key === '2') {
+      e.preventDefault();
+      const p = document.getElementById('council-ghost-stream-ledger') || document.getElementById('council-ghost-editor');
+      if (p) {
+        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
+        p.focus();
+      }
+      return;
+    }
+    if (e.key === '3') {
+      e.preventDefault();
+      const p = document.getElementById('council-captains-log') || document.querySelector('.council-log-sidebar');
+      if (p) {
+        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
+        p.focus();
+      }
+      return;
+    }
   }
 }
 
@@ -3335,6 +3885,231 @@ function _agentCount(complexity) {
   return { SIMPLE: 2, MEDIUM: 3, COMPLEX: 4 }[complexity] || 3;
 }
 
+function computeLineDiff(originalText, currentText) {
+  const a = originalText ? String(originalText).split('\n') : [];
+  const b = currentText ? String(currentText).split('\n') : [];
+
+  // Trim common prefix
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) {
+    start++;
+  }
+
+  // Trim common suffix
+  let aEnd = a.length - 1;
+  let bEnd = b.length - 1;
+  while (aEnd >= start && bEnd >= start && a[aEnd] === b[bEnd]) {
+    aEnd--;
+    bEnd--;
+  }
+
+  const result = [];
+  for (let i = 0; i < start; i++) {
+    result.push({ type: 'same', text: a[i], lineNum: i + 1 });
+  }
+
+  const aMid = a.slice(start, aEnd + 1);
+  const bMid = b.slice(start, bEnd + 1);
+
+  if (aMid.length === 0) {
+    for (let i = 0; i < bMid.length; i++) {
+      result.push({ type: 'add', text: bMid[i], lineNum: start + i + 1 });
+    }
+  } else if (bMid.length === 0) {
+    for (let i = 0; i < aMid.length; i++) {
+      result.push({ type: 'del', text: aMid[i], lineNum: null });
+    }
+  } else if (aMid.length * bMid.length <= 1000000) {
+    const dp = Array.from({ length: aMid.length + 1 }, () => new Uint32Array(bMid.length + 1));
+    for (let i = 1; i <= aMid.length; i++) {
+      for (let j = 1; j <= bMid.length; j++) {
+        if (aMid[i - 1] === bMid[j - 1]) {
+          dp[i][j] = dp[i - 1][j - 1] + 1;
+        } else {
+          dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+        }
+      }
+    }
+
+    let i = aMid.length;
+    let j = bMid.length;
+    const midDiff = [];
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && aMid[i - 1] === bMid[j - 1]) {
+        midDiff.unshift({ type: 'same', text: aMid[i - 1] });
+        i--;
+        j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        midDiff.unshift({ type: 'add', text: bMid[j - 1] });
+        j--;
+      } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
+        midDiff.unshift({ type: 'del', text: aMid[i - 1] });
+        i--;
+      }
+    }
+    let curLine = start + 1;
+    midDiff.forEach(d => {
+      if (d.type === 'del') {
+        result.push({ type: 'del', text: d.text, lineNum: null });
+      } else {
+        result.push({ type: d.type, text: d.text, lineNum: curLine++ });
+      }
+    });
+  } else {
+    aMid.forEach(line => result.push({ type: 'del', text: line, lineNum: null }));
+    let curLine = start + 1;
+    bMid.forEach(line => result.push({ type: 'add', text: line, lineNum: curLine++ }));
+  }
+
+  let curLine = result.filter(r => r.type !== 'del').length + 1;
+  for (let i = aEnd + 1; i < a.length; i++) {
+    result.push({ type: 'same', text: a[i], lineNum: curLine++ });
+  }
+
+  return result;
+}
+
+function _injectRemediationStyles() {
+  if (typeof document === 'undefined' || document.getElementById('council-remediation-styles')) return;
+  const style = document.createElement('style');
+  style.id = 'council-remediation-styles';
+  style.textContent = `
+    .council-dag-rail {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      max-height: 32px;
+      padding: 4px 12px;
+      background: var(--bg, #090705);
+      border-bottom: 1px solid var(--border, #2a221b);
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .council-dag-rail::-webkit-scrollbar { height: 3px; }
+    .council-dag-rail::-webkit-scrollbar-thumb { background: var(--border, #2a221b); border-radius: 2px; }
+    .council-dag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      height: 20px;
+      padding: 0 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-family: var(--font-mono, monospace);
+      background: var(--panel, #120e0b);
+      border: 1px solid var(--border, #2a221b);
+      color: var(--fg, #e2dcd5);
+      cursor: pointer;
+      transition: all 0.15s ease;
+      flex-shrink: 0;
+    }
+    .council-dag-pill:hover { border-color: var(--compass-accent, #df8e45); }
+    .council-dag-pill .dag-pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .council-dag-pill.dag-pill--done { border-color: var(--impl, #4eb870); background: rgba(78, 184, 112, 0.12); color: var(--impl, #4eb870); }
+    .council-dag-pill.dag-pill--in-progress { border-color: var(--warn, #df8e45); background: rgba(223, 142, 69, 0.15); color: var(--warn, #df8e45); animation: cc-node-pulse 2s infinite ease-in-out; }
+    .council-dag-pill.dag-pill--failed { border-color: var(--fail, #e05858); background: rgba(224, 88, 88, 0.15); color: var(--fail, #e05858); }
+    .council-dag-pill.dag-pill--blocked { border-color: var(--warn, #df8e45); background: rgba(223, 142, 69, 0.15); color: var(--warn, #df8e45); }
+    .council-dag-pill.dag-pill--pending { color: var(--muted, #736b63); opacity: 0.8; }
+    .council-dag-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .council-dag-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(4px);
+    }
+    .council-dag-modal {
+      position: relative;
+      width: 90vw;
+      max-width: 1100px;
+      height: 82vh;
+      background: var(--panel, #120e0b);
+      border: 1px solid var(--border, #2a221b);
+      border-radius: 8px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 1;
+    }
+    .council-dag-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border, #2a221b);
+      background: var(--bg, #090705);
+    }
+    .council-dag-modal-close {
+      background: transparent;
+      border: none;
+      font-size: 20px;
+      color: var(--muted, #736b63);
+      cursor: pointer;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .council-dag-modal-close:hover { color: var(--fg, #e2dcd5); background: rgba(255, 255, 255, 0.08); }
+    .council-dag-modal-body {
+      flex: 1;
+      overflow: auto;
+      padding: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .council-autofollow-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 9px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding: 2px 6px;
+      border-radius: 3px;
+      cursor: pointer;
+      user-select: none;
+      margin-left: 8px;
+      transition: all 0.15s ease;
+    }
+    .diff-line {
+      display: flex;
+      align-items: flex-start;
+      line-height: 1.5;
+      font-family: var(--font-mono, monospace);
+      white-space: pre;
+    }
+    .diff-line.diff-line-add {
+      background: rgba(78, 184, 112, 0.12);
+      border-left: 3px solid var(--impl, #4eb870);
+      padding-left: 4px;
+    }
+    .diff-line.diff-line-del {
+      background: rgba(224, 88, 88, 0.12);
+      border-left: 3px solid var(--fail, #e05858);
+      padding-left: 4px;
+      text-decoration: line-through;
+      opacity: 0.75;
+    }
+    .diff-gutter {
+      display: inline-block;
+      width: 14px;
+      flex-shrink: 0;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
 function initResizers() {
   try {
     const resizerCodeGhost = document.getElementById('council-resizer-code-ghost');
@@ -3426,6 +4201,9 @@ export function init() {
   state.subscribe((s, ev) => ui.scheduleRender(s, ev));
 
   ui.wireListeners(session);
+
+  // Inject styles for DAG rail, overlay, diff lines, and autofollow pill
+  _injectRemediationStyles();
 
   // Setup resizers
   initResizers();
