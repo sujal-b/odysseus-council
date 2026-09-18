@@ -40151,10 +40151,254 @@ body.theme-frosted .modal {
   }
 }
 
+/* Mobile & Split View (<= 880px) */
+@media (max-width: 880px) {
+  .council-panel:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .council-runbar {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-rows: auto auto auto auto;
+    gap: 6px 10px;
+    padding: 8px 12px;
+    min-height: auto !important;
+    height: auto !important;
+    flex-shrink: 0 !important;
+  }
+  .council-run-identity {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .council-run-stop {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: end;
+    margin-left: 0;
+  }
+  .council-run-progress {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    max-width: 100%;
+    width: 100%;
+    margin: 2px 0;
+  }
+  .council-run-metrics {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+  }
+  .council-workspace-row {
+    grid-column: 1 / -1;
+    grid-row: 4;
+    display: flex;
+    width: 100%;
+    gap: 8px;
+  }
+  .council-workspace-row .council-run-param {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .council-workspace-row #council-workspace-input,
+  .council-workspace-row #council-budget-input {
+    width: 100%;
+    min-width: 0;
+  }
+  .council-center {
+    flex: 1 1 0;
+    min-height: 0;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .council-center-top {
+    flex: 1 1 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .council-code-pane {
+    flex: 1 1 0;
+    min-height: 120px;
+    border-bottom: 1px solid var(--council-line);
+    overflow: hidden;
+  }
+  .council-ghost-pane {
+    flex: 1 1 0;
+    min-height: 130px;
+    overflow: hidden;
+  }
+  .implementer-state-container {
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  .implementer-state-container.error-state {
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  .error-icon {
+    width: 22px;
+    height: 22px;
+  }
+  .error-title {
+    font-size: 11.5px;
+  }
+  .error-message {
+    font-size: 10.5px;
+    padding: 6px 10px;
+    line-height: 1.4;
+  }
+  .error-hint {
+    font-size: 9.5px;
+  }
+  .council-log-sidebar {
+    display: none !important;
+  }
+  #council-resizer-code-ghost,
+  #council-resizer-center-log {
+    display: none !important;
+  }
+  .ghost-footer-kill-hint {
+    display: none !important;
+  }
+  .council-center .chat-input-bar {
+    margin: 6px 10px 8px 10px !important;
+    padding: 6px 10px !important;
+    flex-shrink: 0;
+  }
+  .review-bar,
+  #council-permission-bar,
+  #council-decision-bar {
+    flex-direction: column;
+    align-items: stretch !important;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .review-actions {
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+    justify-content: flex-start !important;
+    gap: 6px;
+  }
+  .review-actions button {
+    flex: 1 1 100px;
+  }
+}
+
 @media (max-width: 720px) {
-  .council-panel:not([hidden]) { display: flex; flex-direction: column; overflow-y: auto; }
-  .council-runbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px 12px; }
-  .council-runbar { padding-top: calc(8px + env(safe-area-inset-top)); padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right)); }
+  .council-panel:not([hidden]) {
+    display: flex;
+    flex-direction: column;
+  }
+  .council-runbar {
+    padding-top: calc(8px + env(safe-area-inset-top));
+    padding-inline: max(12px, env(safe-area-inset-left)) max(12px, env(safe-area-inset-right));
+  }
+}
+
+/* Compact viewport height scaling */
+@media (max-height: 650px) {
+  .council-runbar {
+    padding: 4px 12px;
+    gap: 4px 10px;
+    min-height: 38px !important;
+    height: auto !important;
+    flex-shrink: 0 !important;
+  }
+  .council-run-identity .council-run-kicker {
+    display: none;
+  }
+  .council-run-param-label {
+    display: none;
+  }
+  .council-run-status {
+    font-size: 11.5px;
+  }
+  .council-run-stage {
+    font-size: 10.5px;
+  }
+  .council-run-progress-label {
+    margin-bottom: 2px;
+    font-size: 9px;
+  }
+  .council-pane-header,
+  .council-log-header {
+    height: 30px;
+    min-height: 30px;
+    padding: 0 10px;
+  }
+  .council-pane-title {
+    font-size: 10.5px;
+  }
+  .ghost-editor-footer {
+    min-height: 26px;
+    height: 26px;
+    padding: 2px 10px;
+    font-size: 10px;
+  }
+  .council-center .chat-input-bar {
+    margin: 4px 10px 6px 10px !important;
+    padding: 4px 8px !important;
+  }
+  .council-center .chat-input-bar textarea {
+    height: 28px !important;
+    min-height: 28px !important;
+    font-size: 11.5px !important;
+  }
+  .implementer-state-container {
+    padding: 8px 12px;
+    min-height: 0;
+    gap: 6px;
+  }
+  .implementer-state-container.error-state {
+    padding: 10px 12px;
+    gap: 6px;
+  }
+  .error-icon {
+    width: 24px;
+    height: 24px;
+  }
+  .error-title {
+    font-size: 11.5px;
+  }
+  .error-message {
+    font-size: 10.5px;
+    padding: 6px 10px;
+    line-height: 1.4;
+  }
+  .error-hint {
+    font-size: 9.5px;
+  }
+}
+
+/* Extreme short viewport height scaling (<= 480px) */
+@media (max-height: 480px) {
+  .council-run-metrics {
+    display: none !important;
+  }
+  .council-runbar {
+    padding: 2px 8px;
+    min-height: 32px !important;
+  }
+  .council-pane-header,
+  .council-log-header {
+    height: 26px;
+    min-height: 26px;
+  }
+  .ghost-editor-footer {
+    display: none !important;
+  }
+  .council-center .chat-input-bar {
+    margin: 2px 6px 4px 6px !important;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
