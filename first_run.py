@@ -217,7 +217,7 @@ def check_arch():
     print("            rm -rf venv")
     print("            /opt/homebrew/bin/python3.11 -m venv venv")
     print("            ./venv/bin/pip install -r requirements.txt")
-    print("            ./venv/bin/python setup.py")
+    print("            ./venv/bin/python first_run.py")
     print("\n          Tip: ./start-macos.sh does all of this with the right Python.\n")
     sys.exit(1)
 
