@@ -1,13 +1,15 @@
 <output_format>
+Return ONLY a valid JSON object matching `ManagerOutput`:
 ```json
 {
-  "verdict": "ACCEPT | RETRY",
-  "summary": "One-sentence assessment.",
+  "verdict": "APPROVED | REVISE",
+  "summary": "Assessment.",
   "issues": [
     {
       "severity": "critical | warning | info",
-      "description": "What is wrong.",
-      "suggestion": "How to fix."
+      "task_id": "string",
+      "description": "Defect details.",
+      "suggestion": "Actionable fix."
     }
   ]
 }

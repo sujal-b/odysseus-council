@@ -165,10 +165,18 @@ class ManagerOutput(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def extract(cls, data):
-        if isinstance(data, dict):
-            return data
         if isinstance(data, str):
-            return _extract_json(data)
+            data = _extract_json(data)
+        if isinstance(data, dict):
+            data = dict(data)
+            verdict = data.get("verdict")
+            if isinstance(verdict, str):
+                v_clean = verdict.strip().upper()
+                if v_clean == "ACCEPT":
+                    data["verdict"] = "APPROVED"
+                elif v_clean == "RETRY":
+                    data["verdict"] = "REVISE"
+            return data
         return data
 
 

@@ -66,8 +66,6 @@
     "validator_task": [
       "validator_task/identity",
       "validator_task/instructions",
-      "shared/context_efficiency",
-      "validator_task/issue_format",
       "validator_task/output_format",
       "validator_task/examples"
     ]

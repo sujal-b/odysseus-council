@@ -245,8 +245,8 @@ def test_validator_task_prompt_exists():
     prompt_path = pathlib.Path(__file__).parent.parent / "council_of_agents" / "prompts" / "validator_task.md"
     assert prompt_path.exists(), "validator_task.md must exist for per-task Manager review"
     content = prompt_path.read_text(encoding="utf-8")
-    assert "RETRY" in content
-    assert "ACCEPT" in content
+    assert "APPROVED" in content
+    assert "REVISE" in content
     assert "all tasks" not in content.lower(), "Per-task validator must NOT check all tasks"
 
 

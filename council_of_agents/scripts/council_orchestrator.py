@@ -1260,7 +1260,7 @@ Report what you FIND, not what you think might exist."""
                                     [{"role": "system",  "content": self._load_prompt("validator_task")},
                                      {"role": "user", "content": self._task_gate_contract_line(t_node)},
                                      {"role": "user", "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence, t_node)},
-                                     {"role": "assistant", "content": impl_reply}],
+                                     {"role": "user", "content": f"<task_output>\n{impl_reply}\n</task_output>"}],
                                     emit, owner=owner, written_paths=written_paths
                                 )
                                 if task_review:
