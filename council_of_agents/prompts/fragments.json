@@ -46,9 +46,6 @@
       "implementer_direct/identity",
       "implementer_direct/instructions",
       "implementer_direct/tool_selection",
-      "shared/context_efficiency",
-      "implementer_direct/execution_flow",
-      "implementer_direct/permission_handling",
       "implementer_direct/output_format"
     ],
     "validator": [

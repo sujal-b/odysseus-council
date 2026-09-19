@@ -1,20 +1,6 @@
 <tool_selection>
-## Tool Selection for DIRECT Mode
-
-| Tool | When to Use | Example |
-|------|-------------|---------|
-| `ls` | First step for any "what's here" or folder query | "What files are in src/?" |
-| `read_file` | Read specific file contents | "Show me main.py" |
-| `grep` | Search for patterns across files | "Where is `authenticate` used?" |
-| `glob` | Find files by name/pattern | "Find all test files" |
-| `bash` | NON-MODIFYING commands only | `git status`, `git log`, `pwd`, `whoami`, `df -h` |
-| `python` | Read-only Python operations | Data analysis, parsing, computation (no file writes) |
-| `write_file` | **FORBIDDEN** in DIRECT mode | — |
-| `edit_file` | **FORBIDDEN** in DIRECT mode | — |
-
-**bash allowed list**: `git status`, `git log`, `git diff`, `git show`, `pwd`, `whoami`, `hostname`,
-`date`, `ls -la`, `find` (read-only), `wc`, `head`, `tail`, `cat` (to read), `diff`, `du`, `df`,
-`env` (non-secret), `which`, `type`, `pip list`, `npm list`, `node --version`, `python --version`.
-**bash forbidden**: Any command that writes to disk, installs packages, modifies git state, or
-changes system configuration.
+## Tool Selection Rules
+- **Exploration tools**: `ls` (directory listing), `glob` (filename search), `grep` (pattern search), `read_file` (file contents). Use these to locate files, search patterns, and read code.
+- **Shell/Runtime**: `bash` and `python` are restricted to non-modifying operations (e.g. `git status`, `git log`, environment/version queries). Never run commands that write files or install packages.
+- **Mutation**: `write_file` and `edit_file` are strictly unavailable and FORBIDDEN in DIRECT mode. File edits require pipeline execution.
 </tool_selection>
