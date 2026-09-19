@@ -2056,6 +2056,7 @@ Report what you FIND, not what you think might exist."""
                             context_tracker=tracker,
                             trace_context=trace_context,
                             fallbacks=cfg.fallbacks if hasattr(cfg, 'fallbacks') else [],
+                            suppress_base_prompt=True,
                             **loop_limits,
                         ):
                             if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
@@ -2324,6 +2325,7 @@ Report what you FIND, not what you think might exist."""
                         context_tracker=tracker,
                         trace_context=trace_context,
                         fallbacks=cfg.fallbacks if hasattr(cfg, 'fallbacks') else [],
+                        suppress_base_prompt=True,
                         **loop_limits,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):

@@ -847,9 +847,17 @@ def _build_system_prompt(
     compact: bool = False,
     owner: Optional[str] = None,
     suppress_local_context: bool = False,
+    suppress_base_prompt: bool = False,
 ) -> List[Dict]:
     """Build agent system prompt, inject MCP/document context, merge consecutive system msgs."""
     global _cached_base_prompt, _cached_base_prompt_key
+    if suppress_base_prompt:
+        mcp_schemas = []
+        if mcp_mgr:
+            mcp_schemas = mcp_mgr.get_all_openai_schemas(mcp_disabled_map or {})
+        set_active_model(model)
+        return list(messages), mcp_schemas
+
     if suppress_local_context:
         active_document = None
 
@@ -1910,6 +1918,7 @@ async def stream_agent_loop(
     workspace_write_guard=None,
     context_tracker=None,
     trace_context: Optional[Dict] = None,
+    suppress_base_prompt: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -2157,8 +2166,9 @@ async def stream_agent_loop(
         compact=_is_api_model,
         owner=owner,
         suppress_local_context=guide_only,
+        suppress_base_prompt=suppress_base_prompt,
     )
-    if plan_mode and not guide_only:
+    if plan_mode and not guide_only and not suppress_base_prompt:
         # Steer the model to investigate-then-propose. Hard tool gating handles
         # every write path except shell; this directive is what keeps the
         # intentionally-allowed bash/python read-only, so it must DOMINATE. Put
@@ -2168,7 +2178,7 @@ async def stream_agent_loop(
             messages[0]["content"] = PLAN_MODE_DIRECTIVE + "\n\n" + (messages[0].get("content") or "")
         else:
             messages.insert(0, {"role": "system", "content": PLAN_MODE_DIRECTIVE})
-    elif approved_plan and approved_plan.strip() and not guide_only:
+    elif approved_plan and approved_plan.strip() and not guide_only and not suppress_base_prompt:
         # EXECUTING an approved plan. Pin the checklist as a top-of-context
         # system note so a long plan on a weak model survives history
         # truncation — the agent can always re-read the plan instead of losing
@@ -2179,7 +2189,7 @@ async def stream_agent_loop(
         else:
             messages.insert(0, {"role": "system", "content": _plan_note})
         logger.info("[plan] pinned approved plan (%d chars) for execution turn", len(approved_plan))
-    if guide_only:
+    if guide_only and not suppress_base_prompt:
         if messages and messages[0].get("role") == "system":
             messages[0]["content"] = GUIDE_ONLY_DIRECTIVE + "\n\n" + (messages[0].get("content") or "")
         else:
