@@ -37,7 +37,7 @@ def build_context_envelope(
     """
     sections = []
 
-    if workspace and not os.path.isabs(workspace):
+    if workspace and not (os.path.isabs(workspace) or workspace.startswith(("/", "\\"))):
         sections.append(f"<workspace>\n{workspace}\n</workspace>")
 
     if repository_context:
@@ -106,13 +106,16 @@ def _recon_terms(task: str) -> list[str]:
 
 
 def _recon_run(args: list[str], workspace: Path) -> list[str]:
-    result = subprocess.run(
-        ["rg", *args], cwd=workspace, text=True, encoding="utf-8", errors="replace",
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=False,
-    )
-    if result.returncode not in (0, 1):
-        raise RuntimeError("repository reconnaissance command failed")
-    return result.stdout.splitlines()
+    try:
+        result = subprocess.run(
+            ["rg", *args], cwd=workspace, text=True, encoding="utf-8", errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, timeout=5, check=False,
+        )
+        if result.returncode not in (0, 1):
+            return []
+        return result.stdout.splitlines()
+    except (subprocess.SubprocessError, OSError):
+        return []
 
 
 def _recon_symbols(workspace: Path, paths: list[str]) -> list[str]:
@@ -162,10 +165,11 @@ def build_repository_capsule(workspace: str | os.PathLike, user_task: str) -> di
     generic_tests = [path for path in files if path.startswith("tests/")]
     candidates = sorted(dict.fromkeys(explicit + named_sources[:32] + named_tests[:16] + generic_sources[:16] + generic_tests[:8]))[:_RECON_MAX_FILES]
     scores = {path: 100 for path in explicit}
-    for term in terms:
-        for rel in (_recon_relative(line) for line in _recon_run(["-i", "-l", "-F", "--max-filesize", "32K", "--", term, *candidates], root)):
-            if rel in candidates:
-                scores[rel] = scores.get(rel, 0) + 1
+    if candidates:
+        for term in terms:
+            for rel in (_recon_relative(line) for line in _recon_run(["-i", "-l", "-F", "--max-filesize", "32K", "--", term, *candidates], root)):
+                if rel in candidates:
+                    scores[rel] = scores.get(rel, 0) + 1
     selected = sorted(scores, key=lambda path: (-scores[path], path))[:_RECON_MAX_RESULTS]
     tests = [path for path in selected if path.startswith("tests/") and Path(path).name.startswith("test_")]
     if not tests:
@@ -186,7 +190,11 @@ def build_repository_capsule(workspace: str | os.PathLike, user_task: str) -> di
         scopes = sorted({f"{Path(path).parts[0]}/" for path in candidates if len(Path(path).parts) > 1 and not path.startswith("tests/")})[:2]
         if any(path.startswith("tests/") for path in candidates):
             scopes = sorted(set(scopes + ["tests/"]))
-    status = "ok" if selected else ("discovery_required" if scopes else "blocked")
+        if not scopes and (candidates or not files):
+            scopes = ["./"]
+    elif not scopes and selected:
+        scopes = ["./"]
+    status = "ok" if (selected or not files) else ("discovery_required" if scopes else "blocked")
     symbols = _recon_symbols(root, [path for path in selected if not path.startswith("tests/")])
     commands = [f"python -m pytest -q {path}" for path in tests[:3]] or (["python -m pytest -q tests/"] if "tests/" in scopes else [])
     facts = {
