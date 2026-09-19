@@ -650,6 +650,9 @@ def validate_issue_task_id_shape(task_id: str) -> tuple[bool, str]:
     return True, raw
 
 
+_normalize_task_id = validate_issue_task_id_shape
+
+
 class PerspectiveIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
     severity: str = "info"
