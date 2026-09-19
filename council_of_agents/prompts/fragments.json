@@ -13,7 +13,6 @@
     "chair": [
       "chair/identity",
       "chair/instructions",
-      "shared/context_efficiency",
       "chair/output_format",
       "chair/examples"
     ],

@@ -779,6 +779,8 @@ def compact_agent_contract(role: str, data: dict) -> dict:
             ("complexity", "route", "action", "target", "reason", "ambiguous", "clarification", "options"),
             ("complexity", "route", "action", "target", "reason"),
         )
+    if role == "chair_arbitration":
+        return keep(data, ("verdict", "reasoning"), ("verdict",))
     if role == "strategist":
         tasks = []
         for task in data.get("tasks") or []:

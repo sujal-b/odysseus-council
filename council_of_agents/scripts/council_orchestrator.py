@@ -2587,20 +2587,15 @@ Report what you FIND, not what you think might exist."""
                 )
             return reply
         try:
-            if role == "chair":
+            if role in ("chair", "chair_arbitration"):
                 from council_of_agents.scripts.council_schemas import (
                     compact_agent_contract,
                     validate_agent_output,
                 )
-                # Normalize a valid JSON envelope (including a fenced JSON
-                # response) into the compact handoff. Strict raw-JSON
-                # enforcement belongs to the contract-quality metric; the
-                # production boundary should not discard a semantically valid
-                # Chair decision merely because the model added Markdown.
-                validation = validate_agent_output("chair", reply, strict=False)
+                validation = validate_agent_output(role, reply, strict=False)
                 if validation.success and validation.data:
                     result = json.dumps(
-                        compact_agent_contract("chair", validation.data),
+                        compact_agent_contract(role, validation.data),
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
@@ -2612,6 +2607,8 @@ Report what you FIND, not what you think might exist."""
                         handoff_mode=self._handoff_mode,
                     )
                     return result
+                if role == "chair_arbitration":
+                    return reply
                 lines = [
                     "## Chair decision",
                     f"- complexity: {self._parse_complexity(reply)}",
@@ -3131,6 +3128,44 @@ Report what you FIND, not what you think might exist."""
         """
         return self._composer.compose(role)
 
+    async def _arbitrate_debate(
+        self,
+        state,
+        strat_reply: str,
+        manager_reply: str,
+        emit,
+        owner: Optional[str] = None,
+        written_paths: Optional[list[str]] = None,
+    ) -> Optional[str]:
+        """Arbitrate a debate deadlock between Strategist and Manager using the dedicated chair_arbitration prompt."""
+        await emit(event="active_agent", agent="chair_arbitration", status="IN_PROGRESS",
+                   text="Chair is arbitrating debate deadlock between Strategist and Manager…")
+        prompt = self._load_prompt("chair_arbitration")
+        user_content = (
+            f"User request: {state.user_prompt}\n\n"
+            f"Strategist proposed plan:\n{self._contract('strategist', strat_reply)}\n\n"
+            f"Manager critique:\n{self._contract('manager', manager_reply)}\n\n"
+            "Review both sides and resolve this deadlock. Output ChairArbitrationOutput JSON."
+        )
+        messages = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ]
+        reply = await self._invoke_agent_safe(
+            "chair_arbitration",
+            state,
+            messages,
+            emit,
+            owner=owner,
+            written_paths=written_paths,
+            disable_tools=True,
+        )
+        if reply:
+            await emit(event="thought", agent="chair_arbitration", status="IN_PROGRESS",
+                       text=self._clean_thought_text("chair_arbitration", reply),
+                       extra={"arbitration_reply": reply})
+        return reply
+
     def _envelope_user_msg(self, user_prompt: str, **kwargs) -> str:
         """Prepend a context envelope to the user message if any context is provided."""
         from council_of_agents.scripts.context_envelope import build_context_envelope
@@ -3158,6 +3193,8 @@ Report what you FIND, not what you think might exist."""
             data = json.loads(clean)
             if role == "chair":
                 return data.get("reason", text)
+            elif role == "chair_arbitration":
+                return data.get("reasoning", text)
             elif role == "manager":
                 return data.get("summary", text)
             elif role == "implementer":
