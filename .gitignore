@@ -141,6 +141,10 @@ odys.ps1
 .workbuddy-ai/
 bridge/
 .pytest-tmp*/
+.pytest_tmp*/
+.pytest_temp*/
+_pytest_tmp*/
+_pytest_temp*/
 GOAL.md
 LOOP_LOG.md
 LOOP_STATE.md
