@@ -923,9 +923,17 @@ class CouncilUI {
     statusEl.textContent = labels[status] || status.toLowerCase();
     statusEl.dataset.status = status;
     const agent = state.activeAgent ? state.activeAgent.charAt(0).toUpperCase() + state.activeAgent.slice(1) : '';
-    stageEl.textContent = state.activeTool
-      ? `${agent || 'Agent'} · ${state.activeTool}`
-      : (agent ? `${agent} active` : 'Waiting for a task');
+    if (status === 'FAILED') {
+      stageEl.textContent = state.error ? `Error: ${state.error}` : 'Execution terminated with error';
+    } else if (status === 'COMPLETE') {
+      stageEl.textContent = 'All steps verified complete';
+    } else if (status === 'CANCELLED') {
+      stageEl.textContent = 'Run stopped by user';
+    } else {
+      stageEl.textContent = state.activeTool
+        ? `${agent || 'Agent'} · ${state.activeTool}`
+        : (agent ? `${agent} active` : 'Waiting for a task');
+    }
     routeEl.textContent = state.route || '--';
 
     const nodes = Array.isArray(state.dag?.nodes) ? state.dag.nodes : [];
@@ -3063,35 +3071,27 @@ class CouncilUI {
       const rect = anchorEl.getBoundingClientRect();
       const viewportWidth = window.innerWidth;
       const viewportHeight = window.innerHeight;
-      const popoverWidth = popover.offsetWidth || 220;
-      const popoverHeight = popover.offsetHeight || 180;
+      const popoverWidth = popover.offsetWidth || 270;
+      const popoverHeight = popover.offsetHeight || 220;
 
-      let top = rect.bottom + 8;
-      let left = rect.left;
+      const sidebar = anchorEl.closest('#sidebar, .sidebar') || document.getElementById('sidebar');
+      const sidebarRect = sidebar ? sidebar.getBoundingClientRect() : null;
 
-      // Adjust horizontally to stay inside viewport
+      let left = (sidebarRect && rect.left < sidebarRect.right) ? sidebarRect.right + 12 : rect.right + 12;
       if (left + popoverWidth > viewportWidth - 16) {
-        left = viewportWidth - popoverWidth - 16;
-      }
-      if (left < 16) {
-        left = 16;
+        left = Math.max(16, viewportWidth - popoverWidth - 16);
       }
 
-      // Adjust vertically to stay inside viewport
+      let top = rect.top + (rect.height / 2) - (popoverHeight / 2);
       if (top + popoverHeight > viewportHeight - 16) {
-        const topOption = rect.top - popoverHeight - 8;
-        if (topOption > 16) {
-          top = topOption;
-        } else {
-          top = viewportHeight - popoverHeight - 16;
-        }
+        top = viewportHeight - popoverHeight - 16;
       }
       if (top < 16) {
         top = 16;
       }
 
-      popover.style.top  = `${top}px`;
-      popover.style.left = `${left}px`;
+      popover.style.top  = `${Math.round(top)}px`;
+      popover.style.left = `${Math.round(left)}px`;
 
       // Merge: live override → models.json default → empty.
       // This ensures the popover pre-selects the configured model even when
@@ -4114,38 +4114,64 @@ function initResizers() {
   try {
     const resizerCodeGhost = document.getElementById('council-resizer-code-ghost');
     const resizerCenterLog = document.getElementById('council-resizer-center-log');
+    const centerTop = document.querySelector('.council-center-top');
+    const panel = document.getElementById('council-panel');
 
-    if (resizerCodeGhost) {
-      setupResizer(resizerCodeGhost, (dx) => {
-        const leftPane = document.querySelector('.council-code-pane');
-        const rightPane = document.querySelector('.council-ghost-pane');
-        if (!leftPane || !rightPane) return;
-        
-        const parentWidth = leftPane.parentElement.clientWidth;
-        if (!parentWidth) return;
-        
-        const currentRightWidth = rightPane.getBoundingClientRect().width;
-        const newRightWidth = Math.max(150, Math.min(parentWidth - 150, currentRightWidth - dx));
-        const rightPercent = (newRightWidth / parentWidth) * 100;
-        
-        rightPane.style.flex = `0 0 ${rightPercent}%`;
+    // Restore saved widths if present
+    try {
+      const savedCodeWidth = localStorage.getItem('council_code_pane_width');
+      if (savedCodeWidth && centerTop) {
+        centerTop.style.gridTemplateColumns = `${savedCodeWidth}px 6px minmax(0, 1fr)`;
+      }
+      const savedSidebarWidth = localStorage.getItem('council_sidebar_width');
+      if (savedSidebarWidth && panel) {
+        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${savedSidebarWidth}px`;
+      }
+    } catch {}
+
+    if (resizerCodeGhost && centerTop) {
+      setupResizer(resizerCodeGhost, (moveEvent) => {
+        const rect = centerTop.getBoundingClientRect();
+        if (!rect.width) return;
+        const leftWidth = Math.max(160, Math.min(rect.width - 180, moveEvent.clientX - rect.left));
+        centerTop.style.gridTemplateColumns = `${Math.round(leftWidth)}px 6px minmax(0, 1fr)`;
+        try { localStorage.setItem('council_code_pane_width', Math.round(leftWidth)); } catch {}
+      });
+
+      // Keyboard support: Arrow keys
+      resizerCodeGhost.addEventListener('keydown', (e) => {
+        const rect = centerTop.getBoundingClientRect();
+        const currentWidth = document.querySelector('.council-code-pane')?.getBoundingClientRect().width || (rect.width / 2);
+        let nextWidth = currentWidth;
+        if (e.key === 'ArrowLeft') nextWidth = Math.max(160, currentWidth - 20);
+        else if (e.key === 'ArrowRight') nextWidth = Math.min(rect.width - 180, currentWidth + 20);
+        else return;
+        e.preventDefault();
+        centerTop.style.gridTemplateColumns = `${Math.round(nextWidth)}px 6px minmax(0, 1fr)`;
+        try { localStorage.setItem('council_code_pane_width', Math.round(nextWidth)); } catch {}
       });
     }
 
-    if (resizerCenterLog) {
-      setupResizer(resizerCenterLog, (dx) => {
-        const leftPane = document.querySelector('.council-center');
-        const rightPane = document.querySelector('.council-log-sidebar');
-        if (!leftPane || !rightPane) return;
+    if (resizerCenterLog && panel) {
+      setupResizer(resizerCenterLog, (moveEvent) => {
+        const rect = panel.getBoundingClientRect();
+        if (!rect.width) return;
+        const rightWidth = Math.max(220, Math.min(rect.width - 320, rect.right - moveEvent.clientX));
+        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(rightWidth)}px`;
+        try { localStorage.setItem('council_sidebar_width', Math.round(rightWidth)); } catch {}
+      });
 
-        const parentWidth = leftPane.parentElement.clientWidth;
-        if (!parentWidth) return;
-        
-        const currentRightWidth = rightPane.getBoundingClientRect().width;
-        const newRightWidth = Math.max(200, Math.min(parentWidth - 200, currentRightWidth - dx));
-        const rightPercent = (newRightWidth / parentWidth) * 100;
-        
-        rightPane.style.flex = `0 0 ${rightPercent}%`;
+      // Keyboard support: Arrow keys
+      resizerCenterLog.addEventListener('keydown', (e) => {
+        const rect = panel.getBoundingClientRect();
+        const currentWidth = document.querySelector('.council-log-sidebar')?.getBoundingClientRect().width || 280;
+        let nextWidth = currentWidth;
+        if (e.key === 'ArrowLeft') nextWidth = Math.min(rect.width - 320, currentWidth + 20);
+        else if (e.key === 'ArrowRight') nextWidth = Math.max(220, currentWidth - 20);
+        else return;
+        e.preventDefault();
+        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(nextWidth)}px`;
+        try { localStorage.setItem('council_sidebar_width', Math.round(nextWidth)); } catch {}
       });
     }
   } catch (err) {
@@ -4154,20 +4180,15 @@ function initResizers() {
 }
 
 function setupResizer(resizer, onDrag) {
-  let startX;
-
   resizer.addEventListener('mousedown', (e) => {
     e.preventDefault();
-    startX = e.clientX;
     resizer.classList.add('resizing');
     document.body.style.cursor = 'col-resize';
     document.body.style.userSelect = 'none';
 
     function onMouseMove(moveEvent) {
       try {
-        const dx = moveEvent.clientX - startX;
-        startX = moveEvent.clientX;
-        onDrag(dx);
+        onDrag(moveEvent);
       } catch (err) {
         console.error('[Council] Drag handling error:', err);
       }
