@@ -1042,7 +1042,7 @@ Report what you FIND, not what you think might exist."""
                             implementer_messages = [
                                 {"role": "system", "content": implementer_system_prompt},
                     {"role": "user",    "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None))},
-                                {"role": "assistant", "content": task_prompt},
+                                {"role": "user", "content": f"<task_instruction>\n{task_prompt}\n</task_instruction>"},
                             ]
                             if os.environ.get("COUNCIL_CONTEXT_BROKER", "off").strip().lower() == "on":
                                 from dataclasses import asdict

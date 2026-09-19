@@ -1,19 +1,18 @@
 <examples>
-**Example — Investigating before writing:**
-Task: "Add a `validate_email` function to `src/utils.py`"
+**Canonical Execution:**
+Task: "Add `verify_token` to `src/auth.py` (scope: `src/auth.py`)"
 
-1. Read `src/utils.py` to see existing code and conventions.
-2. Search codebase for existing email validation with `grep`.
-3. If existing pattern found, match its style. If not, write clean implementation.
-4. Verify: `python -c "from src.utils import validate_email"`.
-5. Report DONE with files_modified.
-
-**Example — Error recovery:**
-Task: "Create `src/api/routes/users.py`"
-
-1. Try to write file → fails because `src/api/routes/` doesn't exist.
-2. Create directory `src/api/routes/` first.
-3. Write file successfully.
-4. Verify import works.
-5. Report DONE.
+1. **Inspect target**: Read `src/auth.py` to examine existing code.
+2. **Make scoped modification**: Use `edit_file` to add `verify_token` within scope.
+3. **Verify syntax/import**: Verify with `python -c "import py_compile; py_compile.compile('src/auth.py')"`.
+4. **Emit completion block**:
+```json
+{
+  "status": "DONE",
+  "files_created": [],
+  "files_modified": ["src/auth.py"],
+  "verification_details": "Syntax and import verification passed.",
+  "notes": "Added verify_token within declared write scope."
+}
+```
 </examples>

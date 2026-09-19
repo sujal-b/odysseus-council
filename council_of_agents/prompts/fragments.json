@@ -31,12 +31,7 @@
     ],
     "implementer": [
       "implementer/identity",
-      "shared/default_to_action",
-      "shared/investigate_before",
-      "shared/parallel_tools",
       "implementer/instructions",
-      "shared/tool_selection",
-      "shared/context_efficiency",
       "shared/code_quality",
       "shared/self_verification",
       "implementer/output_format",
