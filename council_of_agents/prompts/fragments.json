@@ -26,7 +26,6 @@
       "manager/identity",
       "manager/instructions",
       "manager/verdict_guidance",
-      "shared/context_efficiency",
       "manager/output_format",
       "manager/examples"
     ],
