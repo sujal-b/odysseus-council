@@ -386,28 +386,51 @@ class StrategistResponseNormalizer:
 
     @classmethod
     def _normalize_markdown(cls, text: str, metadata: dict) -> tuple[dict | None, dict]:
-        for fence in ("tasks", "json"):
-            match = re.search(rf"```{fence}\s*\n(.*?)```", text, re.DOTALL | re.IGNORECASE)
-            if not match:
-                continue
+        candidates = []
+        for match in re.finditer(r"```(?:tasks|json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+            candidates.append((match.group(1).strip(), "markdown_tasks_block" if "tasks" in match.group(0)[:10].lower() else "markdown_json_block"))
+        s_brace, e_brace = text.find("{"), text.rfind("}")
+        if s_brace != -1 and e_brace > s_brace:
+            candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
+        s_brack, e_brack = text.find("["), text.rfind("]")
+        if s_brack != -1 and e_brack > s_brack:
+            candidates.append((text[s_brack:e_brack + 1].strip(), "embedded_json_array"))
+
+        for candidate, shape_label in candidates:
+            parsed = None
             try:
-                parsed = json.loads(match.group(1).strip())
+                parsed = json.loads(candidate)
             except json.JSONDecodeError:
-                continue
+                try:
+                    parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", candidate))
+                except Exception:
+                    continue
             if isinstance(parsed, list) and all(isinstance(item, dict) for item in parsed):
                 metadata.update({
-                    "raw_shape": "markdown_tasks_block" if fence == "tasks" else "markdown_json_block",
+                    "raw_shape": shape_label,
                     "normalized_shape": "canonical_envelope",
                     "normalization_used": True,
                 })
                 return cls._canonicalize({"tasks": parsed, "risks": []}, metadata)
-            if isinstance(parsed, dict) and "tasks" in parsed:
-                metadata.update({
-                    "raw_shape": "markdown_json_block",
-                    "normalized_shape": "canonical_envelope",
-                    "normalization_used": True,
-                })
-                return cls._canonicalize(parsed, metadata)
+            if isinstance(parsed, dict):
+                if "tasks" in parsed:
+                    metadata.update({
+                        "raw_shape": shape_label,
+                        "normalized_shape": "canonical_envelope",
+                        "normalization_used": True,
+                    })
+                    return cls._canonicalize(parsed, metadata)
+                task_keys, extra_keys = cls._classify_keys(parsed)
+                if task_keys and not extra_keys and all(isinstance(parsed[key], dict) for key in task_keys):
+                    metadata.update({
+                        "raw_shape": "task_keyed_dict",
+                        "normalized_shape": "canonical_envelope",
+                        "normalization_used": True,
+                    })
+                    tasks = [parsed[key] for key in sorted(task_keys, key=cls._task_sort_key)]
+                    return cls._canonicalize(
+                        {"tasks": tasks, "risks": parsed.get("risks", [])}, metadata
+                    )
         metadata["raw_shape"] = "unparseable"
         return None, metadata
 
@@ -838,6 +861,13 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
             if role == "strategist":
                 normalized, metadata = StrategistResponseNormalizer.normalize(raw)
                 if normalized is not None:
+                    if metadata.get("raw_shape") in {"embedded_json_object", "embedded_json_array"}:
+                        return ValidationResult(
+                            success=False,
+                            error=f"strict control contract rejects json wrapped in prose (raw_shape={metadata['raw_shape']})",
+                            metadata=metadata,
+                            raw_text=raw_text,
+                        )
                     parsed = schema.model_validate(normalized)
                     return ValidationResult(
                         success=True,

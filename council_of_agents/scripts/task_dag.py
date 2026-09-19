@@ -558,9 +558,13 @@ class TaskDAG:
                 id=t["id"],
                 description=t.get("description", ""),
                 depends_on=t.get("depends_on", []),
+                status=t.get("status", "PENDING"),
+                output=t.get("output", ""),
+                reason=t.get("reason", ""),
                 retry_count=t.get("retry_count", 0),
                 max_retries=t.get("max_retries", 2),
                 error_history=t.get("error_history", []),
+                accumulated_writes=set(t.get("accumulated_writes", [])),
                 acceptance=t.get("acceptance", ""),
                 acceptance_ids=t.get("acceptance_ids", []),
                 read_scope=t.get("read_scope", []),
@@ -578,6 +582,29 @@ class TaskDAG:
                 result=TaskResult.model_validate(t["result"]) if t.get("result") else None,
             ))
         return dag
+
+    @classmethod
+    def from_dict(cls, data: dict) -> TaskDAG:
+        """Construct a TaskDAG from a dictionary representation.
+
+        Accepts serialized DAG envelopes (with 'nodes'), Strategist plan envelopes
+        (with 'tasks'), or a dictionary of task-keyed mappings.
+        """
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict, got {type(data).__name__}")
+        if "nodes" in data and isinstance(data["nodes"], list):
+            return cls.from_task_list(data["nodes"])
+        if "tasks" in data and isinstance(data["tasks"], list):
+            return cls.from_task_list(data["tasks"])
+        if data and all(isinstance(v, dict) for v in data.values()):
+            tasks = []
+            for k, v in data.items():
+                task_dict = dict(v)
+                if "id" not in task_dict:
+                    task_dict["id"] = k
+                tasks.append(task_dict)
+            return cls.from_task_list(tasks)
+        raise ValueError("Expected dictionary with 'nodes', 'tasks', or task-keyed mappings")
 
     def _detect_cycle_from(self, start: str) -> list[str] | None:
         WHITE, GRAY, BLACK = 0, 1, 2

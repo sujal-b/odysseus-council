@@ -19,7 +19,6 @@
     "strategist": [
       "strategist/identity",
       "strategist/instructions",
-      "shared/context_efficiency",
       "strategist/output_format",
       "strategist/examples"
     ],
