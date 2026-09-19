@@ -936,8 +936,11 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
                         metadata=metadata,
                         raw_text=raw_text,
                     )
-            parsed = json.loads(raw)
-            if not isinstance(parsed, dict):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                parsed = _extract_json(raw)
+            if not isinstance(parsed, dict) or "_raw" in parsed:
                 raise ValueError("response must be one JSON object")
             parsed = schema.model_validate(parsed)
             data_dict = parsed.model_dump()
