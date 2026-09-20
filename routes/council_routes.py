@@ -192,6 +192,12 @@ def cancel_active_council_session(session_id: str) -> None:
         _running_tasks.pop(session_id, None)
     _running_sessions.discard(session_id)
     _resumes.pop(session_id, None)
+    q = _queues.pop(session_id, None)
+    if q is not None:
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
     # Unblock any pending permission requests so the orchestrator can exit cleanly
     try:
         from council_of_agents.scripts.permissions import GLOBAL_REGISTRY
@@ -489,6 +495,10 @@ def _make_orchestrator_wrapped(webhook_manager=None):
             _running_sessions.discard(session_id)
             _resumes.pop(session_id, None)
             _running_tasks.pop(session_id, None)
+            try:
+                await proxy_queue.put(None)
+            except Exception:
+                pass
     return _run_orchestrator_wrapped
 
 from src.constants import DATA_DIR
