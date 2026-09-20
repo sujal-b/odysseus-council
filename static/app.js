@@ -2159,7 +2159,9 @@ function initializeEventListeners() {
       pickerWrap.classList.toggle('picker-auto-hidden', w < PICKER_HIDE_WIDTH);
       // Hide placeholder text
       if (textarea) {
-        textarea.setAttribute('placeholder', w < PLACEHOLDER_HIDE_WIDTH ? '' : 'Message Odysseus...');
+        const isCouncil = document.getElementById('chat-container')?.classList.contains('council-mode');
+        const defaultPlaceholder = isCouncil ? 'Describe your task for the Council…' : 'Message Odysseus...';
+        textarea.setAttribute('placeholder', w < PLACEHOLDER_HIDE_WIDTH ? '' : defaultPlaceholder);
       }
       // Hide entire bottom toolbar (tools, mode toggle) — only send button remains
       if (inputBottom) {
