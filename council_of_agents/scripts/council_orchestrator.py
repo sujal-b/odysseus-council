@@ -600,6 +600,15 @@ Report what you FIND, not what you think might exist."""
                 except Exception:
                     pass
 
+                discovery_note = ""
+                if getattr(self, "_reconnaissance", {}).get("discovery_required"):
+                    discovery_note = (
+                        "\nCRITICAL REQUIREMENT: Repository reconnaissance found zero matching files (discovery_required: true). "
+                        "Task T1 MUST be a read-only discovery/inspection task (read_scope: ['./'], write_scope: [], "
+                        "description: 'Inspect workspace files and environment.'). "
+                        "All subsequent implementation tasks MUST include 'T1' in depends_on.\n"
+                    )
+
                 strat_reply = (
                     self._checkpoint.stage_reply("strategist")
                     if self._checkpoint and self._checkpoint.stage_done("strategist")
@@ -608,7 +617,8 @@ Report what you FIND, not what you think might exist."""
                         [{"role": "system",  "content": self._load_prompt("strategist")},
                          {"role": "user",    "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None), skill_context=skill_context, past_context=past_context, success_context=success_context)},
                          {"role": "user", "content": (
-                             f"Chair decision data:\n{self._contract('chair', chair_reply)}\n\n"
+                             f"Chair decision data:\n{self._contract('chair', chair_reply)}\n"
+                             f"{discovery_note}\n"
                              "Return the Strategist JSON contract now."
                          )}],
                         emit, owner=owner, written_paths=written_paths, disable_tools=True
@@ -624,19 +634,43 @@ Report what you FIND, not what you think might exist."""
             else:
                 strat_reply = chair_reply
 
-            try:
-                dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
-                self._restore_dag_from_checkpoint(dag)
-                if ledger_runtime is not None:
-                    ledger_runtime.sync_dag(dag, workspace=workspace)
-                await self._close_restored_terminal_tasks(dag, workspace, emit)
-                state.dag = dag.to_dict()
-                await emit(event="dag_update", agent="strategist", status="IN_PROGRESS",
-                           text=f"Task graph: {len(tasks)} nodes.", extra={"dag": state.dag})
-            except ValueError as e:
-                await emit(event="error", status="FAILED", agent="strategist",
-                           text=f"Strategist plan blocked: a non-empty valid task DAG is required ({e}).")
-                return
+            dag = None
+            tasks = []
+            for strat_attempt in range(2):
+                try:
+                    dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
+                    break
+                except ValueError as e:
+                    if strat_attempt == 0 and complexity in ("MEDIUM", "COMPLEX") and not (self._checkpoint and self._checkpoint.stage_done("strategist")):
+                        logger.warning("Strategist plan failed validation (%s); attempting self-correction retry.", e)
+                        strat_retry_messages = [
+                            {"role": "system", "content": self._load_prompt("strategist")},
+                            {"role": "user", "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None), skill_context=skill_context, past_context=past_context, success_context=success_context)},
+                            {"role": "assistant", "content": strat_reply},
+                            {"role": "user", "content": f"Your plan was rejected by contract validation: {e}. Please revise the task DAG strictly according to the contract rules and return ONLY the corrected JSON object."}
+                        ]
+                        strat_reply = await self._invoke_agent_safe(
+                            "strategist", state, strat_retry_messages, emit,
+                            owner=owner, written_paths=written_paths, disable_tools=True
+                        )
+                        if not strat_reply:
+                            await emit(event="error", status="FAILED", agent="strategist",
+                                       text=f"Strategist plan blocked: a non-empty valid task DAG is required ({e}).")
+                            return
+                        await emit(event="thought", agent="strategist", status="IN_PROGRESS",
+                                   text=self._clean_thought_text("strategist", strat_reply))
+                    else:
+                        await emit(event="error", status="FAILED", agent="strategist",
+                                   text=f"Strategist plan blocked: a non-empty valid task DAG is required ({e}).")
+                        return
+
+            self._restore_dag_from_checkpoint(dag)
+            if ledger_runtime is not None:
+                ledger_runtime.sync_dag(dag, workspace=workspace)
+            await self._close_restored_terminal_tasks(dag, workspace, emit)
+            state.dag = dag.to_dict()
+            await emit(event="dag_update", agent="strategist", status="IN_PROGRESS",
+                       text=f"Task graph: {len(tasks)} nodes.", extra={"dag": state.dag})
 
             # --- Manager Review Gate ---
             manager_reply = ""
