@@ -754,14 +754,49 @@ class ValidationResult(BaseModel):
     raw_text: str = ""
 
 
-def _ensure_all_required(schema_dict: dict) -> None:
+def _ensure_strict_schema(schema_dict: dict) -> None:
+    """Ensure JSON Schema conforms strictly to OpenAI/Groq structured output requirements:
+    1. Every object must have 'additionalProperties': False.
+    2. Every property must be listed in 'required'.
+    3. Traverses nested properties, arrays (items), and $defs/definitions recursively.
+    """
+    if not isinstance(schema_dict, dict):
+        return
+
+    # If it's an object or has properties, enforce additionalProperties: false and required
     props = schema_dict.get("properties")
-    if props:
-        schema_dict["required"] = sorted(set(schema_dict.get("required", []) + list(props.keys())))
-    refs = schema_dict.get("$defs") or schema_dict.get("definitions")
-    if refs:
-        for ref in refs.values():
-            _ensure_all_required(ref)
+    schema_type = schema_dict.get("type")
+    if props or schema_type == "object":
+        schema_dict["additionalProperties"] = False
+        if props:
+            schema_dict["required"] = sorted(set(schema_dict.get("required", []) + list(props.keys())))
+            for prop in props.values():
+                _ensure_strict_schema(prop)
+
+    # Recurse into array items
+    items = schema_dict.get("items")
+    if isinstance(items, dict):
+        _ensure_strict_schema(items)
+    elif isinstance(items, list):
+        for item in items:
+            _ensure_strict_schema(item)
+
+    # Recurse into anyOf / allOf / oneOf
+    for combiner in ("anyOf", "allOf", "oneOf"):
+        combiner_list = schema_dict.get(combiner)
+        if isinstance(combiner_list, list):
+            for sub_schema in combiner_list:
+                _ensure_strict_schema(sub_schema)
+
+    # Recurse into $defs / definitions
+    defs = schema_dict.get("$defs") or schema_dict.get("definitions")
+    if isinstance(defs, dict):
+        for ref in defs.values():
+            _ensure_strict_schema(ref)
+
+
+def _ensure_all_required(schema_dict: dict) -> None:
+    _ensure_strict_schema(schema_dict)
 
 
 def build_response_format(role: str) -> dict | None:
