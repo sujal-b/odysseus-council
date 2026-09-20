@@ -119,6 +119,10 @@ docs/windows-port/
 .omo/
 **/grill-logs/
 **/.system_generated/
+.grill/
+grill/
+grills/
+*grill*.md
 
 # Skills / agent config directories (local tool customizations)
 skills/
@@ -137,7 +141,14 @@ benchmark_results/
 code.html
 reference.html
 odys.ps1
-.grill/
+
+# Credentials, keys, and certificates
+*.key
+*.pem
+*.cert
+*.pfx
+credentials.json
+*credentials*.json
 .workbuddy-ai/
 bridge/
 .pytest-tmp*/
