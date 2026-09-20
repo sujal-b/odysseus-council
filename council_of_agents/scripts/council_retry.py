@@ -71,14 +71,25 @@ def classify_error(error):
     return ErrorClass.TRANSIENT
 
 _BASE = {"transient": 50, "throttling": 1000, "schema": 200, "terminal": 0, "permission": 0, "context": 0}
-_MAX_RETRIES = {"transient": 3, "throttling": 2, "schema": 2, "terminal": 0, "permission": 0, "context": 0}
+_MAX_RETRIES = {"transient": 3, "throttling": 3, "schema": 2, "terminal": 0, "permission": 0, "context": 0}
 CAP_MS = 20000
 
-def compute_backoff(error_class, attempt):
+def compute_backoff(error_class, attempt, error=None):
     base = _BASE.get(error_class.value, 50)
     if base == 0:
         return 0.0
-    return random.random() * min(CAP_MS, base * 2 ** attempt) / 1000
+    delay = random.random() * min(CAP_MS, base * 2 ** attempt) / 1000
+    if error is not None and error_class == ErrorClass.THROTTLING:
+        import re
+        s = str(error).lower()
+        m = re.search(r"try again in ([0-9.]+)s", s) or re.search(r"retry[- ]after[:\s]+([0-9.]+)", s)
+        if m:
+            try:
+                # Add 0.5s safety buffer so the window is guaranteed cleared
+                delay = max(delay, float(m.group(1)) + 0.5)
+            except ValueError:
+                pass
+    return delay
 
 @dataclass
 class RetryState:
@@ -113,7 +124,7 @@ async def retry_with_backoff(operation, role, max_retries=None, on_retry=None, s
                 limit = min(limit, max(0, int(schema_retries)))
             if state.attempt >= limit:
                 raise
-            delay = compute_backoff(cls, state.attempt)
+            delay = compute_backoff(cls, state.attempt, error=error)
             state.record(error, cls, delay)
             logger.info("[%s] retry %d/%d after %.2fs (%s): %s",
                         role, state.attempt, limit, delay, cls.value, str(error)[:100])
