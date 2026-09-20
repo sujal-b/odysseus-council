@@ -759,7 +759,7 @@ async def _execute_tool_block_raw(
             if block_reason:
                 desc = f"bash (background): {_bg_cmd.strip().split(chr(10))[0][:80]}"
                 return desc, {"error": block_reason, "exit_code": 1}
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=_AGENT_WORKDIR)
+            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=workspace or _AGENT_WORKDIR)
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {
