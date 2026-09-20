@@ -73,14 +73,39 @@ def reconnaissance_plan_error(tasks, facts: dict | None) -> str | None:
         return "repository reconnaissance found no safe target"
 
     def in_scope(value: str) -> bool:
-        return any(value == scope or value.startswith(scope) for scope in scopes)
+        v = str(value or "").strip().replace("\\", "/").lstrip("./").lstrip("/")
+        for scope in scopes:
+            s = str(scope).strip().replace("\\", "/").lstrip("./").lstrip("/")
+            if not s:
+                return True
+            if v == s or v.startswith(s) or s.startswith(v):
+                return True
+        return False
 
     def text(task: dict) -> str:
         return " ".join(str(task.get(key) or "") for key in ("description", "acceptance")).lower()
 
-    mutation = [task for task in tasks if task.get("write_scope") or task.get("workspace_root")]
+    discovery = [
+        task for task in tasks
+        if not task.get("write_scope")
+        and (
+            any(in_scope(str(scope)) for scope in task.get("read_scope") or [])
+            or task.get("workspace_root")
+            or in_scope("./")
+        )
+        and any(w in text(task) for w in ("discover", "read", "inspect", "check", "scan", "setup", "init"))
+    ]
+    ids = {str(task.get("id") or "") for task in discovery}
+
+    mutation = [
+        task for task in tasks
+        if task.get("write_scope")
+        or (task.get("workspace_root") and str(task.get("id") or "") not in ids)
+    ]
     for task in mutation:
-        if task.get("workspace_root") or any(not in_scope(str(scope)) for scope in task.get("write_scope") or []):
+        if task.get("workspace_root") and "./" not in scopes and "" not in scopes:
+            return "plan write scope is outside repository reconnaissance evidence"
+        if any(not in_scope(str(scope)) for scope in task.get("write_scope") or []):
             return "plan write scope is outside repository reconnaissance evidence"
     if selected:
         combined = " ".join(text(task) for task in tasks)
@@ -91,16 +116,9 @@ def reconnaissance_plan_error(tasks, facts: dict | None) -> str | None:
         return None
     if not facts.get("discovery_required"):
         return "repository reconnaissance did not produce a safe target"
-    discovery = [
-        task for task in tasks
-        if not task.get("write_scope") and not task.get("workspace_root")
-        and any(in_scope(str(scope)) for scope in task.get("read_scope") or [])
-        and "discover" in text(task)
-    ]
-    ids = {str(task.get("id") or "") for task in discovery}
     if not ids:
         return "zero repository matches require a bounded read-only discovery task"
-    if not any(ids.intersection({str(dep) for dep in task.get("depends_on") or []}) for task in mutation):
+    if mutation and not any(ids.intersection({str(dep) for dep in task.get("depends_on") or []}) for task in mutation):
         return "implementation task must depend on bounded discovery output"
     return None
 
