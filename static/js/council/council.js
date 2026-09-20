@@ -363,10 +363,14 @@ class CouncilSession {
   constructor(state) {
     this._state = state;
     this._es    = null;
+    this._councilHandler = null;
   }
 
   startStream(sessionId) {
     if (this._es) {
+      if (this._councilHandler) {
+        this._es.removeEventListener('council_event', this._councilHandler);
+      }
       this._es.close();
       this._es = null;
     }
@@ -380,7 +384,7 @@ class CouncilSession {
       this._state.update({ event: 'connection_state', connectionState: 'connected' });
     };
 
-    this._es.addEventListener('council_event', e => {
+    this._councilHandler = e => {
       this._state.connectionState = 'connected';
       try {
         const data = JSON.parse(e.data);
@@ -395,7 +399,8 @@ class CouncilSession {
       } catch (err) {
         console.error('[Council] SSE parse error:', err);
       }
-    });
+    };
+    this._es.addEventListener('council_event', this._councilHandler);
 
     this._es.onerror = () => {
       // Let native EventSource retry automatically upon transient network drops.
@@ -485,7 +490,27 @@ class CouncilSession {
     this._state.sessionId = sessionId;
     try {
       const res = await fetch(`/api/council/session/${sessionId}`);
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        if (res.status === 404) {
+          console.warn(`[Council] Session ${sessionId} not found (404). Resetting to clean state.`);
+          if (window.location.hash.replace('#', '') === sessionId) {
+            history.replaceState(null, '', window.location.pathname + window.location.search);
+          }
+          try {
+            if (localStorage.getItem('lastSessionId') === sessionId) {
+              localStorage.removeItem('lastSessionId');
+            }
+          } catch {}
+          if (window.sessionModule && window.sessionModule.getCurrentSessionId() === sessionId) {
+            window.sessionModule.setCurrentSessionId(null);
+          }
+          this._state.sessionId = null;
+          this._state.status = 'PENDING';
+          this._state.update({});
+          return;
+        }
+        throw new Error(await res.text());
+      }
       const data = await res.json();
 
       // Reset state first
@@ -712,6 +737,9 @@ class CouncilSession {
   close() {
     this._state.connectionState = 'disconnected';
     if (this._es) {
+      if (this._councilHandler) {
+        this._es.removeEventListener('council_event', this._councilHandler);
+      }
       this._es.close();
       this._es = null;
     }
@@ -4232,28 +4260,42 @@ export function init() {
   // Initial render to set correct idle state
   ui.render(state);
 
-  // Restore workspace input from localStorage
+  // Restore workspace input from localStorage & synchronize state
   const wsInput = document.getElementById('council-workspace-input');
   if (wsInput) {
     try {
       const saved = localStorage.getItem('councilWorkspace');
-      if (saved) wsInput.value = saved;
+      if (saved) {
+        wsInput.value = saved;
+        state.workspace = saved.trim();
+      }
     } catch {}
-    wsInput.addEventListener('change', () => {
-      try { localStorage.setItem('councilWorkspace', wsInput.value.trim()); } catch {}
-    });
+    const syncWorkspace = () => {
+      const val = wsInput.value.trim();
+      state.workspace = val;
+      try { localStorage.setItem('councilWorkspace', val); } catch {}
+    };
+    wsInput.addEventListener('change', syncWorkspace);
+    wsInput.addEventListener('input', syncWorkspace);
   }
 
-  // Restore budget input from localStorage
+  // Restore budget input from localStorage & synchronize state
   const budgetInput = document.getElementById('council-budget-input');
   if (budgetInput) {
     try {
       const saved = localStorage.getItem('councilBudget');
-      if (saved) budgetInput.value = saved;
+      if (saved) {
+        budgetInput.value = saved;
+        state.contextBudget = Number(saved) || 0;
+      }
     } catch {}
-    budgetInput.addEventListener('change', () => {
-      try { localStorage.setItem('councilBudget', budgetInput.value.trim()); } catch {}
-    });
+    const syncBudget = () => {
+      const val = budgetInput.value.trim();
+      state.contextBudget = val ? Number(val) : 0;
+      try { localStorage.setItem('councilBudget', val); } catch {}
+    };
+    budgetInput.addEventListener('change', syncBudget);
+    budgetInput.addEventListener('input', syncBudget);
   }
 
   // Setup 1s timer to update LAST RESPONSE indicator
