@@ -922,6 +922,7 @@ class CouncilUI {
     this._renderComplexityBadge(state);
   }
 
+  // ponytail: pre-compute totalChars in state.update() to make this O(1)
   _estimatedTokens(state) {
     if (state.actualTokens > 0) return state.actualTokens;
     let chars = 0;
@@ -2503,15 +2504,14 @@ class CouncilUI {
         headerContainer.innerHTML = tabsHtml;
         
         // Add event listeners to tabs
-        const tabs = headerContainer.querySelectorAll('.council-code-tab');
-        tabs.forEach(tab => {
-          tab.addEventListener('click', () => {
-            const path = tab.getAttribute('data-filepath');
-            state.selectedFile = path;
-            state.lastFile = path;
-            state.lastCode = state.generatedFiles[path] || '';
-            this.render(state);
-          });
+        headerContainer.addEventListener('click', e => {
+          const tab = e.target.closest('.council-code-tab');
+          if (!tab) return;
+          const path = tab.getAttribute('data-filepath');
+          state.selectedFile = path;
+          state.lastFile = path;
+          state.lastCode = state.generatedFiles[path] || '';
+          this.render(state);
         });
       } else {
         // No generated files yet, show original title logic
