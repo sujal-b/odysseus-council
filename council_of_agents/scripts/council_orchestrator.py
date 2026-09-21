@@ -166,7 +166,6 @@ class CouncilOrchestrator:
         self._router = router
         cfg = router.get()
         self._max_loops = cfg.escalation.max_loops
-        self._conflict_threshold = cfg.escalation.conflict_threshold
         self._header_cache = {}
         # Handoff mode: 'contract' (default) passes each agent's structured
         # decision/output downstream instead of its full reasoning transcript
@@ -2745,7 +2744,11 @@ Report what you FIND, not what you think might exist."""
     def _task_dag_from_plan(plan, user_prompt=None, reconnaissance=None):
         """Validate a strategist plan before it can reach Manager or execution."""
         from council_of_agents.scripts.council_schemas import validate_agent_output
-        from council_of_agents.scripts.task_dag import mutation_only_plan_error, reconnaissance_plan_error
+        from council_of_agents.scripts.task_dag import (
+            file_write_scope_error,
+            mutation_only_plan_error,
+            reconnaissance_plan_error,
+        )
         validation = validate_agent_output("strategist", plan)
         if not validation.success or not validation.data:
             raise ValueError(validation.error or "missing tasks")
@@ -2755,6 +2758,12 @@ Report what you FIND, not what you think might exist."""
         policy_error = mutation_only_plan_error(tasks, user_prompt) or reconnaissance_plan_error(tasks, reconnaissance)
         if policy_error:
             raise ValueError(policy_error)
+        scope_error = file_write_scope_error(tasks)
+        # file_write_scope_error auto-repairs unambiguous file-creating tasks
+        # in place (T2 "Create notes.py" + [] -> workspace_root) and returns
+        # a targeted revision request only for genuinely ambiguous ones.
+        if scope_error:
+            raise ValueError(scope_error)
         dag = TaskDAG.from_task_list(tasks)
         dag.validate_contracts()
         return dag, tasks

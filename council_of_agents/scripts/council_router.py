@@ -21,8 +21,6 @@ class ModelConfig(BaseModel):
 class EscalationConfig(BaseModel):
     max_loops: int = 3
     conflict_threshold: float = 0.7
-    verifier_enabled: bool = True
-    max_retries_per_task: int = 2
 
 class CouncilConfig(BaseModel):
     roles: Dict[str, ModelConfig]
