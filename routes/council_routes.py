@@ -9,6 +9,8 @@ from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator, 
 from council_of_agents.scripts.session_store import InMemorySessionStore, SessionState
 from src.tool_security import owner_is_admin_or_single_user
 from src.event_bus import fire_event
+from src.constants import DATA_DIR
+from council_of_agents.scripts.permissions import GLOBAL_REGISTRY, PermissionManager
 
 import pathlib
 logger = logging.getLogger(__name__)
@@ -200,7 +202,6 @@ def cancel_active_council_session(session_id: str) -> None:
             pass
     # Unblock any pending permission requests so the orchestrator can exit cleanly
     try:
-        from council_of_agents.scripts.permissions import GLOBAL_REGISTRY
         for perm_id, evt in list(GLOBAL_REGISTRY.pending_events.items()):
             if GLOBAL_REGISTRY.session_ids.get(perm_id) != session_id:
                 continue
@@ -501,7 +502,6 @@ def _make_orchestrator_wrapped(webhook_manager=None):
                 pass
     return _run_orchestrator_wrapped
 
-from src.constants import DATA_DIR
 from council_of_agents.scripts.task_dag import TaskDAG
 
 
@@ -547,41 +547,11 @@ def _recover_orphaned_sessions():
         except Exception as e:
             logger.error("Failed to recover %s: %s", fname, e)
 
-async def _stuck_session_watchdog(webhook_manager=None):
-    while True:
-        try:
-            await asyncio.sleep(60)
-            for session_id in list(_running_sessions):
-                state = _store.load(session_id)
-                if state and state.status == "IN_PROGRESS":
-                    task = _running_tasks.get(session_id)
-                    if task and task.done():
-                        state.status = "FAILED"
-                        state.report += "\n\n[System] Session watchdog detected stuck state."
-                        _store.save(state)
-                        _running_sessions.discard(session_id)
-                        _running_tasks.pop(session_id, None)
-                        fire_event("council_completed", state.owner)
-                        if webhook_manager:
-                            webhook_manager.fire_and_forget("council.completed", {
-                                "session_id": session_id,
-                                "status": "FAILED",
-                                "owner": state.owner,
-                            })
-        except asyncio.CancelledError:
-            break
-        except Exception as e:
-            logger.error("Error in stuck session watchdog: %s", e)
-
 def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
     router = APIRouter(tags=["council"])
     _recover_orphaned_sessions()
 
     _run_orchestrator_wrapped = _make_orchestrator_wrapped(webhook_manager)
-
-    @router.on_event("startup")
-    async def on_startup():
-        asyncio.create_task(_stuck_session_watchdog(webhook_manager))
 
     @router.post("/api/council/session")
     async def create_session(request: Request):
@@ -622,7 +592,6 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
         # canonical path is persisted so every later tool/permission check
         # uses the same authority boundary.
         req_workspace = body.get("workspace", "").strip()
-        from src.constants import DATA_DIR
         from council_of_agents.scripts.permissions import resolve_council_workspace
         is_admin = owner_is_admin_or_single_user(owner_name)
         if req_workspace and is_admin:
@@ -646,11 +615,7 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
     @router.get("/api/council/stream/{session_id}")
     async def stream_session(session_id: str, request: Request):
         owner = get_current_user(request)
-        state = _store.load(session_id)
-        if not state:
-            raise HTTPException(404, "Session not found")
-        if owner and state.owner != owner:
-            raise HTTPException(403, "Forbidden")
+        state = _require_session(session_id, owner)
 
         queue = asyncio.Queue()
         _queues[session_id] = queue
@@ -799,10 +764,6 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
             permission_id = body.get("permission_id")
             if not permission_id:
                 raise HTTPException(400, "permission_id is required")
-            
-            from council_of_agents.scripts.permissions import GLOBAL_REGISTRY, PermissionManager
-            from src.constants import DATA_DIR
-            
             is_admin = owner_is_admin_or_single_user(state.owner)
             ws = state.workspace or os.path.abspath(os.path.join(DATA_DIR, "council_workspace"))
 
