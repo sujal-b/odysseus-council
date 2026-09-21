@@ -790,6 +790,7 @@ class CouncilUI {
   }
 
   /* ── Particle engine: dots flowing along the active edge ── */
+  // ponytail: simplify to CSS offset-path animation
   _startParticles(edgeEl) {
     this._stopParticles();
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
@@ -1089,19 +1090,6 @@ class CouncilUI {
     }
   }
 
-  /* Helper to extract file paths from task description */
-  _extractPaths(text) {
-    const regex = /`?([\w\-]+\/[\w\-\.]+\.\w+)`?/g;
-    const paths = [];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      let path = match[1];
-      if (!paths.includes(path)) {
-        paths.push(path);
-      }
-    }
-    return paths;
-  }
 
   /* Helper to clean thinking text and strip JSON formatting noise, supporting partial streaming */
   _cleanThinkingText(text, agent) {
