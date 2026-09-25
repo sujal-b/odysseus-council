@@ -3608,34 +3608,27 @@ class CouncilUI {
       return;
     }
 
-    // 1 / 2 / 3: Focus Changes pane, Stream pane, and Captain's Log panel
-    if (e.key === '1') {
+    // F: Focus Files tab in contextual panel
+    if (e.key === 'f' || e.key === 'F') {
       e.preventDefault();
-      const p = document.getElementById('council-code-panel') || document.querySelector('.council-code-pane');
-      if (p) {
-        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
-        p.focus();
-      }
+      this._activateCtxTab('files');
+      document.getElementById('council-code-panel')?.focus();
       return;
     }
-    if (e.key === '2') {
+    // L: Focus Log tab in contextual panel
+    if (e.key === 'l' || e.key === 'L') {
       e.preventDefault();
-      const p = document.getElementById('council-ghost-stream-ledger') || document.getElementById('council-ghost-editor');
-      if (p) {
-        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
-        p.focus();
-      }
+      this._activateCtxTab('log');
+      document.getElementById('council-captains-log')?.focus();
       return;
     }
-    if (e.key === '3') {
+    // D: Open Debug tab (DAG)
+    if (e.key === 'd' || e.key === 'D') {
       e.preventDefault();
-      const p = document.getElementById('council-captains-log') || document.querySelector('.council-log-sidebar');
-      if (p) {
-        if (!p.hasAttribute('tabindex')) p.setAttribute('tabindex', '-1');
-        p.focus();
-      }
+      this._activateCtxTab('debug');
       return;
     }
+
   }
 }
 
