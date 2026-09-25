@@ -186,7 +186,7 @@ def _gate_event(state):
         )
     return None
 
-def cancel_active_council_session(session_id: str) -> None:
+def cancel_active_council_session(session_id: str, purge_state: bool = False) -> None:
     task = _running_tasks.get(session_id)
     if task:
         logger.info(f"Cancelling active council task for session {session_id}")
@@ -209,10 +209,13 @@ def cancel_active_council_session(session_id: str) -> None:
             evt.set()
     except Exception:
         pass
-    try:
-        _store.delete(session_id)
-    except Exception:
-        pass
+    # Stopping a run must keep the persisted session state so the sidebar
+    # entry stays viewable; only actual session deletion purges the file.
+    if purge_state:
+        try:
+            _store.delete(session_id)
+        except Exception:
+            pass
 
 async def cancel_all_active_council_sessions() -> None:
     for session_id, task in list(_running_tasks.items()):

@@ -606,7 +606,7 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                 # Stop any active Council runs
                 try:
                     from routes.council_routes import cancel_active_council_session
-                    cancel_active_council_session(sid)
+                    cancel_active_council_session(sid, purge_state=True)
                 except Exception:
                     pass
                 return {"status": "deleted"}
