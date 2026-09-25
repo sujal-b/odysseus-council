@@ -2363,6 +2363,9 @@ class CouncilUI {
     if (el) {
       if (files.length > 0) {
         // SUCCESS / POPULATED STATE
+        // Auto-switch to Files tab on first output
+        const filesTab = document.querySelector('.council-ctx-tab[data-tab="files"]');
+        if (filesTab && !filesTab.classList.contains('active')) this._activateCtxTab('files');
         if (linenosEl) linenosEl.style.display = 'block';
         el.style.padding = '16px';
         
@@ -2543,9 +2546,19 @@ class CouncilUI {
     const keepPinnedToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 
     // 1. Update status dot color and class
-    const dotEl = document.getElementById('council-log-status-dot');
-    if (dotEl) {
-      dotEl.dataset.status = String(state.status || 'PENDING').toUpperCase();
+    const dotEl = null; // council-log-status-dot removed in Stream-First redesign
+    // Update Log tab badge with event count
+    const logBadge = document.getElementById('ctx-log-badge');
+    const activeTab = document.querySelector('.council-ctx-tab.active');
+    const logTabActive = activeTab?.dataset?.tab === 'log';
+    if (logBadge) {
+      const count = state.log ? state.log.length : 0;
+      if (count > 0 && !logTabActive) {
+        logBadge.textContent = count > 99 ? '99+' : String(count);
+        logBadge.hidden = false;
+      } else {
+        logBadge.hidden = true;
+      }
     }
 
     // 2. Update session ID display
@@ -3457,6 +3470,13 @@ class CouncilUI {
       }
     });
 
+    // Contextual panel tab switching
+    document.querySelectorAll('.council-ctx-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        this._activateCtxTab(tab.dataset.tab);
+      });
+    });
+
     // Global keyboard contract (Decision 5)
     document.addEventListener('keydown', e => this._handleGlobalKeydown(e, session));
 
@@ -3474,6 +3494,27 @@ class CouncilUI {
           this._updateAutoFollowIndicator();
         }
       });
+    }
+  }
+
+  _activateCtxTab(tabId) {
+    // Deactivate all tabs and bodies
+    document.querySelectorAll('.council-ctx-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.council-ctx-body').forEach(b => { b.hidden = true; });
+    // Activate the selected tab
+    const tab = document.querySelector(`.council-ctx-tab[data-tab="${tabId}"]`);
+    const body = document.getElementById(`ctx-body-${tabId}`);
+    if (tab) tab.classList.add('active');
+    if (body) body.hidden = false;
+    // Clear badge on Log tab when switching to it
+    if (tabId === 'log') {
+      const badge = document.getElementById('ctx-log-badge');
+      if (badge) badge.hidden = true;
+    }
+    // When switching to Debug tab, render DAG if available
+    if (tabId === 'debug' && this._state.dag) {
+      const container = document.getElementById('council-dag-view-debug');
+      if (container) this._renderDAGSVG(container, this._state.dag, true);
     }
   }
 
