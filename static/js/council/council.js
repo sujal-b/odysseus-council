@@ -2992,19 +2992,19 @@ class CouncilUI {
 
     const label = document.getElementById('council-review-text');
     const body = document.getElementById('review-plan-body');
-    const actions = bar.querySelector('.review-actions');
+    const actions = bar.querySelector('.gate-bar-actions');
 
     // DIRECT path completed — show muted skip indicator
     if (state.route === 'DIRECT' && state.status === 'COMPLETE') {
       bar.hidden = false;
-      bar.className = 'review-bar review-bar-skipped';
+      bar.classList.add('council-gate-bar--skipped');
       if (label) label.textContent = '⚡ APPROVAL GATE SKIPPED (DIRECT PATH)';
       if (body) body.textContent = '';
       if (actions) actions.style.display = 'none';
       return;
     }
 
-    bar.classList.remove('review-bar-skipped');
+    bar.classList.remove('council-gate-bar--skipped');
     bar.hidden = !state.pendingReview;
     const approveButton = document.getElementById('council-approve-btn');
     const overrideButton = document.getElementById('council-override-btn');
@@ -3628,7 +3628,6 @@ class CouncilUI {
       this._activateCtxTab('debug');
       return;
     }
-
   }
 }
 
@@ -4199,7 +4198,6 @@ function initResizers() {
     console.error('[Council] Failed to initialize resizers:', err);
   }
 }
-
 
 function setupResizer(resizer, onDrag) {
   resizer.addEventListener('mousedown', (e) => {
