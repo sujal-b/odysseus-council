@@ -4128,72 +4128,44 @@ function _injectRemediationStyles() {
 
 function initResizers() {
   try {
-    const resizerCodeGhost = document.getElementById('council-resizer-code-ghost');
-    const resizerCenterLog = document.getElementById('council-resizer-center-log');
-    const centerTop = document.querySelector('.council-center-top');
+    const resizerStreamCtx = document.getElementById('council-resizer-stream-ctx');
+    const workspace = document.querySelector('.council-workspace');
     const panel = document.getElementById('council-panel');
 
-    // Restore saved widths if present
+    // Restore saved ctx width if present
     try {
-      const savedCodeWidth = localStorage.getItem('council_code_pane_width');
-      if (savedCodeWidth && centerTop) {
-        centerTop.style.gridTemplateColumns = `${savedCodeWidth}px 6px minmax(0, 1fr)`;
-      }
-      const savedSidebarWidth = localStorage.getItem('council_sidebar_width');
-      if (savedSidebarWidth && panel) {
-        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${savedSidebarWidth}px`;
+      const savedCtxWidth = localStorage.getItem('council_ctx_pane_width');
+      if (savedCtxWidth && workspace) {
+        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${savedCtxWidth}px`;
       }
     } catch {}
 
-    if (resizerCodeGhost && centerTop) {
-      setupResizer(resizerCodeGhost, (moveEvent) => {
-        const rect = centerTop.getBoundingClientRect();
+    if (resizerStreamCtx && workspace) {
+      setupResizer(resizerStreamCtx, (moveEvent) => {
+        const rect = workspace.getBoundingClientRect();
         if (!rect.width) return;
-        const leftWidth = Math.max(160, Math.min(rect.width - 180, moveEvent.clientX - rect.left));
-        centerTop.style.gridTemplateColumns = `${Math.round(leftWidth)}px 6px minmax(0, 1fr)`;
-        try { localStorage.setItem('council_code_pane_width', Math.round(leftWidth)); } catch {}
+        const rightWidth = Math.max(240, Math.min(rect.width - 320, rect.right - moveEvent.clientX));
+        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(rightWidth)}px`;
+        try { localStorage.setItem('council_ctx_pane_width', Math.round(rightWidth)); } catch {}
       });
 
-      // Keyboard support: Arrow keys
-      resizerCodeGhost.addEventListener('keydown', (e) => {
-        const rect = centerTop.getBoundingClientRect();
-        const currentWidth = document.querySelector('.council-code-pane')?.getBoundingClientRect().width || (rect.width / 2);
-        let nextWidth = currentWidth;
-        if (e.key === 'ArrowLeft') nextWidth = Math.max(160, currentWidth - 20);
-        else if (e.key === 'ArrowRight') nextWidth = Math.min(rect.width - 180, currentWidth + 20);
-        else return;
-        e.preventDefault();
-        centerTop.style.gridTemplateColumns = `${Math.round(nextWidth)}px 6px minmax(0, 1fr)`;
-        try { localStorage.setItem('council_code_pane_width', Math.round(nextWidth)); } catch {}
-      });
-    }
-
-    if (resizerCenterLog && panel) {
-      setupResizer(resizerCenterLog, (moveEvent) => {
-        const rect = panel.getBoundingClientRect();
-        if (!rect.width) return;
-        const rightWidth = Math.max(220, Math.min(rect.width - 320, rect.right - moveEvent.clientX));
-        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(rightWidth)}px`;
-        try { localStorage.setItem('council_sidebar_width', Math.round(rightWidth)); } catch {}
-      });
-
-      // Keyboard support: Arrow keys
-      resizerCenterLog.addEventListener('keydown', (e) => {
-        const rect = panel.getBoundingClientRect();
-        const currentWidth = document.querySelector('.council-log-sidebar')?.getBoundingClientRect().width || 280;
+      resizerStreamCtx.addEventListener('keydown', (e) => {
+        const rect = workspace.getBoundingClientRect();
+        const currentWidth = document.querySelector('.council-ctx-pane')?.getBoundingClientRect().width || 380;
         let nextWidth = currentWidth;
         if (e.key === 'ArrowLeft') nextWidth = Math.min(rect.width - 320, currentWidth + 20);
-        else if (e.key === 'ArrowRight') nextWidth = Math.max(220, currentWidth - 20);
+        else if (e.key === 'ArrowRight') nextWidth = Math.max(240, currentWidth - 20);
         else return;
         e.preventDefault();
-        panel.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(nextWidth)}px`;
-        try { localStorage.setItem('council_sidebar_width', Math.round(nextWidth)); } catch {}
+        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(nextWidth)}px`;
+        try { localStorage.setItem('council_ctx_pane_width', Math.round(nextWidth)); } catch {}
       });
     }
   } catch (err) {
     console.error('[Council] Failed to initialize resizers:', err);
   }
 }
+
 
 function setupResizer(resizer, onDrag) {
   resizer.addEventListener('mousedown', (e) => {
