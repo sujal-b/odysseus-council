@@ -4163,35 +4163,43 @@ function initResizers() {
   try {
     const resizerStreamCtx = document.getElementById('council-resizer-stream-ctx');
     const workspace = document.querySelector('.council-workspace');
-    const panel = document.getElementById('council-panel');
+    const ctxPane = document.querySelector('.council-ctx-pane');
+
+    const applyCtxWidth = (width) => {
+      if (!ctxPane) return;
+      ctxPane.style.flex = `0 0 ${width}px`;
+      ctxPane.style.width = `${width}px`;
+    };
 
     // Restore saved ctx width if present
     try {
       const savedCtxWidth = localStorage.getItem('council_ctx_pane_width');
-      if (savedCtxWidth && workspace) {
-        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${savedCtxWidth}px`;
+      if (savedCtxWidth && ctxPane) {
+        applyCtxWidth(Number(savedCtxWidth));
       }
     } catch {}
 
-    if (resizerStreamCtx && workspace) {
+    if (resizerStreamCtx && workspace && ctxPane) {
       setupResizer(resizerStreamCtx, (moveEvent) => {
         const rect = workspace.getBoundingClientRect();
         if (!rect.width) return;
         const rightWidth = Math.max(240, Math.min(rect.width - 320, rect.right - moveEvent.clientX));
-        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(rightWidth)}px`;
-        try { localStorage.setItem('council_ctx_pane_width', Math.round(rightWidth)); } catch {}
+        const rounded = Math.round(rightWidth);
+        applyCtxWidth(rounded);
+        try { localStorage.setItem('council_ctx_pane_width', rounded); } catch {}
       });
 
       resizerStreamCtx.addEventListener('keydown', (e) => {
         const rect = workspace.getBoundingClientRect();
-        const currentWidth = document.querySelector('.council-ctx-pane')?.getBoundingClientRect().width || 380;
+        const currentWidth = ctxPane.getBoundingClientRect().width || 380;
         let nextWidth = currentWidth;
         if (e.key === 'ArrowLeft') nextWidth = Math.min(rect.width - 320, currentWidth + 20);
         else if (e.key === 'ArrowRight') nextWidth = Math.max(240, currentWidth - 20);
         else return;
         e.preventDefault();
-        workspace.style.gridTemplateColumns = `minmax(0, 1fr) 6px ${Math.round(nextWidth)}px`;
-        try { localStorage.setItem('council_ctx_pane_width', Math.round(nextWidth)); } catch {}
+        const rounded = Math.round(nextWidth);
+        applyCtxWidth(rounded);
+        try { localStorage.setItem('council_ctx_pane_width', rounded); } catch {}
       });
     }
   } catch (err) {
