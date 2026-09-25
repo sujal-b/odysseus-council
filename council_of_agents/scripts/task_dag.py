@@ -33,6 +33,75 @@ def verification_command_error(command: str) -> str | None:
     return None
 
 
+def repair_file_write_scopes(tasks: list[dict]) -> dict:
+    """Auto-repair unambiguous file-creating tasks that have an empty write_scope."""
+    repaired = []
+    errors = []
+    create_pattern = re.compile(
+        r'^(?:create|add|generate|write|implement)\s+(.+)$',
+        re.IGNORECASE,
+    )
+    # File token: optionally quoted, non-whitespace path ending with an extension (.xxx)
+    file_token_pattern = re.compile(r'["\']?([^\s"\']+\.[a-zA-Z0-9_-]+)["\']?')
+
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        # Only inspect tasks with declared empty write_scope and without workspace_root
+        if task.get("write_scope") != [] or task.get("workspace_root"):
+            continue
+
+        desc = str(task.get("description") or "").strip()
+        m = create_pattern.match(desc)
+        if not m:
+            continue
+
+        remainder = m.group(1).strip()
+        # Find explicit file tokens in the remainder
+        matches = file_token_pattern.findall(remainder)
+
+        # Check for directory traversal in matches or remainder
+        if ".." in remainder or any(".." in PurePosixPath(t.replace("\\", "/")).parts for t in matches):
+            errors.append(f"{task.get('id', 'task')}: directory traversal in target file is not allowed")
+            continue
+
+        if not matches:
+            # Ambiguous: creation task with no explicit filename detected
+            errors.append(f"{task.get('id', 'task')}: write_scope is empty but task specifies file creation; explicit write_scope or filename required")
+            continue
+
+        if len(matches) > 1:
+            # Ambiguous: multiple files named
+            files_str = " and ".join(matches[:2]) if len(matches) == 2 else ", ".join(matches)
+            errors.append(f"{task.get('id', 'task')}: ambiguous write_scope for multiple files ({files_str}); explicit write_scope required")
+            continue
+
+        # Single file match: determine if root file or nested
+        file_path = PurePosixPath(matches[0].replace("\\", "/"))
+        parent = str(file_path.parent)
+
+        if parent in (".", "", "/"):
+            task["workspace_root"] = True
+            task["write_scope"] = []
+            repaired.append({"id": task.get("id"), "scope": "workspace_root"})
+        else:
+            scope_dir = parent.strip("/") + "/"
+            task["write_scope"] = [scope_dir]
+            if "workspace_root" in task:
+                del task["workspace_root"]
+            repaired.append({"id": task.get("id"), "scope": scope_dir})
+
+    return {"repaired": repaired, "errors": errors}
+
+
+def file_write_scope_error(tasks: list[dict]) -> str | None:
+    """Return an error message if write scope repair encounters an ambiguous task, else None."""
+    result = repair_file_write_scopes(tasks)
+    if result["errors"]:
+        return "; ".join(result["errors"])
+    return None
+
+
 def mutation_only_plan_error(tasks, user_prompt: str | None) -> str | None:
     """Return a plan-policy error for an explicit mutation-only request.
 

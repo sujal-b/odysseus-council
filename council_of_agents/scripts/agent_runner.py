@@ -24,8 +24,12 @@ logger = logging.getLogger(__name__)
 
 def _strategist_plan_error(tasks, user_prompt) -> str | None:
     """Return the existing DAG/policy error before a plan reaches Manager."""
-    from council_of_agents.scripts.task_dag import TaskDAG, mutation_only_plan_error
-    error = mutation_only_plan_error(tasks, user_prompt)
+    from council_of_agents.scripts.task_dag import (
+        TaskDAG,
+        file_write_scope_error,
+        mutation_only_plan_error,
+    )
+    error = mutation_only_plan_error(tasks, user_prompt) or file_write_scope_error(tasks)
     if error:
         return error
     try:
