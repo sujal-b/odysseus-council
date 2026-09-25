@@ -754,6 +754,7 @@ Report what you FIND, not what you think might exist."""
                                      "Manager requested a bounded plan revision. Apply every concrete defect below "
                                      "and return a complete replacement plan as the compact Strategist JSON contract; "
                                      "do not return a debate response or explanation.\n\n"
+                                     f"{discovery_note}\n"
                                      f"Manager feedback:\n{self._contract('manager', manager_reply)}"
                                  )}],
                                 emit, owner=owner, written_paths=written_paths, disable_tools=True
@@ -787,8 +788,8 @@ Report what you FIND, not what you think might exist."""
                                        text=f"Task graph revised: {len(tasks)} nodes.", extra={"dag": state.dag})
                         except ValueError as e:
                             await emit(event="error", status="FAILED", agent="strategist",
-                                       text=f"Revised strategist plan blocked: a non-empty valid task DAG is required ({e}).")
-                            return
+                                       text=f"Revised strategist plan rejected by contract validation ({e}); falling back to previous plan for review.")
+                            break
                         strat_reply = revised_reply
 
                         # Perspective findings are tied to the plan they
