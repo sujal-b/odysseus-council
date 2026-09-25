@@ -6,16 +6,15 @@ def test_council_roles_use_configured_provider_defaults():
     path = Path(__file__).resolve().parents[1] / "council_of_agents/config/models.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     roles = config["roles"]
-    zen = "https://opencode.ai/zen/v1/chat/completions"
-    nvidia = "https://integrate.api.nvidia.com/v1/chat/completions"
+    nilovr = "https://api.nilovr.com/v1/chat/completions"
 
     expected = {
-        "chair": (zen, "nemotron-3-ultra-free"),
-        "strategist": (nvidia, "nvidia/nemotron-3-super-120b-a12b"),
-        "perspective_analyzer": (zen, "nemotron-3-ultra-free"),
-        "manager": (nvidia, "nvidia/nemotron-3-super-120b-a12b"),
-        "implementer": (zen, "nemotron-3-ultra-free"),
-        "completeness_auditor": (zen, "mimo-v2.5-free"),
+        "chair": (nilovr, "hy3"),
+        "strategist": (nilovr, "hy3"),
+        "perspective_analyzer": (nilovr, "hy3"),
+        "manager": (nilovr, "hy3"),
+        "implementer": (nilovr, "hy3"),
+        "completeness_auditor": (nilovr, "hy3"),
     }
     for role, (endpoint, model) in expected.items():
         assert roles[role]["endpoint_url"] == endpoint
@@ -28,4 +27,4 @@ def test_auxiliary_council_roles_stay_on_zen_defaults():
         .read_text(encoding="utf-8")
     )
     for role in ("debate_response", "chair_arbitration"):
-        assert config["roles"][role]["endpoint_url"].startswith("https://opencode.ai/zen/")
+        assert config["roles"][role]["endpoint_url"].startswith("https://api.nilovr.com/")

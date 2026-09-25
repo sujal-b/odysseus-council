@@ -1,8 +1,8 @@
 {
   "roles": {
     "chair": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 2048,
       "timeout": 45,
@@ -22,8 +22,8 @@
       ]
     },
     "strategist": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 4096,
       "timeout": 60,
@@ -43,8 +43,8 @@
       ]
     },
     "manager": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 4096,
       "timeout": 60,
@@ -64,8 +64,8 @@
       ]
     },
     "implementer": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 8192,
       "timeout": 90,
@@ -85,8 +85,8 @@
       ]
     },
     "perspective_analyzer": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 4096,
       "timeout": 60,
@@ -100,8 +100,8 @@
       ]
     },
     "completeness_auditor": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 4096,
       "timeout": 60,
@@ -115,8 +115,8 @@
       ]
     },
     "debate_response": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 4096,
       "timeout": 60,
@@ -130,8 +130,8 @@
       ]
     },
     "chair_arbitration": {
-      "endpoint_url": "https://api.groq.com/openai/v1/chat/completions",
-      "model": "qwen/qwen3.8-27b",
+      "endpoint_url": "https://api.nilovr.com/v1/chat/completions",
+      "model": "hy3",
       "temperature": 0.0,
       "max_tokens": 2048,
       "timeout": 45
