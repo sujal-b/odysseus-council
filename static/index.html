@@ -1076,19 +1076,93 @@
       <button type="button" id="council-run-cancel-btn" class="council-run-stop" disabled aria-label="Stop Council run">Stop</button>
     </header>
 
-    <!-- CENTER: Code Panel (left) + Ghost Editor (right) -->
-    <section class="council-center" aria-label="Council workspace">
+    <!-- Workspace: Stream (left) + Contextual panel (right) -->
+    <section class="council-workspace" aria-label="Council workspace">
 
-      <!-- Two panes share the available height -->
-      <div class="council-center-top">
+      <!-- LEFT: Execution stream pane -->
+      <div class="council-stream-pane">
+        <div class="council-pane-header">
+          <span class="council-pane-title" id="council-ghost-title">Execution stream</span>
+          <button type="button" class="council-disclosure-btn" id="council-thinking-toggle" hidden>Task Graph [G]</button>
+          <span class="council-pane-status" id="council-ghost-status">
+            <span class="council-pulse-dot"></span>
+            <span id="council-ghost-agent">IDLE</span>
+          </span>
+        </div>
+        <div id="council-dag-view" class="dag-view" style="display:none"></div>
+        <div id="council-ghost-editor" class="ghost-editor-stream idle">
+          <div class="ghost-stream-ledger scroll-container" id="council-ghost-stream-ledger" role="log" aria-label="Execution stream"></div>
+          <!-- Gate bars: inline inside stream pane, shown when BLOCKED -->
+          <div id="council-review-bar" class="council-gate-bar" hidden>
+            <div class="gate-bar-left">
+              <span class="gate-bar-icon" aria-hidden="true">!</span>
+              <span class="gate-bar-label" id="council-review-text">Manager &middot; reviewing&hellip;</span>
+              <span id="review-plan-body" style="font-size:11px;color:var(--log-text-dim);margin-left:10px;max-width:400px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:inline-block;vertical-align:middle;"></span>
+            </div>
+            <div class="gate-bar-actions">
+              <button id="council-override-btn" class="btn-override">Override</button>
+              <button id="council-approve-btn"  class="btn-approve">Approve</button>
+            </div>
+          </div>
+          <div id="council-permission-bar" class="council-gate-bar council-gate-bar--permission" hidden>
+            <div class="gate-bar-left" style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;flex:1;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="gate-bar-icon" aria-hidden="true">!</span>
+                <span class="gate-bar-label" id="council-permission-label" style="font-weight:600;color:#e1e4e6;">Security Permission Request</span>
+              </div>
+              <div id="council-permission-cmd" style="font-family:'Consolas','Courier New',monospace;font-size:11px;background:rgba(0,0,0,0.4);padding:6px 12px;border-radius:4px;border:1px solid rgba(255,255,255,0.06);color:#8ab4f8;width:100%;max-width:750px;white-space:pre-wrap;word-break:break-all;overflow-x:auto;box-shadow:inset 0 1px 3px rgba(0,0,0,0.5);"></div>
+            </div>
+            <div class="gate-bar-actions" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-left:16px;">
+              <button id="council-perm-allow-btn"   class="btn-approve" style="background:#4eb870;border-color:#4eb870;padding:6px 14px;font-size:11px;">Allow Once</button>
+              <button id="council-perm-project-btn" class="btn-approve" style="background:#df8e45;border-color:#df8e45;padding:6px 14px;font-size:11px;">Always in Project</button>
+              <button id="council-perm-global-btn"  class="btn-approve" style="background:#e74c3c;border-color:#e74c3c;padding:6px 14px;font-size:11px;">Always Global</button>
+              <button id="council-perm-deny-btn"    class="btn-override" style="background:transparent;color:#9aa0a6;padding:6px 14px;font-size:11px;border:1px solid rgba(255,255,255,0.15);">Deny</button>
+            </div>
+          </div>
+          <div id="council-decision-bar" class="council-gate-bar council-gate-bar--decision" hidden>
+            <div class="gate-bar-left" style="display:flex;flex-direction:column;gap:6px;align-items:flex-start;flex:1;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span class="gate-bar-icon" aria-hidden="true">?</span>
+                <span class="gate-bar-label" id="council-decision-label" style="font-weight:600;color:#e1e4e6;">Critical Decision Required</span>
+              </div>
+            </div>
+            <div id="council-decision-body" class="gate-bar-actions" style="display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-left:16px;"></div>
+          </div>
+          <div class="ghost-editor-footer" id="council-ghost-footer">
+            <div class="ghost-footer-metrics">
+              <span class="ghost-footer-speed-metric"><span class="ghost-metric-lbl">Speed </span><span id="council-stream-speed" style="color:var(--log-text-dim);">0 tok/s</span></span>
+              <span class="ghost-footer-separator" aria-hidden="true"></span>
+              <span class="ghost-footer-buf-metric"><span class="ghost-metric-lbl">Buffer </span><span id="council-stream-buffer" style="color:var(--log-text-dim);">0 chars</span></span>
+              <span class="ghost-footer-separator ghost-footer-last-sep" aria-hidden="true"></span>
+              <span class="ghost-footer-last-event"><span class="ghost-metric-lbl">Last event </span><span id="council-last-response" style="color:var(--log-text-dim);">--</span></span>
+            </div>
+            <span class="ghost-footer-kill-hint">Esc stop &middot; Space follow &middot; G graph</span>
+          </div>
+        </div>
+      </div>
 
-        <!-- Code output pane -->
-        <div class="council-code-pane">
+      <!-- RESIZER: between stream and contextual panel -->
+      <div class="council-resizer" id="council-resizer-stream-ctx" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize stream and context panes"></div>
+
+      <!-- RIGHT: Contextual panel -->
+      <div class="council-ctx-pane council-log-sidebar">
+        <!-- Tab bar -->
+        <div class="council-ctx-tabbar">
+          <button type="button" class="council-ctx-tab active" data-tab="files" id="ctx-tab-files">Files</button>
+          <button type="button" class="council-ctx-tab" data-tab="log" id="ctx-tab-log">Log<span class="ctx-tab-badge" id="ctx-log-badge" hidden></span></button>
+          <button type="button" class="council-ctx-tab" data-tab="debug" id="ctx-tab-debug">Debug</button>
+          <div class="council-ctx-tabbar-spacer"></div>
+          <span class="council-log-sid" id="council-log-session-id">ID: PENDING</span>
+          <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close council panel">&times;</button>
+        </div>
+
+        <!-- Files tab body (default active) -->
+        <div class="council-ctx-body council-code-pane" id="ctx-body-files">
           <div class="council-pane-header">
-            <div class="council-pane-title-wrapper" id="council-code-header-container" style="display: flex; align-items: center; gap: 8px; flex: 1; height: 100%; overflow: hidden;">
+            <div class="council-pane-title-wrapper" id="council-code-header-container" style="display:flex;align-items:center;gap:8px;flex:1;height:100%;overflow:hidden;">
               <span class="council-pane-title" id="council-code-title">Changes</span>
             </div>
-            <button id="council-promote-btn" class="council-promote-btn" hidden>Promote to Canvas ↗</button>
+            <button id="council-promote-btn" class="council-promote-btn" hidden>Promote to Canvas &#x2197;</button>
           </div>
           <div class="code-panel-container">
             <div class="code-panel-linenos" id="council-code-linenos"><div>1</div></div>
@@ -1096,105 +1170,29 @@
           </div>
         </div>
 
-        <!-- RESIZER 1: Between Code Pane and Ghost Pane -->
-        <div class="council-resizer" id="council-resizer-code-ghost" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize changes and stream panes"></div>
-
-        <!-- Ghost Editor pane -->
-        <div class="council-ghost-pane">
-          <div class="council-pane-header">
-            <span class="council-pane-title" id="council-ghost-title">Execution stream</span>
-            <button type="button" class="council-disclosure-btn" id="council-thinking-toggle" hidden>Show thinking ▾</button>
-            <span class="council-pane-status" id="council-ghost-status">
-              <span class="council-pulse-dot"></span>
-              <span id="council-ghost-agent">IDLE</span>
-            </span>
-          </div>
-          <div id="council-dag-view" class="dag-view" style="display:none"></div>
-          <!-- New Ghost Editor Stream Workspace -->
-          <div id="council-ghost-editor" class="ghost-editor-stream idle">
-            <!-- Scrollable stream ledger -->
-            <div class="ghost-stream-ledger scroll-container" id="council-ghost-stream-ledger" role="log" aria-label="Execution stream"></div>
-            <!-- Bottom Metric Status Bar Footer -->
-            <div class="ghost-editor-footer" id="council-ghost-footer">
-              <div class="ghost-footer-metrics">
-                <span class="ghost-footer-speed-metric"><span class="ghost-metric-lbl">Speed </span><span id="council-stream-speed" style="color: var(--log-text-dim);">0 tok/s</span></span>
-                <span class="ghost-footer-separator" aria-hidden="true"></span>
-                <span class="ghost-footer-buf-metric"><span class="ghost-metric-lbl">Buffer </span><span id="council-stream-buffer" style="color: var(--log-text-dim);">0 chars</span></span>
-                <span class="ghost-footer-separator ghost-footer-last-sep" aria-hidden="true"></span>
-                <span class="ghost-footer-last-event"><span class="ghost-metric-lbl">Last event </span><span id="council-last-response" style="color: var(--log-text-dim);">--</span></span>
-              </div>
-              <span class="ghost-footer-kill-hint">Esc stop &middot; Space follow &middot; G graph</span>
+        <!-- Log tab body (hidden by default) -->
+        <div class="council-ctx-body" id="ctx-body-log" hidden>
+          <div class="council-log-body scroll-container" id="council-captains-log" role="log" aria-label="Run events log"></div>
+          <div class="council-log-footer">
+            <div class="log-footer-stats">
+              <span>Estimated context</span>
+              <span id="council-log-tokens">0 TOKENS</span>
             </div>
+            <button class="council-revert-btn" id="council-revert-btn" disabled>Restart from brief</button>
           </div>
         </div>
 
-      </div><!-- /.council-center-top -->
-
-      <!-- Manager review bar — copper bar, shown when BLOCKED -->
-      <div id="council-review-bar" class="review-bar" hidden>
-        <div class="review-left">
-          <span class="review-icon" aria-hidden="true">!</span>
-          <span class="review-label" id="council-review-text">Manager · reviewing…</span>
-          <span id="review-plan-body" style="font-size: 11px; color: var(--log-text-dim); margin-left: 10px; max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: middle;"></span>
+        <!-- Debug tab body (hidden by default) -->
+        <div class="council-ctx-body" id="ctx-body-debug" hidden>
+          <div class="council-pane-header">
+            <span class="council-pane-title">Task Graph</span>
+          </div>
+          <div id="council-dag-view-debug" class="dag-view"></div>
         </div>
-        <div class="review-actions">
-          <button id="council-override-btn" class="btn-override">Override</button>
-          <button id="council-approve-btn"  class="btn-approve">Approve</button>
-        </div>
-      </div>
 
-      <!-- Permission request bar — floating container or overlay, shown when state has pendingPermission -->
-      <div id="council-permission-bar" class="review-bar" style="background: linear-gradient(135deg, #1c2732, #243447); border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 16px;" hidden>
-         <div class="review-left" style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start; flex: 1;">
-           <div style="display: flex; align-items: center; gap: 8px;">
-             <span class="review-icon" aria-hidden="true">!</span>
-             <span class="review-label" id="council-permission-label" style="font-weight: 600; color: #e1e4e6;">Security Permission Request</span>
-           </div>
-           <div id="council-permission-cmd" style="font-family: 'Consolas', 'Courier New', monospace; font-size: 11px; background: rgba(0,0,0,0.4); padding: 6px 12px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.06); color: #8ab4f8; width: 100%; max-width: 750px; white-space: pre-wrap; word-break: break-all; overflow-x: auto; box-shadow: inset 0 1px 3px rgba(0,0,0,0.5);"></div>
-         </div>
-         <div class="review-actions" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-left: 16px;">
-           <button id="council-perm-allow-btn" class="btn-approve" style="background: #4eb870; border-color: #4eb870; padding: 6px 14px; font-size: 11px;">Allow Once</button>
-           <button id="council-perm-project-btn" class="btn-approve" style="background: #df8e45; border-color: #df8e45; padding: 6px 14px; font-size: 11px;">Always in Project</button>
-           <button id="council-perm-global-btn" class="btn-approve" style="background: #e74c3c; border-color: #e74c3c; padding: 6px 14px; font-size: 11px;">Always Global</button>
-           <button id="council-perm-deny-btn" class="btn-override" style="background: transparent; color: #9aa0a6; padding: 6px 14px; font-size: 11px; border: 1px solid rgba(255,255,255,0.15);">Deny</button>
-         </div>
-      </div>
+      </div><!-- /.council-ctx-pane -->
 
-      <div id="council-decision-bar" class="review-bar" style="background: linear-gradient(135deg, #2d2432, #3a3644); border-top: 1px solid rgba(255,255,255,0.08); padding: 10px 16px;" hidden>
-         <div class="review-left" style="display: flex; flex-direction: column; gap: 6px; align-items: flex-start; flex: 1;">
-           <div style="display: flex; align-items: center; gap: 8px;">
-             <span class="review-icon" aria-hidden="true">?</span>
-             <span class="review-label" id="council-decision-label" style="font-weight: 600; color: #e1e4e6;">Critical Decision Required</span>
-           </div>
-         </div>
-         <div id="council-decision-body" class="review-actions" style="display: flex; gap: 8px; align-items: center; justify-content: flex-end; margin-left: 16px;">
-         </div>
-      </div>
-
-    </section>
-
-    <!-- RESIZER 2: Between Left/Center Workspace and Captain's Log -->
-    <div class="council-resizer" id="council-resizer-center-log" role="separator" tabindex="0" aria-orientation="vertical" aria-label="Resize workspace and run events log"></div>
-
-    <!-- RIGHT: Captain's Log -->
-    <aside class="council-log-sidebar">
-      <div class="council-log-header">
-        <div style="display: flex; align-items: center; gap: 8px;">
-          <div class="log-status-dot" id="council-log-status-dot"></div>
-          <h2 class="council-log-title">Run events</h2>
-        </div>
-        <span class="council-log-sid" id="council-log-session-id">ID: PENDING</span>
-        <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close run events">&times;</button>
-      </div>
-      <div class="council-log-body" id="council-captains-log" role="log" aria-label="Run events log"></div>
-      <div class="council-log-footer">
-        <div class="log-footer-stats">
-          <span>Estimated context</span>
-          <span id="council-log-tokens">0 TOKENS</span>
-        </div>
-        <button class="council-revert-btn" id="council-revert-btn" disabled>Restart from brief</button>
-      </div>
-    </aside>
+    </section><!-- /.council-workspace -->
 
   </div>
 

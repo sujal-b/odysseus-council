@@ -40716,3 +40716,181 @@ body.theme-frosted .modal {
   margin-bottom: 0;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   COUNCIL STREAM-FIRST REDESIGN — Direction A
+   New 2-column layout: stream pane + contextual panel
+═══════════════════════════════════════════════════════════════════ */
+
+/* Workspace replaces council-center */
+.council-workspace {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+/* Stream pane — primary left column */
+.council-stream-pane {
+  flex: 62;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--border);
+}
+
+/* Contextual panel — right column */
+.council-ctx-pane {
+  flex: 38;
+  min-width: 240px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Tab bar */
+.council-ctx-tabbar {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  flex-shrink: 0;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  padding: 0 8px;
+  gap: 2px;
+}
+.council-ctx-tabbar-spacer { flex: 1; }
+
+/* Tab buttons */
+.council-ctx-tab {
+  position: relative;
+  height: 36px;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: color-mix(in srgb, var(--fg) 55%, transparent);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  cursor: pointer;
+  transition: color .15s, border-color .15s;
+  white-space: nowrap;
+}
+.council-ctx-tab:hover {
+  color: var(--fg);
+}
+.council-ctx-tab.active {
+  color: var(--council-copper);
+  border-bottom-color: var(--council-copper);
+}
+
+/* Badge on Log tab */
+.ctx-tab-badge {
+  display: inline-block;
+  margin-left: 5px;
+  padding: 1px 5px;
+  background: var(--council-copper);
+  color: #000;
+  border-radius: 8px;
+  font-size: 9px;
+  font-weight: 700;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+.ctx-tab-badge[hidden] { display: none; }
+
+/* Tab body */
+.council-ctx-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.council-ctx-body[hidden] { display: none; }
+
+/* Gate bars — inline inside stream pane, above footer */
+.council-gate-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: color-mix(in srgb, var(--council-copper) 10%, var(--panel));
+  border-top: 2px solid var(--council-copper);
+  flex-shrink: 0;
+  animation: review-pulse 3s ease-in-out infinite;
+}
+.council-gate-bar[hidden] { display: none; }
+.council-gate-bar--permission {
+  background: color-mix(in srgb, #50a0df 8%, var(--panel));
+  border-top-color: #50a0df;
+  animation: none;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.council-gate-bar--permission .gate-bar-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.council-gate-bar--decision {
+  background: color-mix(in srgb, #a67cff 8%, var(--panel));
+  border-top-color: #a67cff;
+  animation: none;
+}
+.gate-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.gate-bar-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.gate-bar-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--fg);
+}
+.gate-bar-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* DIRECT path skip indicator — muted green, no pulse */
+.council-gate-bar--skipped {
+  background: color-mix(in srgb, var(--color-implementer, #4eb870) 6%, var(--panel));
+  border-top-color: color-mix(in srgb, var(--color-implementer, #4eb870) 40%, transparent);
+  animation: none;
+}
+.council-gate-bar--skipped .gate-bar-label {
+  color: color-mix(in srgb, var(--color-implementer, #4eb870) 70%, transparent);
+  font-weight: 500;
+}
+
+
+/* Captain's log body fills Log tab height */
+#ctx-body-log .council-log-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Override old council-log-sidebar flex sizing when nested in ctx-pane */
+.council-ctx-pane.council-log-sidebar {
+  flex: 38;
+  min-width: 240px;
+  width: auto;
+}
