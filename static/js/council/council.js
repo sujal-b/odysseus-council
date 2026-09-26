@@ -1191,32 +1191,57 @@ class CouncilUI {
     return clean;
   }
 
-  /* Helper to compile file stats from state.log code_update events */
-  _getFileStats(name, state) {
-    const updates = state.log.filter(e => e && e.event === 'code_update' && e.file_path === name);
-    if (updates.length > 0) {
-      const latest = updates[updates.length - 1];
-      const latestLines = latest.code.split('\n');
-      const lineCount = latestLines.length;
+  /* Helper to compile real file stats using computeLineDiff and state.fileVersions */
+  _getFileStats(name, state, diffMemo = null) {
+    if (!name) return { lines: 0, added: 0, removed: 0 };
+    if (diffMemo && diffMemo.has(name)) return diffMemo.get(name);
 
-      if (updates.length > 1) {
-        const prev = updates[updates.length - 2];
-        const prevLines = prev.code.split('\n');
-        const diff = lineCount - prevLines.length;
-        let added = 0;
-        let removed = 0;
-        if (diff > 0) {
-          added = diff;
-          removed = 0;
-        } else {
-          added = 0;
-          removed = Math.abs(diff);
-        }
-        return { lines: lineCount, added: added || 1, removed: removed || 0 };
+    let stats = { lines: 0, added: 0, removed: 0 };
+
+    // 1. Check state.fileVersions for real version history with flexible path resolution
+    const fileVer = state.fileVersions
+      ? (state.fileVersions[name] ||
+         Object.entries(state.fileVersions).find(([k]) => k.endsWith(name) || name.endsWith(k))?.[1])
+      : null;
+
+    if (fileVer && fileVer.current != null) {
+      const orig = fileVer.original != null ? String(fileVer.original) : '';
+      const curr = String(fileVer.current);
+      const currLines = curr.split('\n');
+      if (orig && typeof computeLineDiff === 'function') {
+        const diff = computeLineDiff(orig, curr);
+        const added = diff.filter(d => d.type === 'add').length;
+        const removed = diff.filter(d => d.type === 'del').length;
+        stats = { lines: currLines.length, added, removed };
+      } else {
+        stats = { lines: currLines.length, added: currLines.length, removed: 0 };
       }
-      return { lines: lineCount, added: lineCount, removed: 0 };
+    } else {
+      // 2. Check code_update events in state.log
+      const log = Array.isArray(state.log) ? state.log : [];
+      const updates = log.filter(e => e && e.event === 'code_update' && (e.file_path === name || (e.file_path && (e.file_path.endsWith(name) || name.endsWith(e.file_path)))));
+      if (updates.length > 0) {
+        const latest = updates[updates.length - 1];
+        const latestCode = latest?.code != null ? String(latest.code) : '';
+        const latestLines = latestCode.split('\n');
+
+        if (updates.length > 1) {
+          const prev = updates[updates.length - 2];
+          const prevCode = prev?.code != null ? String(prev.code) : '';
+          if (typeof computeLineDiff === 'function') {
+            const diff = computeLineDiff(prevCode, latestCode);
+            const added = diff.filter(d => d.type === 'add').length;
+            const removed = diff.filter(d => d.type === 'del').length;
+            stats = { lines: latestLines.length, added, removed };
+          }
+        } else {
+          stats = { lines: latestLines.length, added: latestLines.length, removed: 0 };
+        }
+      }
     }
-    return { lines: 35, added: 12, removed: 2 };
+
+    if (diffMemo) diffMemo.set(name, stats);
+    return stats;
   }
 
   /* Helper to compile implementer file actions from log tool calls and completed DAG tasks */
@@ -1375,6 +1400,7 @@ class CouncilUI {
 
   /* Ghost Editor: stream text, toggle cursor blink */
   _renderGhostEditor(state, eventType) {
+    const diffMemo = new Map();
     const el = document.getElementById('council-ghost-editor');
     const ledger = document.getElementById('council-ghost-stream-ledger');
     if (!el) return;
@@ -1470,10 +1496,7 @@ class CouncilUI {
       if (!e) return;
       const agent = e.agent || 'system';
 
-      // Thread Delegation (Handoff)
-      if (agent !== 'system' && lastAgent && lastAgent !== agent && lastAgent !== 'system') {
-        blocks.push({ type: 'handoff', from: lastAgent, to: agent });
-      }
+      // Track last working agent without emitting disruptive thread delegation rows
       if (agent !== 'system') { lastAgent = agent; }
 
       // Block Type Matching - same logic as before up to pushing blocks
@@ -1689,9 +1712,6 @@ class CouncilUI {
     // into blocks here orphaned the live card and kept the thought_delta guard
     // above from ever seeing [data-live-stream].
     if (running && state.activeAgent && state.thoughts) {
-      if (lastAgent && lastAgent !== state.activeAgent && lastAgent !== 'system') {
-        finalBlocks.push({ type: 'handoff', from: lastAgent, to: state.activeAgent });
-      }
       const dur = state.activeAgentSince ? _fmtElapsed(Date.now() - state.activeAgentSince) : '';
       if (state.activeAgent === 'chair') {
         finalBlocks.push({
@@ -1732,12 +1752,24 @@ class CouncilUI {
     // so innerHTML replacement doesn't snap the viewport to position 0.
     const _atBottom = (ledger.scrollHeight - ledger.scrollTop - ledger.clientHeight) < 40;
     const _savedScrollTop = _atBottom ? 0 : ledger.scrollTop;
-    // Helper: section header HTML
-    const _sectionHeader = (label, color) => `
-      <div class="ghost-section-header">
-        <span class="ghost-section-dot" style="background:${color}"></span>
-        ${label}
-      </div>`;
+    // Canonical role mapping table with full display names
+    const _roleMap = {
+      chair: { tag: 'CHAIR', cls: 'chair', name: 'Chairperson' },
+      strategist: { tag: 'STRAT', cls: 'strat', name: 'Strategist' },
+      strat: { tag: 'STRAT', cls: 'strat', name: 'Strategist' },
+      implementer: { tag: 'IMPL', cls: 'impl', name: 'Implementer' },
+      impl: { tag: 'IMPL', cls: 'impl', name: 'Implementer' },
+      manager: { tag: 'MGR', cls: 'mgr', name: 'Manager' },
+      mgr: { tag: 'MGR', cls: 'mgr', name: 'Manager' },
+      perspective_analyzer: { tag: 'PERS', cls: 'strat', name: 'Perspective Analyzer' },
+      system: { tag: 'SYS', cls: 'sys', name: 'System' },
+      sys: { tag: 'SYS', cls: 'sys', name: 'System' },
+    };
+    const _resolveRole = (agent) => _roleMap[String(agent || '').toLowerCase()] || {
+      tag: String(agent || 'SYS').slice(0, 5).toUpperCase(),
+      cls: 'sys',
+      name: String(agent || 'System')
+    };
 
     // _parseArgs is declared above the block-building loop (see line ~886).
 
@@ -1787,276 +1819,307 @@ class CouncilUI {
       return html;
     };
 
-    // Helper: tool category metadata
-    const _toolKind = (toolName) => {
-      const t = (toolName || '').toLowerCase();
-      if (t === 'bash' || t === 'python') return { icon: '⚡', label: 'Command Execution', dot: '#df8e45' };
-      if (t === 'write_file' || t === 'edit_file') return { icon: '📄', label: 'File Write', dot: '#a67cff' };
-      if (t === 'read_file' || t === 'ls' || t === 'grep' || t === 'glob') return { icon: '🔍', label: 'File Read', dot: '#4eb870' };
-      return { icon: '🛠', label: 'Tool Invocation', dot: '#50a0df' };
+    // Helper: crisp vector status icons (never deformed on Windows/macOS/Linux)
+    const _statusIcon = (status) => {
+      const s = String(status || '').toUpperCase();
+      if (s === 'SUCCESS' || s === 'DONE' || s === 'COMPLETED' || s === 'APPROVED') {
+        return `<svg class="st-icon st-icon--done" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-6"/></svg>`;
+      }
+      if (s === 'FAILED' || s === 'ERROR' || s === 'FAIL') {
+        return `<svg class="st-icon st-icon--failed" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>`;
+      }
+      if (s === 'RUNNING' || s === 'IN_PROGRESS') {
+        return `<svg class="st-icon st-icon--running" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5" stroke-dasharray="24" stroke-dashoffset="8"/></svg>`;
+      }
+      if (s === 'BLOCKED' || s === 'REVISE' || s === 'WARN') {
+        return `<svg class="st-icon st-icon--blocked" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3.5v5.5M8 12.5h.01"/></svg>`;
+      }
+      return `<svg class="st-icon st-icon--pending" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>`;
     };
 
-    // Helper: render tool call card
-    // showHeader: whether to emit the section header (suppressed for consecutive same-category cards)
-    const _renderToolCard = (b, showHeader) => {
-      const kind = _toolKind(b.tool);
+    // Helper: tool category metadata with clean vector SVG icons
+    const _toolKind = (toolName) => {
+      const t = (toolName || '').toLowerCase();
+      if (t === 'bash' || t === 'python') return {
+        icon: `<svg class="st-tool-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 4.5l4 3.5-4 3.5M8.5 12.5h4.5"/></svg>`,
+        label: 'Command Execution',
+        dot: '#df8e45'
+      };
+      if (t === 'write_file' || t === 'edit_file') return {
+        icon: `<svg class="st-tool-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 2H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V6L9 2z"/><path d="M9 2v4h4"/></svg>`,
+        label: 'File Write',
+        dot: '#a67cff'
+      };
+      if (t === 'read_file' || t === 'ls' || t === 'grep' || t === 'glob') return {
+        icon: `<svg class="st-tool-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>`,
+        label: 'File Read',
+        dot: '#4eb870'
+      };
+      return {
+        icon: `<svg class="st-tool-icon" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M10 2a3 3 0 0 1 2.8 4.1L8 11 5 8l4.9-4.8A3 3 0 0 1 10 2z"/><path d="M2.5 13.5l3-3"/></svg>`,
+        label: 'Tool Invocation',
+        dot: '#50a0df'
+      };
+    };
+
+    // Helper: render tool call card matching cockpit ledger row
+    const _renderToolCard = (b, stepNum, memo) => {
       const args = b.args || {};
-      const statusColor = b.status === 'SUCCESS' ? 'var(--impl)' : b.status === 'FAILED' ? 'var(--fail)' : '#50a0df';
-      const statusText = b.status === 'SUCCESS' ? '✓ SUCCESS' : b.status === 'FAILED' ? '✗ FAILED' : b.status;
+      const statusCls = b.status === 'SUCCESS' ? 'st--done' : b.status === 'FAILED' ? 'st--failed' : 'st--running';
       const summary = _toolSummary(b.tool, args, b.command);
       const body = _toolBody(b.tool, args, b.command, b.output);
 
+      const rawPath = args.path || args.file || (typeof b.command === 'string' ? b.command.split('\n')[0] : '');
+      const fileName = _shortPath(rawPath);
+      let diffHtml = '';
+      if (b.tool === 'write_file' || b.tool === 'edit_file') {
+        const stats = this._getFileStats(rawPath || fileName, state, memo);
+        if (stats.added > 0 || stats.removed > 0) {
+          diffHtml = `<span class="payload-diff"><span class="diff-add">+${stats.added}</span> <span class="diff-del">-${stats.removed}</span> <span class="diff-lines-label">lines</span></span>`;
+        } else if (args.content) {
+          const lCount = String(args.content).split('\n').length;
+          diffHtml = `<span class="payload-diff"><span class="diff-add">+${lCount}</span> <span class="diff-del">-0</span> <span class="diff-lines-label">lines</span></span>`;
+        }
+      }
+
+      const role = _resolveRole(b.agent || 'impl');
+
       return `
-        ${showHeader ? _sectionHeader(kind.label, kind.dot) : ''}
-        <div class="ghost-tool-card">
-          <div class="ghost-tool-header">
-            <span class="ghost-tool-icon">${kind.icon}</span>
-            <span class="ghost-tool-name">${_esc(b.tool)}</span>
-            <span class="ghost-tool-summary" title="${_esc(summary)}">${_esc(summary)}</span>
-            <span class="ghost-tool-status" style="color:${statusColor}">${statusText}</span>
-            <span class="ghost-tool-chevron">▶</span>
+        <div class="ghost-tool-card" style="border:none;margin:0;">
+          <div class="row ghost-tool-header" tabindex="0">
+            <span class="id">${stepNum}</span>
+            <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span style="color:var(--strat);font-weight:600">${_esc(b.tool)}</span>
+              <span class="tx" title="${_esc(summary)}">${_esc(fileName || summary)}</span>
+              ${diffHtml}
+              ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
+            </div>
           </div>
           ${body ? '<div class="ghost-tool-body">' + body + '</div>' : ''}
         </div>`;
     };
 
-    // Tracks the kind.label of the last rendered tool card to suppress
-    // repeated section headers for consecutive same-category tool calls.
-    let lastToolKindLabel = null;
+    let rowIndex = 1;
+    const _nextStep = () => String(rowIndex++).padStart(2, '0');
 
     finalBlocks.forEach((b) => {
       if (b.text) totalChars += b.text.length;
       if (b.code) totalChars += b.code.length;
 
-      if (b.type === 'handoff') {
-        let fromColor = '#a67cff';
-        let toColor = '#a67cff';
-        if (b.from === 'chair') fromColor = 'var(--chair)';
-        else if (b.from === 'strategist') fromColor = 'var(--strat)';
-        else if (b.from === 'implementer') fromColor = 'var(--impl)';
-        else if (b.from === 'manager') fromColor = 'var(--mgr)';
-        if (b.to === 'chair') toColor = 'var(--chair)';
-        else if (b.to === 'strategist') toColor = 'var(--strat)';
-        else if (b.to === 'implementer') toColor = 'var(--impl)';
-        else if (b.to === 'manager') toColor = 'var(--mgr)';
+      if (b.streaming) {
+        const stepNum = _nextStep();
+        const role = _resolveRole(b.agent || (b.type === 'chair' ? 'chair' : 'impl'));
+        const durText = b.duration ? `<span class="active-cockpit-timer">${_esc(b.duration)}</span>` : '';
+        const titleText = b.type === 'chair' ? 'Chair Evaluation' : 'Thought streaming...';
         html += `
-          <div class="ghost-handoff">
-            <div class="ghost-handoff-line"></div>
-            <span class="ghost-handoff-text">
-              ⇄ THREAD DELEGATION:
-              <span style="color: ${fromColor}; font-weight: bold;">${_esc(b.from.toUpperCase())}</span>
-              ➔
-              <span style="color: ${toColor}; font-weight: bold;">${_esc(b.to.toUpperCase())}</span>
-            </span>
-            <div class="ghost-handoff-line"></div>
-          </div>`;
-      } else {
-        // Any non-handoff, non-tool_call block breaks consecutive tool grouping.
-        // burst_group also resets the label because it encapsulates tool cards.
-        if (b.type !== 'tool_call') lastToolKindLabel = null;
-        // Open card container for all non-handoff blocks
-        html += `<div class="ghost-stream-entry${b.streaming ? ' ghost-stream-entry--live' : ''}"${b.streaming ? ' data-live-stream' : ''}>`;
-
-        if (b.type === 'chair') {
-          const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--pass)';
-          if (!b.streaming) {
-            const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
-            html += `
-            <div class="ghost-think-collapsed" style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);line-height:1.4;">
-              <span class="ghost-section-dot" style="background:var(--chair);"></span>
-              <span style="font-weight:600;color:var(--chair);font-size:10px;text-transform:uppercase;">CHAIR</span>
-              <span style="font-size:9px;font-family:var(--font);background:var(--bg-highlight,#1c1510);padding:1px 4px;border-radius:3px;color:${cl};border:1px solid var(--border)">${_esc(b.complexity)}</span>
-              <span>${_esc(b.reason)}</span>
-              ${durBadge}
-            </div>`;
-          } else {
-            html += `
-            ${_sectionHeader('Chair Evaluation' + (b.duration ? ` · ${b.duration}` : ''), 'var(--chair)')}
-            <div style="margin-bottom:4px">
-              <span style="font-size:9px;font-family:var(--font);background:var(--bg-highlight,#1c1510);padding:2px 6px;border-radius:3px;color:${cl};border:1px solid var(--border)">${_esc(b.complexity)}</span>
+          <div class="row row--active" data-live-stream aria-live="off">
+            <span class="id">${stepNum}</span>
+            <div class="active-cockpit-box">
+              <div class="active-cockpit-header">
+                <span class="active-spinner" aria-hidden="true"></span>
+                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <span class="active-cockpit-title">${titleText}</span>
+                ${durText}
+              </div>
+              <div class="ghost-md ${b.type === 'chair' ? 'ghost-chair-text' : 'ghost-think-text'}">
+                ${_ghostMd(b.reason || b.text || '')}<span class="ghost-typing-cursor"></span>
+              </div>
+              ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}
             </div>
-            <div class="ghost-md ghost-chair-text">${_ghostMd(b.reason)}<span class="ghost-typing-cursor"></span></div>`;
-          }
-        }
-        else if (b.type === 'think') {
-          if (!b.streaming) {
-            const durBadge = b.duration ? `<span class="ghost-think-duration" style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
-            html += `
-            <div class="ghost-think-collapsed" style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);line-height:1.4;">
-              <span class="ghost-section-dot" style="background:var(--think);"></span>
-              <span style="font-weight:600;color:var(--think);font-size:10px;text-transform:uppercase;">${_esc(b.agent)}</span>
-              <span>${_esc(b.text)}</span>
-              ${b.outcome ? `<span style="color:var(--muted);font-size:10px;">→ ${_esc(b.outcome)}</span>` : ''}
+          </div>`;
+      } else if (b.type === 'chair') {
+        const stepNum = _nextStep();
+        const role = _resolveRole('chair');
+        const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--pass)';
+        const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
+        html += `
+          <div class="row">
+            <span class="id">${stepNum}</span>
+            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span>assessed <span class="bd" style="color:${cl}">${_esc(b.complexity)}</span> complexity</span>
+              <span class="tx" title="${_esc(b.reason)}">${_esc(b.reason)}</span>
               ${durBadge}
-            </div>`;
-          } else {
+            </div>
+          </div>`;
+      } else if (b.type === 'think') {
+        const stepNum = _nextStep();
+        const role = _resolveRole(b.agent);
+        const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
+        html += `
+          <div class="row">
+            <span class="id">${stepNum}</span>
+            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
+              ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
+              ${durBadge}
+            </div>
+          </div>`;
+      } else if (b.type === 'strat') {
+        const stepNum = _nextStep();
+        const role = _resolveRole('strat');
+        const _taskCount = b.tasks.length;
+        const _waves = executionWaveCount(b.tasks);
+        const _labels = b.tasks.map(t => `${t.i} ${t.t}`).join(' · ');
+        html += `
+          <div class="row">
+            <span class="id">${stepNum}</span>
+            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span>planned <strong style="color:var(--impl)">${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'} in <strong style="color:var(--chair)">${_waves}</strong> wave${_waves === 1 ? '' : 's'}</span>
+              <span class="tx" title="${_esc(_labels)}">${_esc(_labels)}</span>
+            </div>
+          </div>`;
+      } else if (b.type === 'impl') {
+        const role = _resolveRole('impl');
+        if (b.files && b.files.length > 0) {
+          b.files.forEach(f => {
+            const stepNum = _nextStep();
+            const diffSpan = (f.added || f.removed) ? `
+              <span class="payload-diff">
+                <span class="diff-add">+${f.added || 0}</span>
+                <span class="diff-del">-${f.removed || 0}</span>
+                <span class="diff-lines-label">lines</span>
+              </span>` : (f.lines ? `<span style="color:var(--muted);font-size:10px">${f.lines} lines</span>` : '');
             html += `
-            ${_sectionHeader('System Thought' + (b.duration ? ` · ${b.duration}` : ''), 'var(--think)')}
-            <div class="ghost-md ghost-think-text">${_ghostMd(b.text)}<span class="ghost-typing-cursor"></span></div>
-            ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}`;
-          }
-        }
-        else if (b.type === 'strat') {
-          const _taskCount = b.tasks.length;
-          const _waves = executionWaveCount(b.tasks);
-          const _planSummary = `${_taskCount} task${_taskCount === 1 ? '' : 's'} planned · ${_waves} execution wave${_waves === 1 ? '' : 's'}`;
-          const _labels = b.tasks.map(t => `${t.i} ${t.t}`).join(' · ');
+              <div class="row">
+                <span class="id">${stepNum}</span>
+                <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <div class="ct">
+                  <span class="bd" style="color:var(--impl)">${_esc((f.action || 'updated').toUpperCase())}</span>
+                  <span class="tx" title="${_esc(f.name)}">${_esc(f.name)}</span>
+                  ${diffSpan}
+                </div>
+              </div>`;
+          });
+        } else {
+          const stepNum = _nextStep();
           html += `
-          ${_sectionHeader('Strategy Execution', 'var(--strat)')}
-          <div class="ghost-plan-summary">${_esc(_planSummary)}</div>
-          <div class="ghost-plan-labels">${_esc(_labels.slice(0, 220))}</div>`;
-        }
-        else if (b.type === 'impl') {
-          html += `
-          ${_sectionHeader('Implementation', 'var(--impl)')}
-          <div style="display:flex;flex-direction:column;gap:3px">
-            ${b.files.map(f => `
-              <div style="font-size:10px;font-family:var(--font);display:flex;gap:8px;align-items:center">
-                ${f.action === 'created' ? `
-                  <span style="color:var(--impl);flex-shrink:0;font-weight:600">CREATED</span>
-                  <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0" title="${_esc(f.name)}">${_esc(f.name)}</span>
-                  <span style="color:var(--muted);flex-shrink:0">${f.lines} lines</span>
-                ` : ''}
-                ${f.action === 'analyzed' ? `
-                  <span style="color:var(--strat);flex-shrink:0;font-weight:600">ANALYZED</span>
-                  <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0" title="${_esc(f.name)}">${_esc(f.name)}</span>
-                  <span style="color:var(--muted);flex-shrink:0">${f.lines} lines</span>
-                ` : ''}
-                ${f.action === 'edited' ? `
-                  <span style="color:var(--warn);flex-shrink:0;font-weight:600">EDITED</span>
-                  <span style="color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0" title="${_esc(f.name)}">${_esc(f.name)}</span>
-                  <span style="color:var(--impl);flex-shrink:0">+${f.added}</span>
-                  <span style="color:var(--fail);flex-shrink:0">-${f.removed || 0}</span>
-                ` : ''}
+            <div class="row">
+              <span class="id">${stepNum}</span>
+              <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+              <div class="ct">
+                <span class="tx" style="color:var(--muted)">Implementation step recorded</span>
               </div>
-            `).join('')}
-            ${b.files.length === 0 ? '<span style="color:var(--muted);font-size:10px">—</span>' : ''}
-          </div>`;
-        }
-        else if (b.type === 'manager_output') {
-          const m = b.verdict === 'APPROVED'
-            ? { c: 'var(--impl)', b: 'rgba(78,184,112,0.1)' }
-            : b.verdict === 'REVISE'
-            ? { c: 'var(--warn)', b: 'rgba(217,119,6,0.1)' }
-            : { c: 'var(--fail)', b: 'rgba(220,38,38,0.1)' };
-          const sevOrder = { critical: 0, warning: 1, info: 2 };
-          const sevColor = { critical: 'var(--fail)', warning: 'var(--warn)', info: 'var(--strat)' };
-          const grouped = b.issues.reduce((acc, iss) => {
-            (acc[iss.severity] = acc[iss.severity] || []).push(iss);
-            return acc;
-          }, {});
-          const sorted = Object.keys(grouped).sort((a, b) => (sevOrder[a] ?? 99) - (sevOrder[b] ?? 99));
-          const issueCount = b.issues.length;
-          const criticalCount = (grouped.critical || []).length;
-          const issueThemes = b.issues
-            .slice(0, 3)
-            .map(iss => compactIssueTheme(iss))
-            .filter((value, index, values) => values.indexOf(value) === index)
-            .join(' · ');
-          html += `
-          ${_sectionHeader('Manager Review', 'var(--muted)')}
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
-            <span style="padding:2px 7px;border-radius:3px;font-size:9px;font-weight:600;color:${m.c};background:${m.b};border:1px solid ${m.c}33;flex-shrink:0;letter-spacing:.08em">${_esc(b.verdict)}</span>
-            <span style="font-size:10px;color:var(--dim);flex:1">${_esc(issueCount ? `${issueCount} issue${issueCount === 1 ? '' : 's'}${criticalCount ? ` · ${criticalCount} critical` : ''}` : 'No issues reported')}</span>
-          </div>
-          ${issueThemes ? `<div class="ghost-review-themes">${_esc(issueThemes)}</div>` : ''}`;
-        }
-        else if (b.type === 'burst_group') {
-          // Stable key for this group — used to restore open state across re-renders.
-          const _burstKey = [
-            'burst',
-            encodeURIComponent(this._state.sessionId || 'session'),
-            encodeURIComponent(b.agent || 'implementer'),
-            encodeURIComponent(b.taskId || 'phase'),
-            String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
-          ].join(':');
-          _seenBurstKeys.add(_burstKey);
-          const _wasRunning = this._burstStatus.get(_burstKey);
-          // A user-controlled burst stays open while tools are arriving. Once
-          // the logical burst becomes terminal, collapse it exactly once.
-          if (_wasRunning === true && !b.running) {
-            _openBursts.delete(_burstKey);
-          }
-          this._burstStatus.set(_burstKey, b.running);
-          const _isOpen   = _openBursts.has(_burstKey);
-          // Icon mosaic: up to 3 unique icons from items
-          const _burstIcons = [...new Set(b.items.map(x => _toolKind(x.tool).icon))].slice(0, 3).join('');
-          const _total = b.items.length;
-          // Status indicator colour
-          const _bsc = b.running ? '#50a0df' : b.hasFailure ? 'var(--fail)' : 'var(--impl)';
-          const _bss = b.running ? '●' : b.hasFailure ? '✗' : '✓';
-          // Build individual item rows for the body
-          const _itemsHtml = b.items.map(item => {
-            const _ik  = _toolKind(item.tool);
-            const _is  = _toolSummary(item.tool, item.args || {}, item.command);
-            const _isc = item.status === 'SUCCESS' ? 'var(--impl)' : item.status === 'FAILED' ? 'var(--fail)' : '#50a0df';
-            const _isi = item.status === 'SUCCESS' ? '✓' : item.status === 'FAILED' ? '✗' : '◌';
-            return `<div class="burst-item">
-              <span class="burst-item-status" style="color:${_isc}">${_isi}</span>
-              <span class="burst-item-icon">${_ik.icon}</span>
-              <span class="burst-item-tool">${_esc(item.tool)}</span>
-              <span class="burst-item-summary">${_esc(_is)}</span>
             </div>`;
-          }).join('');
-          // Checkpoint label — glow-word animation when running.
-          // Words are wrapped in <span class="bw"> with staggered animation-delay
-          // so the glow travels left→right. Each word's peak is spread evenly
-          // across one full cycle; minimum gap is 0.28s so short sentences still
-          // look like a relay rather than a simultaneous flash.
-          let _cpHtml;
-          if (b.running) {
-            // checkpoint may contain safe HTML (<code>) from the bash branch;
-            // split on whitespace tokens only, preserve the inner HTML.
-            const _cpWords = b.checkpoint.split(' ').filter(w => w.length > 0);
-            if (_cpWords.length === 0) {
-              _cpHtml = '';
-            } else {
-              const _minGap   = 0.28;  // seconds between word peaks
-              const _wordDur  = Math.max(1.6, _cpWords.length * _minGap * 2);
-              const _peakGap  = _cpWords.length > 1
-                ? Math.max(_minGap, (_wordDur * 0.85) / (_cpWords.length - 1))
-                : 0;
-              _cpHtml = _cpWords.map((w, idx) =>
-                `<span class="bw" style="animation-duration:${_wordDur.toFixed(2)}s;animation-delay:${(idx * _peakGap).toFixed(2)}s">${w}</span>`
-              ).join(' ');
-            }
+        }
+      } else if (b.type === 'manager_output') {
+        const stepNum = _nextStep();
+        const role = _resolveRole('mgr');
+        const m = b.verdict === 'APPROVED'
+          ? { c: 'var(--impl)', b: 'rgba(78,184,112,0.1)' }
+          : b.verdict === 'REVISE'
+          ? { c: 'var(--warn)', b: 'rgba(217,119,6,0.1)' }
+          : { c: 'var(--fail)', b: 'rgba(220,38,38,0.1)' };
+        const issueCount = b.issues ? b.issues.length : 0;
+        const criticalCount = b.issues ? b.issues.filter(i => i.severity === 'critical').length : 0;
+        const issueThemes = b.issues
+          ? b.issues.slice(0, 3).map(iss => compactIssueTheme(iss)).filter((v, i, a) => a.indexOf(v) === i).join(' · ')
+          : '';
+        html += `
+          <div class="row">
+            <span class="id">${stepNum}</span>
+            <span class="st ${b.verdict === 'APPROVED' ? 'st--done' : 'st--blocked'}" title="${_esc(b.verdict)}" aria-label="${_esc(b.verdict)}">${_statusIcon(b.verdict)}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span class="bd" style="color:${m.c};background:${m.b}">${_esc(b.verdict)}</span>
+              <span class="tx" title="${_esc(issueThemes || 'Review complete')}">${_esc(issueCount ? `${issueCount} issue${issueCount === 1 ? '' : 's'}${criticalCount ? ` · ${criticalCount} critical` : ''}` : 'No issues reported')}</span>
+              ${issueThemes ? `<span style="color:var(--muted);font-size:10px">(${_esc(issueThemes)})</span>` : ''}
+            </div>
+          </div>`;
+      } else if (b.type === 'burst_group') {
+        const stepNum = _nextStep();
+        const _burstKey = [
+          'burst',
+          encodeURIComponent(this._state.sessionId || 'session'),
+          encodeURIComponent(b.agent || 'implementer'),
+          encodeURIComponent(b.taskId || 'phase'),
+          String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
+        ].join(':');
+        _seenBurstKeys.add(_burstKey);
+        const _wasRunning = this._burstStatus.get(_burstKey);
+        if (_wasRunning === true && !b.running) {
+          _openBursts.delete(_burstKey);
+        }
+        this._burstStatus.set(_burstKey, b.running);
+        const _isOpen   = _openBursts.has(_burstKey);
+        const _burstIcons = [...new Set(b.items.map(x => _toolKind(x.tool).icon))].slice(0, 3).join('');
+        const _total = b.items.length;
+        const _bsc = b.running ? '#50a0df' : b.hasFailure ? 'var(--fail)' : 'var(--impl)';
+        const _bss = b.running ? _statusIcon('running') : b.hasFailure ? _statusIcon('failed') : _statusIcon('done');
+        const _itemsHtml = b.items.map(item => {
+          const _ik  = _toolKind(item.tool);
+          const _is  = _toolSummary(item.tool, item.args || {}, item.command);
+          const _isc = item.status === 'SUCCESS' ? 'var(--impl)' : item.status === 'FAILED' ? 'var(--fail)' : '#50a0df';
+          const _isi = _statusIcon(item.status);
+          return `<div class="burst-item">
+            <span class="burst-item-status" style="color:${_isc}">${_isi}</span>
+            <span class="burst-item-icon">${_ik.icon}</span>
+            <span class="burst-item-tool">${_esc(item.tool)}</span>
+            <span class="burst-item-summary">${_esc(_is)}</span>
+          </div>`;
+        }).join('');
+
+        let _cpHtml;
+        if (b.running) {
+          const _cpWords = b.checkpoint.split(' ').filter(w => w.length > 0);
+          if (_cpWords.length === 0) {
+            _cpHtml = '';
           } else {
-            // Not running: checkpoint may contain safe <code> HTML; emit as-is
-            // (it was already escaped/sanitised in _burstCheckpoint).
-            _cpHtml = b.checkpoint;
+            const _minGap   = 0.28;
+            const _wordDur  = Math.max(1.6, _cpWords.length * _minGap * 2);
+            const _peakGap  = _cpWords.length > 1
+              ? Math.max(_minGap, (_wordDur * 0.85) / (_cpWords.length - 1))
+              : 0;
+            _cpHtml = _cpWords.map((w, idx) =>
+              `<span class="bw" style="animation-duration:${_wordDur.toFixed(2)}s;animation-delay:${(idx * _peakGap).toFixed(2)}s">${w}</span>`
+            ).join(' ');
           }
-          html += `
-            <div class="ghost-burst-group${b.running ? ' burst-running' : ''}${_isOpen ? ' burst-open' : ''}"
-                 data-burst-open="${_isOpen ? '1' : '0'}"
-                 data-burst-key="${_esc(_burstKey)}">
-              <div class="ghost-burst-header">
-                <span class="ghost-burst-icons">${_burstIcons}</span>
-                <span class="ghost-burst-checkpoint">${_cpHtml}</span>
-                <span class="ghost-burst-count">${_total}</span>
-                <span class="ghost-burst-status" style="color:${_bsc}">${_bss}</span>
-                <span class="ghost-burst-chevron">▶</span>
-              </div>
-              <div class="ghost-burst-body">${_itemsHtml}</div>
-            </div>`;
-        }
-        else if (b.type === 'tool_call') {
-          const _kind = _toolKind(b.tool);
-          const _showHeader = _kind.label !== lastToolKindLabel;
-          lastToolKindLabel = _kind.label;
-          html += _renderToolCard(b, _showHeader);
-        }
-        // code_view blocks removed — Implementor Output column already shows file content.
-        else if (b.type === 'sys') {
-          const attemptLabel = b.count > 1 ? ` · ${b.count} attempts` : '';
-          html += `
-          <div style="border-left:3px solid var(--sys);background:rgba(239,68,68,0.06);padding:8px 10px;margin:0 0 0 -12px;border-radius:0 4px 4px 0">
-            <div style="font-size:9px;color:var(--sys);font-weight:700;letter-spacing:.06em">${_esc(b.code)}</div>
-            <div style="font-size:10px;color:var(--dim);margin-top:2px">${_esc(b.msg + attemptLabel)}</div>
-            ${b.detail ? `<div style="font-size:9px;color:var(--muted);font-style:italic;margin-top:2px">${_esc(b.detail)}</div>` : ''}
-          </div>`;
+        } else {
+          _cpHtml = b.checkpoint;
         }
 
-        html += `</div>`; // Close ghost-stream-entry
+        html += `
+          <div class="ghost-burst-group${b.running ? ' burst-running' : ''}${_isOpen ? ' burst-open' : ''}"
+               data-burst-open="${_isOpen ? '1' : '0'}"
+               data-burst-key="${_esc(_burstKey)}"
+               style="margin: 1px 6px;">
+            <div class="ghost-burst-header" style="padding: 3px 8px; min-height: 26px;">
+              <span class="id" style="border:none;padding:0 6px 0 0;width:26px;text-align:right;">${stepNum}</span>
+              <span class="ghost-burst-icons">${_burstIcons}</span>
+              <span class="ghost-burst-checkpoint">${_cpHtml}</span>
+              <span class="ghost-burst-count">${_total}</span>
+              <span class="ghost-burst-status" style="color:${_bsc}">${_bss}</span>
+              <span class="ghost-burst-chevron">▶</span>
+            </div>
+            <div class="ghost-burst-body">${_itemsHtml}</div>
+          </div>`;
+      } else if (b.type === 'tool_call') {
+        const stepNum = _nextStep();
+        html += _renderToolCard(b, stepNum, diffMemo);
+      } else if (b.type === 'sys') {
+        const stepNum = _nextStep();
+        const role = _resolveRole('sys');
+        const attemptLabel = b.count > 1 ? ` · ${b.count} attempts` : '';
+        html += `
+          <div class="row" style="background:rgba(239,68,68,0.06);border-left:3px solid var(--sys);">
+            <span class="id">${stepNum}</span>
+            <span class="st st--failed" title="Failed" aria-label="Failed">${_statusIcon('failed')}</span>
+            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <div class="ct">
+              <span class="bd" style="color:var(--sys)">${_esc(b.code)}</span>
+              <span class="tx" style="color:var(--dim)" title="${_esc(b.msg)}">${_esc(b.msg + attemptLabel)}</span>
+              ${b.detail ? `<span style="color:var(--muted);font-style:italic;font-size:10px">${_esc(b.detail)}</span>` : ''}
+            </div>
+          </div>`;
       }
     });
 
@@ -2150,7 +2213,7 @@ class CouncilUI {
 
   /* ~28px horizontal DAG task rail below pane header */
   _renderDAGRail(state) {
-    const ghostPane = document.querySelector('.council-ghost-pane');
+    const ghostPane = document.querySelector('.council-stream-pane, .council-ghost-pane');
     if (!ghostPane) return;
 
     let railEl = document.getElementById('council-dag-rail');
