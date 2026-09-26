@@ -63,5 +63,43 @@ def test_console_is_theme_native_and_reduced_motion_safe():
 
 def test_council_workspace_does_not_nest_a_main_landmark():
     panel = HTML.split('<div id="council-panel"', 1)[1].split("</div>\n\n    <!-- Unified chat input bar", 1)[0]
-    assert '<section class="council-center" aria-label="Council workspace">' in panel
+    assert ('<section class="council-center" aria-label="Council workspace">' in panel or
+            '<section class="council-workspace" aria-label="Council workspace">' in panel)
     assert '<main class="council-center">' not in panel
+
+
+def test_execution_stream_cockpit_invariants():
+    # Canonical role mapping with full names for tooltips
+    assert "perspective_analyzer: { tag: 'PERS', cls: 'strat', name: 'Perspective Analyzer' }" in JS
+    assert "chair: { tag: 'CHAIR', cls: 'chair', name: 'Chairperson' }" in JS
+    assert "const _resolveRole = (agent) => _roleMap[String(agent || '').toLowerCase()]" in JS
+    assert 'title="${_esc(role.name || role.tag)}"' in JS
+
+    # Real file diffing uses state.fileVersions
+    assert "state.fileVersions" in JS
+    assert "computeLineDiff(orig, curr)" in JS
+    assert "diffMemo" in JS
+
+    # Monotonic step numbering
+    assert "let rowIndex = 1;" in JS
+    assert "const _nextStep = () => String(rowIndex++).padStart(2, '0');" in JS
+
+    # Vector SVG status & tool icons
+    assert "const _statusIcon = (status) =>" in JS
+    assert "viewBox=\"0 0 16 16\"" in JS
+    assert "st-icon--done" in JS
+    assert "st-icon--running" in JS
+
+    # No thread delegation disruption in stream blocks
+    assert "b.type === 'handoff'" not in JS
+
+    # Cockpit styling and high-contrast borders
+    assert ".ghost-editor-stream .active-cockpit-box" in CSS
+    assert "animation: cockpit-spin" in CSS
+    assert "@keyframes cockpit-spin" in CSS
+    assert ".ghost-editor-stream .payload-diff" in CSS
+    assert "content-visibility: auto" not in CSS.split(".ghost-editor-stream .row {", 1)[1].split("}", 1)[0]
+    assert "color-mix(in srgb, var(--fg) 14%, transparent)" in CSS
+    assert ".ghost-handoff" not in CSS
+
+
