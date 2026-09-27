@@ -52,8 +52,10 @@ class SessionStore(ABC):
     @abstractmethod
     def delete(self, session_id: str) -> None: ...
 
-import json, os, tempfile
+import json, logging, os, tempfile
 from src.constants import DATA_DIR
+
+logger = logging.getLogger(__name__)
 
 class InMemorySessionStore(SessionStore):
     def __init__(self):
@@ -111,6 +113,7 @@ class InMemorySessionStore(SessionStore):
             return self._cache[session_id]
         path = os.path.join(self._dir, f"{session_id}.json")
         if not os.path.exists(path):
+            logger.debug("Council session state file does not exist: %s", path)
             return None
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -147,8 +150,16 @@ class InMemorySessionStore(SessionStore):
             )
             self._cache[session_id] = state
             return state
-        except Exception:
+        except Exception as e:
+            # Callers turn None into a 404, which is indistinguishable from
+            # "never existed" and would hide schema drift. Name the cause.
+            logger.warning("Unreadable council session state %s: %s", session_id, e)
             return None
+
+    def exists(self, session_id: str) -> bool:
+        if session_id in self._cache:
+            return True
+        return os.path.exists(os.path.join(self._dir, f"{session_id}.json"))
 
     def delete(self, session_id: str) -> None:
         self._cache.pop(session_id, None)
@@ -156,5 +167,8 @@ class InMemorySessionStore(SessionStore):
         if os.path.exists(path):
             try:
                 os.remove(path)
-            except Exception:
-                pass
+                logger.info("Deleted council session state file: %s", path)
+            except Exception as e:
+                logger.warning("Failed to delete council session state file %s: %s", path, e)
+        else:
+            logger.debug("Council session file to delete not found: %s", path)

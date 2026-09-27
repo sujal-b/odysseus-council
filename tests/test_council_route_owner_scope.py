@@ -12,12 +12,18 @@ from fastapi import HTTPException
 from routes.council_routes import setup_council_routes
 
 
+import tempfile
+
 @pytest.fixture(autouse=True)
-def _clear_store():
+def _clear_store(monkeypatch):
     from routes.council_routes import _store
-    _store._cache.clear()
-    for name in os.listdir(_store._dir):
-        os.remove(os.path.join(_store._dir, name))
+    tmp_base = os.path.abspath("data/.pytest-tmp") if os.path.exists("data/.pytest-tmp") else None
+    with tempfile.TemporaryDirectory(dir=tmp_base) as tmp_dir:
+        session_dir = os.path.join(tmp_dir, "council_sessions")
+        os.makedirs(session_dir, exist_ok=True)
+        monkeypatch.setattr(_store, "_dir", session_dir)
+        _store._cache.clear()
+        yield
 
 
 class _Request:

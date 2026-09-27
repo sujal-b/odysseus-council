@@ -15,6 +15,11 @@ from council_of_agents.scripts.permissions import GLOBAL_REGISTRY, PermissionMan
 import pathlib
 logger = logging.getLogger(__name__)
 
+# Sidebar label for a council run. The prompt is truncated into the session
+# name, which makes the row the only surviving copy of the prompt text, so the
+# rebuild path strips this exact prefix back off.
+_COUNCIL_SESSION_PREFIX = "⚖ Council: "
+
 _CONFIG_PATH = str(pathlib.Path(__file__).parent.parent / "council_of_agents" / "config" / "models.json")
 _router_cfg   = CouncilRouter(_CONFIG_PATH)
 _store        = InMemorySessionStore()
@@ -213,9 +218,10 @@ def cancel_active_council_session(session_id: str, purge_state: bool = False) ->
     # entry stays viewable; only actual session deletion purges the file.
     if purge_state:
         try:
+            logger.info("Purging council session state for %s", session_id)
             _store.delete(session_id)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to purge council session state for %s: %s", session_id, e)
 
 async def cancel_all_active_council_sessions() -> None:
     for session_id, task in list(_running_tasks.items()):
@@ -392,6 +398,10 @@ def _require_session(session_id: str, owner: str | None):
     """Load session and verify ownership. Returns state or raises 404/403."""
     state = _store.load(session_id)
     if not state:
+        logger.warning(
+            "Council session %s could not be loaded from store (directory: %s, requested by: %s)",
+            session_id, _store._dir, owner
+        )
         raise HTTPException(404, "Session not found")
     # Ownership is compared case-insensitively: the same account may be
     # written with different casing by the auth layer and by the session
@@ -520,7 +530,7 @@ def _has_resumable_checkpoint(session_id: str) -> bool:
 
 
 def _recover_orphaned_sessions():
-    session_dir = os.path.join(DATA_DIR, "council_sessions")
+    session_dir = _store._dir
     if not os.path.exists(session_dir):
         return
     for fname in os.listdir(session_dir):
@@ -550,9 +560,92 @@ def _recover_orphaned_sessions():
         except Exception as e:
             logger.error("Failed to recover %s: %s", fname, e)
 
+
+def _rebuilt_stage_log(checkpoint) -> list:
+    """Reconstruct stream entries from the checkpoint's recorded role replies."""
+    entries = []
+    for stage, entry in (checkpoint.stages_snapshot() or {}).items():
+        reply = str((entry or {}).get("reply") or "")
+        if not reply:
+            continue
+        recorded_at = (entry or {}).get("recorded_at")
+        entries.append({
+            "event": "thought",
+            "status": "DONE",
+            "text": reply,
+            "agent": stage,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(recorded_at))
+                         if recorded_at else "",
+            "extra": {},
+        })
+    return entries
+
+
+def _rebuild_orphaned_council_sessions():
+    """Restore council rows whose state file vanished.
+
+    The streamed transcript is unrecoverable, but the workflow checkpoint keeps
+    each role reply, the DAG and the task results. Rebuilding a terminal FAILED
+    state turns a permanently unopenable sidebar row back into a readable
+    session rather than a listed-but-dead entry.
+    """
+    from core.database import Session as DbSession, SessionLocal
+
+    try:
+        db = SessionLocal()
+    except Exception as exc:
+        logger.warning("Council rebuild sweep skipped: %s", exc)
+        return
+    try:
+        rows = db.query(DbSession.id, DbSession.name, DbSession.owner,
+                        DbSession.created_at).filter(DbSession.mode == "council").all()
+        for row in rows:
+            sid = row.id
+            if not sid or _store.exists(sid):
+                continue
+            try:
+                from council_of_agents.scripts.workflow_checkpoint import WorkflowCheckpoint
+
+                checkpoint = WorkflowCheckpoint(sid)
+                if not checkpoint.path.exists():
+                    logger.warning(
+                        "Orphaned council session %s in database has neither state file nor workflow checkpoint (%s)",
+                        sid, checkpoint.path
+                    )
+                    continue
+                name = str(row.name or "")
+                prompt = (name[len(_COUNCIL_SESSION_PREFIX):]
+                          if name.startswith(_COUNCIL_SESSION_PREFIX) else name)
+                final = checkpoint.final_state() or {}
+                created = row.created_at
+                _store.save(SessionState(
+                    session_id=sid,
+                    owner=str(row.owner or "anonymous"),
+                    user_prompt=prompt,
+                    status="FAILED",
+                    log=_rebuilt_stage_log(checkpoint),
+                    report=str(final.get("report") or "") + (
+                        "\n\n[System] Session state file was lost and has been rebuilt"
+                        " from the surviving workflow checkpoint. The role replies,"
+                        " plan and task results below are original; the live event"
+                        " stream was not recovered."),
+                    dag=checkpoint.dag_snapshot(),
+                    created_at=created.strftime("%Y-%m-%dT%H:%M:%SZ")
+                                if hasattr(created, "strftime") else "",
+                ))
+                logger.warning("Rebuilt orphaned council session from checkpoint: %s", sid)
+            except Exception as exc:
+                logger.warning("Failed to rebuild council session %s: %s", sid, exc)
+    except Exception as exc:
+        logger.warning("Council rebuild sweep could not read sessions: %s", exc)
+    finally:
+        db.close()
+
+
 def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
     router = APIRouter(tags=["council"])
     _recover_orphaned_sessions()
+    _rebuild_orphaned_council_sessions()
 
     _run_orchestrator_wrapped = _make_orchestrator_wrapped(webhook_manager)
 
@@ -569,7 +662,7 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
         try:
             session_manager.create_session(
                 session_id=sid,
-                name=f"⚖ Council: {prompt[:40]}",
+                name=f"{_COUNCIL_SESSION_PREFIX}{prompt[:40]}",
                 endpoint_url="",
                 model="Council",
                 rag=False,
@@ -832,7 +925,9 @@ def setup_council_routes(session_manager, webhook_manager=None) -> APIRouter:
         finally:
             db.close()
         if not exists:
-            _store.delete(session_id)
+            # No _store.delete() here: a read must never destroy council
+            # history, since a stale id would purge a live session. Purging is
+            # the DELETE route's job (purge_state=True).
             raise HTTPException(404, "Session not found")
 
         state = _require_session(session_id, owner)

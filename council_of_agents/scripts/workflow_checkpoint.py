@@ -17,6 +17,8 @@ import os
 import time
 from pathlib import Path
 
+from src.constants import DATA_DIR
+
 SCHEMA = 1
 
 
@@ -25,9 +27,7 @@ class WorkflowCheckpoint:
 
     def __init__(self, workflow_id: str, base_dir: str | os.PathLike | None = None):
         self.workflow_id = str(workflow_id)
-        root = Path(base_dir) if base_dir else (
-            Path(os.environ.get("ODYSSEUS_DATA_DIR", "data")) / "council_workflows"
-        )
+        root = Path(base_dir) if base_dir else Path(DATA_DIR) / "council_workflows"
         safe_id = self.workflow_id.replace("\\", "_").replace("/", "_").replace(":", "_")
         self.path = root / f"{safe_id}.json"
         self._data = self._load()
@@ -72,6 +72,9 @@ class WorkflowCheckpoint:
     def stage_done(self, stage: str) -> bool:
         entry = self._data["stages"].get(stage)
         return bool(entry and entry.get("status") == "DONE")
+
+    def stages_snapshot(self) -> dict:
+        return dict(self._data.get("stages") or {})
 
     def record_stage(self, stage: str, reply: str, *, status: str = "DONE",
                      model_calls: int = 1) -> None:

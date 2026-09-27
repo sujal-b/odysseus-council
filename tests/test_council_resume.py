@@ -41,10 +41,10 @@ async def test_stale_approved_checkpoint_resumes_once_without_replacing_live_run
     council_routes._store._cache.clear()
     monkeypatch.setattr(council_routes._store, "_dir", str(session_dir))
     monkeypatch.setattr(council_routes, "DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("ODYSSEUS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("council_of_agents.scripts.workflow_checkpoint.DATA_DIR", str(tmp_path))
     monkeypatch.setattr(council_routes, "fire_event", lambda *args, **kwargs: None)
 
-    checkpoint = WorkflowCheckpoint(session_id)
+    checkpoint = WorkflowCheckpoint(session_id, base_dir=tmp_path / "council_workflows")
     checkpoint.record_approval("APPROVED", '{"verdict":"APPROVED"}')
     state = SessionState(
         session_id=session_id,

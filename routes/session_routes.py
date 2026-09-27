@@ -297,6 +297,21 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
         finally:
             db.close()
 
+        # A council session is only openable while its state file exists: the
+        # detail route 404s without it and nothing can recreate it. Hide those
+        # rows so the sidebar never advertises an entry that cannot be opened.
+        from routes.council_routes import _store as _council_store
+        def _council_state_present(sid):
+            if mode_map.get(sid) != "council":
+                return True
+            exists = _council_store.exists(sid)
+            if not exists:
+                logger.warning(
+                    "Council session %s found in database catalog but missing state file in %s; excluding from session list",
+                    sid, _council_store._dir
+                )
+            return exists
+
         sessions = [{"id": s.id, "name": s.name, "model": _public_model(s.name, s.model),
                      "endpoint_url": s.endpoint_url, "rag": s.rag,
                      "archived": s.archived, "folder": folder_map.get(s.id),
@@ -312,7 +327,8 @@ def setup_session_routes(session_manager: SessionManager, config: dict, webhook_
                     for s in user_sessions.values()
                     if not s.archived
                     and (s.name or "").strip() not in ("Nobody", "Incognito")
-                    and (s.name or "").strip() not in _HIDDEN_SYSTEM_SESSION_NAMES]
+                    and (s.name or "").strip() not in _HIDDEN_SYSTEM_SESSION_NAMES
+                    and _council_state_present(s.id)]
 
         return sessions
     
