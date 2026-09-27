@@ -120,3 +120,29 @@ def test_perspective_findings_reach_the_ledger_row():
     assert ".ghost-editor-stream .persp-chips" in CSS
 
 
+def test_perspective_card_container_and_telemetry_deck_invariants():
+    # Card wrapper encloses the row and telemetry deck, preventing freely roaming text
+    assert '<div class="ghost-perspective-card${cardCls}">' in JS
+    assert ".ghost-editor-stream .ghost-perspective-card" in CSS
+    assert ".ghost-editor-stream .ghost-perspective-card.is-blocked" in CSS
+    assert ".ghost-editor-stream .ghost-perspective-card.is-mustfix" in CSS
+
+    # Telemetry bay alignment with content column and responsive collapse
+    assert "margin-left: 104px" in CSS
+    assert "@media (max-width: 720px)" in CSS
+
+    # Metric cells group each perspective dimension and isolate disposition badges
+    assert "persp-metric-cell" in JS
+    assert "persp-metric-label" in JS
+    assert "persp-divider" in JS
+    assert ".ghost-editor-stream .persp-metric-cell" in CSS
+    assert ".ghost-editor-stream .persp-metric-cell--overall" in CSS
+    assert ".ghost-editor-stream .persp-metric-label" in CSS
+    assert ".ghost-editor-stream .persp-divider" in CSS
+
+    # Accessible region
+    assert 'role="region"' in JS
+    assert 'aria-label="Perspective analysis metrics"' in JS
+
+
+

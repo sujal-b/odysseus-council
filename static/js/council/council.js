@@ -1847,23 +1847,41 @@ class CouncilUI {
     const _perspChips = (p) => {
       if (!p) return '';
       if (p.evidence === 'invalid' || p.evidence === 'empty') {
-        return `<div class="persp-chips"><span class="persp-chip is-invalid">NO VALID ANALYSIS</span></div>`;
+        return `<div class="persp-chips is-empty"><div class="persp-metric-cell is-invalid"><span class="persp-metric-label">STATUS</span><span class="persp-chip is-invalid">NO VALID ANALYSIS</span></div></div>`;
       }
       const sections = Array.isArray(p.sections) ? p.sections : [];
       if (!sections.length) return '';
       const overall = _perspNum(p.overall_score);
-      const head = overall !== null ? `<span class="persp-overall">overall ${overall.toFixed(2)}</span>` : '';
+      const isBlock = p.evidence === 'block' || (overall !== null && overall < 0.6);
+      const isMustFix = p.evidence === 'must_fix' || (overall !== null && overall < 0.8);
+      const overallTone = isBlock ? 'is-block' : (isMustFix ? 'is-mustfix' : 'is-ok');
+      const overallLabel = p.evidence === 'clear' ? 'PASSED' : (p.evidence === 'block' ? 'BLOCKED' : 'MUST_FIX');
+      const head = overall !== null
+        ? `<div class="persp-metric-cell persp-metric-cell--overall ${overallTone}">
+            <span class="persp-metric-label">OVERALL</span>
+            <span class="persp-score persp-overall ${overallTone}">${overall.toFixed(2)}</span>
+            <span class="persp-chip ${overallTone}">${overallLabel}</span>
+          </div>
+          <span class="persp-divider" aria-hidden="true"></span>`
+        : '';
       const body = sections.map(s => {
-        const label = _esc(String(s.key || '').slice(0, 4).toUpperCase());
+        const fullKey = String(s.key || '');
+        const label = _esc((fullKey.length <= 4 ? fullKey : fullKey.slice(0, 4)).toUpperCase());
         const sc = _perspNum(s.score);
         const tone = s.block > 0 ? 'is-block' : (s.must_fix > 0 ? 'is-mustfix' : 'is-ok');
         const chips = [];
         if (s.block > 0) chips.push(`<span class="persp-chip is-block">${s.block} BLOCK</span>`);
         if (s.must_fix > 0) chips.push(`<span class="persp-chip is-mustfix">${s.must_fix} MUST_FIX</span>`);
         if (s.advisory > 0) chips.push(`<span class="persp-chip is-advisory">${s.advisory} ADVISORY</span>`);
-        return `<span class="persp-score ${tone}">${label} ${sc !== null ? sc.toFixed(2) : '--'}</span>${chips.join('')}`;
+        if (!chips.length) chips.push(`<span class="persp-chip is-ok">CLEAR</span>`);
+        return `
+          <div class="persp-metric-cell" data-perspective="${_esc(fullKey)}">
+            <span class="persp-metric-label" title="${_esc(fullKey)}">${label}</span>
+            <span class="persp-score ${tone}">${sc !== null ? sc.toFixed(2) : '--'}</span>
+            <div class="persp-metric-badges">${chips.join('')}</div>
+          </div>`;
       }).join('');
-      return `<div class="persp-chips">${head}${body}</div>`;
+      return `<div class="persp-chips" role="region" aria-label="Perspective analysis metrics">${head}${body}</div>`;
     };
 
     // Helper: tool category metadata with clean vector SVG icons
@@ -1984,18 +2002,39 @@ class CouncilUI {
         const statusCell = _p
           ? `<span class="st ${_pClear ? 'st--done' : 'st--blocked'}" title="${_pTitle}" aria-label="${_pTitle}">${_statusIcon(_pClear ? 'APPROVED' : 'BLOCKED')}</span>`
           : `<span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>`;
-        html += `
-          <div class="row">
-            <span class="id">${stepNum}</span>
-            ${statusCell}
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
-            <div class="ct">
-              <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
-              ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
-              ${durBadge}
-            </div>
-          </div>
-          ${_perspChips(_p)}`;
+        if (_p) {
+          const cardCls = _p.evidence === 'block' ? ' is-blocked' : (_p.evidence === 'must_fix' ? ' is-mustfix' : '');
+          const badgeColor = _pClear ? 'var(--impl)' : (_p.evidence === 'block' ? 'var(--fail)' : 'var(--warn)');
+          const badgeBg = _pClear ? 'rgba(78,184,112,0.1)' : (_p.evidence === 'block' ? 'rgba(224,88,88,0.1)' : 'rgba(223,142,69,0.1)');
+          const badgeLabel = _p.evidence === 'clear' ? 'AUDIT CLEAR' : (_p.evidence === 'block' ? 'AUDIT BLOCKED' : 'AUDIT FLAGGED');
+          html += `
+            <div class="ghost-perspective-card${cardCls}">
+              <div class="row">
+                <span class="id">${stepNum}</span>
+                ${statusCell}
+                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <div class="ct">
+                  <span class="bd" style="color:${badgeColor};background:${badgeBg}">${badgeLabel}</span>
+                  <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
+                  ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
+                  ${durBadge}
+                </div>
+              </div>
+              ${_perspChips(_p)}
+            </div>`;
+        } else {
+          html += `
+            <div class="row">
+              <span class="id">${stepNum}</span>
+              ${statusCell}
+              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+              <div class="ct">
+                <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
+                ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
+                ${durBadge}
+              </div>
+            </div>`;
+        }
       } else if (b.type === 'strat') {
         const stepNum = _nextStep();
         const role = _resolveRole('strat');
