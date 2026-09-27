@@ -103,3 +103,20 @@ def test_execution_stream_cockpit_invariants():
     assert ".ghost-handoff" not in CSS
 
 
+def test_perspective_findings_reach_the_ledger_row():
+    # Severity is classified server-side and only carried through, never re-derived
+    # in the browser, so the row cannot contradict the approval gate.
+    assert "perspective: (agent === 'perspective_analyzer' && e.extra?.perspective)" in JS
+    persp = JS.split("const _perspChips = (p) => {", 1)[1].split("};", 1)[0]
+    assert "JSON.parse" not in persp
+    assert "p.evidence === 'invalid' || p.evidence === 'empty'" in persp
+
+    # A non-clear verdict must surface the blocked glyph, not a done tick.
+    assert "_pClear ? 'st--done' : 'st--blocked'" in JS
+    assert "_statusIcon(_pClear ? 'APPROVED' : 'BLOCKED')" in JS
+
+    for tone in ("is-block", "is-mustfix", "is-advisory", "is-ok", "is-invalid"):
+        assert f".ghost-editor-stream .persp-chip.{tone}" in CSS or f".ghost-editor-stream .persp-score.{tone}" in CSS
+    assert ".ghost-editor-stream .persp-chips" in CSS
+
+

@@ -37375,6 +37375,53 @@ body.theme-frosted .modal {
 .ghost-editor-stream .st.st--pending,
 .ghost-editor-stream .st .st-icon--pending { color: var(--muted, #736b63); }
 
+.ghost-editor-stream .persp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: -1px 6px 2px;
+  padding: 1px 8px 3px;
+}
+.ghost-editor-stream .persp-score,
+.ghost-editor-stream .persp-overall {
+  font-family: var(--font);
+  font-size: 9.5px;
+  letter-spacing: 0.05em;
+}
+.ghost-editor-stream .persp-score { color: var(--muted, #736b63); }
+.ghost-editor-stream .persp-score.is-ok { color: var(--impl, #4eb870); }
+.ghost-editor-stream .persp-score.is-mustfix { color: var(--warn, #df8e45); }
+.ghost-editor-stream .persp-score.is-block { color: var(--fail, #e05858); }
+.ghost-editor-stream .persp-overall { color: var(--chair, #df8e45); }
+.ghost-editor-stream .persp-chip {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  padding: 0 5px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+}
+.ghost-editor-stream .persp-chip.is-block {
+  color: var(--fail, #e05858);
+  border-color: color-mix(in srgb, var(--fail, #e05858) 40%, transparent);
+  background: color-mix(in srgb, var(--fail, #e05858) 12%, transparent);
+}
+.ghost-editor-stream .persp-chip.is-mustfix {
+  color: var(--warn, #df8e45);
+  border-color: color-mix(in srgb, var(--warn, #df8e45) 40%, transparent);
+  background: color-mix(in srgb, var(--warn, #df8e45) 12%, transparent);
+}
+.ghost-editor-stream .persp-chip.is-advisory {
+  color: var(--muted, #736b63);
+  border-color: var(--border);
+  background: var(--bg-highlight, #1c1510);
+}
+.ghost-editor-stream .persp-chip.is-invalid {
+  color: var(--fail, #e05858);
+  border-color: color-mix(in srgb, var(--fail, #e05858) 40%, transparent);
+  background: color-mix(in srgb, var(--fail, #e05858) 12%, transparent);
+}
+
 .ghost-editor-stream .st-tool-icon {
   width: 11px;
   height: 11px;

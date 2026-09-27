@@ -236,5 +236,50 @@ def test_orchestrator_classify_perspective_evidence():
     assert CouncilOrchestrator._classify_perspective_evidence('{"random": "dict"}') == "invalid"
 
 
+def test_perspective_findings_matches_gate_verdict_and_counts_dispositions():
+    """The ledger row must never disagree with the approval gate it reports on."""
+    payload = json.dumps({
+        "security": {
+            "score": 0.2,
+            "issues": [{
+                "severity": "critical", "disposition": "BLOCK", "description": "injection",
+                "task_id": "T1", "suggestion": "sanitize", "evidence": "interpolates input",
+            }],
+        },
+        "performance": {
+            "score": 0.6,
+            "issues": [
+                {"severity": "major", "disposition": "MUST_FIX", "description": "n+1",
+                 "task_id": "T1", "suggestion": "batch", "evidence": "one query per row"},
+                {"severity": "info", "disposition": "ADVISORY", "description": "rate limit",
+                 "task_id": "T2", "suggestion": "token bucket", "evidence": "unthrottled"},
+            ],
+        },
+        "maintainability": {"score": 0.9, "issues": []},
+        "overall_score": 0.4,
+        "synthesis": "risky",
+    })
+
+    findings = CouncilOrchestrator._perspective_findings(payload)
+
+    assert findings["evidence"] == CouncilOrchestrator._classify_perspective_evidence(payload)
+    assert findings["evidence"] == "block"
+    assert findings["overall_score"] == 0.4
+    assert [s["key"] for s in findings["sections"]] == ["security", "performance", "maintainability"]
+
+    by_key = {s["key"]: s for s in findings["sections"]}
+    assert (by_key["security"]["block"], by_key["security"]["must_fix"], by_key["security"]["advisory"]) == (1, 0, 0)
+    assert (by_key["performance"]["block"], by_key["performance"]["must_fix"], by_key["performance"]["advisory"]) == (0, 1, 1)
+    assert by_key["maintainability"]["score"] == 0.9
+
+
+def test_perspective_findings_degrades_without_raising():
+    for bad in ("", None, "   ", "not a json", '{"random": "dict"}'):
+        findings = CouncilOrchestrator._perspective_findings(bad)
+        assert findings["evidence"] == CouncilOrchestrator._classify_perspective_evidence(bad)
+        assert findings["sections"] == []
+        assert findings["overall_score"] is None
+
+
 if __name__ == "__main__":
     pytest.main(["-v", str(Path(__file__))])

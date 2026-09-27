@@ -1542,7 +1542,8 @@ class CouncilUI {
           agent: agent,
           text: compactAgentActivity(agent),
           outcome: outcome,
-          duration: dur
+          duration: dur,
+          perspective: (agent === 'perspective_analyzer' && e.extra?.perspective) ? e.extra.perspective : null
         });
       }
       else if (e.event === 'dag_update' || e.event === 'task_status_update') {
@@ -1837,6 +1838,34 @@ class CouncilUI {
       return `<svg class="st-icon st-icon--pending" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="4"/></svg>`;
     };
 
+    // Severities are server-classified so this row can never contradict the approval gate.
+    const _perspNum = (v) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return isFinite(n) ? n : null;
+    };
+    const _perspChips = (p) => {
+      if (!p) return '';
+      if (p.evidence === 'invalid' || p.evidence === 'empty') {
+        return `<div class="persp-chips"><span class="persp-chip is-invalid">NO VALID ANALYSIS</span></div>`;
+      }
+      const sections = Array.isArray(p.sections) ? p.sections : [];
+      if (!sections.length) return '';
+      const overall = _perspNum(p.overall_score);
+      const head = overall !== null ? `<span class="persp-overall">overall ${overall.toFixed(2)}</span>` : '';
+      const body = sections.map(s => {
+        const label = _esc(String(s.key || '').slice(0, 4).toUpperCase());
+        const sc = _perspNum(s.score);
+        const tone = s.block > 0 ? 'is-block' : (s.must_fix > 0 ? 'is-mustfix' : 'is-ok');
+        const chips = [];
+        if (s.block > 0) chips.push(`<span class="persp-chip is-block">${s.block} BLOCK</span>`);
+        if (s.must_fix > 0) chips.push(`<span class="persp-chip is-mustfix">${s.must_fix} MUST_FIX</span>`);
+        if (s.advisory > 0) chips.push(`<span class="persp-chip is-advisory">${s.advisory} ADVISORY</span>`);
+        return `<span class="persp-score ${tone}">${label} ${sc !== null ? sc.toFixed(2) : '--'}</span>${chips.join('')}`;
+      }).join('');
+      return `<div class="persp-chips">${head}${body}</div>`;
+    };
+
     // Helper: tool category metadata with clean vector SVG icons
     const _toolKind = (toolName) => {
       const t = (toolName || '').toLowerCase();
@@ -1949,17 +1978,24 @@ class CouncilUI {
         const stepNum = _nextStep();
         const role = _resolveRole(b.agent);
         const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
+        const _p = b.perspective;
+        const _pClear = !_p || _p.evidence === 'clear';
+        const _pTitle = _pClear ? 'Analysis clear' : 'Blocked approval';
+        const statusCell = _p
+          ? `<span class="st ${_pClear ? 'st--done' : 'st--blocked'}" title="${_pTitle}" aria-label="${_pTitle}">${_statusIcon(_pClear ? 'APPROVED' : 'BLOCKED')}</span>`
+          : `<span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>`;
         html += `
           <div class="row">
             <span class="id">${stepNum}</span>
-            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
+            ${statusCell}
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
             <div class="ct">
               <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
               ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
               ${durBadge}
             </div>
-          </div>`;
+          </div>
+          ${_perspChips(_p)}`;
       } else if (b.type === 'strat') {
         const stepNum = _nextStep();
         const role = _resolveRole('strat');
@@ -3863,6 +3899,7 @@ function compactAgentActivity(agent, tool = '') {
   if (role === 'manager') return 'Reviewing execution plan';
   if (role === 'implementer') return 'Executing assigned task';
   if (role === 'chair') return 'Assessing request';
+  if (role === 'perspective_analyzer') return 'Auditing security, performance, maintainability';
   return 'Council is working';
 }
 
