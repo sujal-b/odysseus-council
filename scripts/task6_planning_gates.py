@@ -92,6 +92,7 @@ def run_trace(case: dict) -> dict:
             run_id=f"task6-gate-{case['name']}",
             max_plan_revisions=1,
             planning_only=True,
+            require_manager_challenge=True,
             scenario_id=case["name"],
             scenario_rubric=case.get("planning_rubric"),
             prompt_label="P2.6-candidate",

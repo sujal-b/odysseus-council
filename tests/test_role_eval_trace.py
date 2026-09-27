@@ -528,6 +528,7 @@ def test_trace_escalates_when_manager_skips_compulsory_plan_zero_challenge():
         endpoint="https://example.test/v1/chat/completions",
         model="mock",
         planning_only=True,
+        require_manager_challenge=True,
         call=fake_call,
     ))
 
@@ -537,6 +538,30 @@ def test_trace_escalates_when_manager_skips_compulsory_plan_zero_challenge():
     assert result["summary"]["termination_reason"] == "compulsory_revision_not_requested"
     assert result["summary"]["human_escalation_required"] is True
     assert result["readiness_gate"]["passed"] is False
+
+
+def test_trace_allows_single_pass_approval_when_plan_is_sound():
+    responses = iter([CHAIR, STRATEGIST, PERSPECTIVE, MANAGER])
+
+    async def fake_call(**_kwargs):
+        return next(responses)
+
+    result = asyncio.run(evaluate_trace(
+        "Build the feature.",
+        endpoint="https://example.test/v1/chat/completions",
+        model="mock",
+        planning_only=True,
+        call=fake_call,
+    ))
+
+    manager_trace = next(record for record in result["trace"] if record["agent"] == "manager")
+    manager_prompt = "\n".join(message["content"] for message in manager_trace["messages"])
+    assert "compulsory Plan-0 challenge round" not in manager_prompt
+    assert result["summary"]["plan_revision_attempts"] == 0
+    assert result["summary"]["final_manager_verdict"] == "APPROVED"
+    assert result["summary"]["termination_reason"] == "planning_approved"
+    assert result["summary"]["human_escalation_required"] is False
+    assert result["readiness_gate"]["passed"] is True
 
 
 def test_trace_supports_two_revision_quality_loop_and_planning_only_mode():
@@ -1035,20 +1060,17 @@ def test_trace_budget_uses_the_largest_configured_role_timeout():
 def test_phase_a_role_routing_uses_nvidia_for_strategist_and_manager_only():
     config_path = Path(__file__).resolve().parents[1] / "council_of_agents" / "config" / "models.json"
     roles = json.loads(config_path.read_text(encoding="utf-8"))["roles"]
-    nvidia_endpoint = "https://integrate.api.nvidia.com/v1/chat/completions"
-    zen_endpoint = "https://opencode.ai/zen/v1/chat/completions"
+    nilovr_endpoint = "https://api.nilovr.com/v1/chat/completions"
 
-    assert roles["strategist"]["endpoint_url"] == nvidia_endpoint
-    assert roles["strategist"]["model"] == "nvidia/nemotron-3-super-120b-a12b"
-    assert roles["strategist"]["timeout"] == 90
-    assert roles["strategist"]["context_fallbacks"][0]["model"] == "nvidia/nemotron-3-nano-30b-a3b"
-    assert roles["manager"]["endpoint_url"] == nvidia_endpoint
-    assert roles["manager"]["model"] == "nvidia/nemotron-3-super-120b-a12b"
-    assert roles["manager"]["context_fallbacks"][0]["model"] == "nvidia/nemotron-3-nano-30b-a3b"
-    assert roles["chair"]["endpoint_url"] == zen_endpoint
-    assert roles["implementer"]["endpoint_url"] == zen_endpoint
-    assert roles["perspective_analyzer"]["endpoint_url"] == zen_endpoint
-    assert roles["completeness_auditor"]["endpoint_url"] == zen_endpoint
+    assert roles["strategist"]["endpoint_url"] == nilovr_endpoint
+    assert roles["strategist"]["model"] == "hy3"
+    assert roles["strategist"]["timeout"] == 60
+    assert roles["manager"]["endpoint_url"] == nilovr_endpoint
+    assert roles["manager"]["model"] == "hy3"
+    assert roles["chair"]["endpoint_url"] == nilovr_endpoint
+    assert roles["implementer"]["endpoint_url"] == nilovr_endpoint
+    assert roles["perspective_analyzer"]["endpoint_url"] == nilovr_endpoint
+    assert roles["completeness_auditor"]["endpoint_url"] == nilovr_endpoint
 
 
 def test_async_harness_failure_preserves_checkpoint_cases(tmp_path):

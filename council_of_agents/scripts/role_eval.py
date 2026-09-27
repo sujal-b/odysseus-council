@@ -1659,6 +1659,7 @@ async def evaluate_trace(
     prompt_label: str = "",
     handoff_mode: str = "contract",
     prompts_dir: str | Path | None = None,
+    require_manager_challenge: bool = False,
     call=llm_call_async,
     _trace_state: list[dict] | None = None,
     _trace_budget: float | None = None,
@@ -1795,14 +1796,15 @@ async def evaluate_trace(
 
     manager = await stage(
         "manager", chair_reply=outputs["chair"], strategist_reply=outputs["strategist"],
-        perspective_reply=outputs["perspective_analyzer"], require_manager_challenge=True,
+        perspective_reply=outputs["perspective_analyzer"],
+        require_manager_challenge=require_manager_challenge,
     )
     if not manager.get("contract_passed"):
         return report()
 
     manager_data = validate_agent_output("manager", outputs["manager"], strict=True).data or {}
     decision_history.append(_manager_decision_record("manager", "v1", manager_data))
-    if manager_data.get("verdict") != "REVISE":
+    if require_manager_challenge and manager_data.get("verdict") != "REVISE":
         return report(
             human_escalation_required=True,
             termination_reason="compulsory_revision_not_requested",
@@ -1894,7 +1896,7 @@ async def evaluate_trace(
             human_escalation_required=True,
             termination_reason="revision_budget_exhausted" if final_verdict == "REVISE" else "manager_blocked",
         )
-    if len(plan_versions) < 2:
+    if require_manager_challenge and len(plan_versions) < 2:
         return report(
             human_escalation_required=True,
             termination_reason="compulsory_revision_missing",
