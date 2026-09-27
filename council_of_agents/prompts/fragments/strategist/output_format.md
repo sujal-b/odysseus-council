@@ -2,9 +2,17 @@
 Return ONLY a valid JSON object:
 {
   "tasks": [
-    {"id": "T1", "description": "<step with paths>", "depends_on": [], "read_scope": ["src/"], "write_scope": ["src/"], "acceptance": "<condition>", "verification": {"type": "shell", "command": "pytest -q tests/test_app.py"}}
+    {
+      "id": "T1",
+      "description": "<step with paths>",
+      "depends_on": [],
+      "read_scope": ["src/"],
+      "write_scope": ["src/"],
+      "acceptance": "<condition>",
+      "verification": {"type": "shell", "command": "pytest -q tests/test_app.py"}
+    }
   ],
-  "risks": ["<risk>"]
+  "risks": ["<material risk>"]
 }
-Use "workspace_root": true with "write_scope": [] for root setup.
+For root-level changes, set "workspace_root": true and "write_scope": [].
 </output_format>
