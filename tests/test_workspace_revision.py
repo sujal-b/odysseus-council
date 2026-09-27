@@ -111,3 +111,17 @@ def test_write_guard_allows_declared_new_file_once(tmp_path):
     target.write_text("print('x')", encoding="utf-8")
     guard.record_after_write("write_file", "src/new.py\nprint('x')")
     assert guard.check_before_write("edit_file", '{"path":"src/new.py"}') == "src/new.py"
+
+
+def test_workspace_write_guard_channel_constants(tmp_path):
+    assert WorkspaceWriteGuard.READ_CHANNELS == {"read_file", "ls", "glob", "grep"}
+    assert WorkspaceWriteGuard.WRITE_CHANNELS == {"write_file", "edit_file"}
+    assert WorkspaceWriteGuard.ALLOWED_CHANNELS == WorkspaceWriteGuard.READ_CHANNELS | WorkspaceWriteGuard.WRITE_CHANNELS
+
+    guard = WorkspaceWriteGuard(tmp_path, [], {})
+    for channel in WorkspaceWriteGuard.ALLOWED_CHANNELS:
+        guard.check_tool_channel(channel)
+    for bad in ("bash", "python", "sh", "terminal"):
+        with pytest.raises(WorkspaceScopeError, match="not compatible"):
+            guard.check_tool_channel(bad)
+

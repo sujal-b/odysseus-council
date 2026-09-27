@@ -326,3 +326,45 @@ async def test_orchestrator_permission_retry_loop(tmp_path):
                 assert tool_output["extra"]["exit_code"] == 1
                 assert "restricted" in tool_output["extra"]["output"]
                 assert tool_output["extra"]["permission_outcome"] == "approved"
+
+
+@pytest.mark.asyncio
+async def test_call_agent_restricts_tools_with_workspace_write_guard(tmp_path):
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+    from council_of_agents.scripts.workspace_revision import WorkspaceWriteGuard
+    router_mock = MagicMock()
+    dummy_role_config = MagicMock()
+    dummy_role_config.endpoint_url = "http://localhost:8000/v1"
+    dummy_role_config.model = "test-model"
+    dummy_role_config.temperature = 0.5
+    dummy_role_config.max_tokens = 100
+    dummy_role_config.fallbacks = []
+    router_mock.role_config.return_value = dummy_role_config
+
+    orchestrator = CouncilOrchestrator(router_mock)
+    guard = WorkspaceWriteGuard(tmp_path, [], {}, enforce_channels=True)
+
+    captured_kwargs = {}
+    async def mock_stream_agent_loop(**kwargs):
+        captured_kwargs.update(kwargs)
+        yield "data: [DONE]"
+
+    with patch("council_of_agents.scripts.council_orchestrator.stream_agent_loop", side_effect=mock_stream_agent_loop), \
+         patch.object(orchestrator, "_resolve_headers", return_value={}):
+        await orchestrator._call_agent(
+            role="implementer",
+            session_id="test-session",
+            overrides={"implementer": {"endpoint_url": "http://localhost:8000/v1", "model": "test-model"}},
+            messages=[{"role": "user", "content": "hi"}],
+            workspace_write_guard=guard,
+            workspace=str(tmp_path),
+        )
+
+    # In guarded mode, bash and python must be disabled and NOT force-enabled
+    assert "bash" not in captured_kwargs["force_enable_tools"]
+    assert "python" not in captured_kwargs["force_enable_tools"]
+    assert "bash" in captured_kwargs["disabled_tools"]
+    assert "python" in captured_kwargs["disabled_tools"]
+    # Safe channels should be allowed
+    assert captured_kwargs["force_enable_tools"].issubset(WorkspaceWriteGuard.ALLOWED_CHANNELS)
+

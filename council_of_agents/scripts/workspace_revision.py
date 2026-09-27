@@ -26,6 +26,10 @@ class WorkspaceRevision:
 class WorkspaceWriteGuard:
     """Optimistic, scope-bound guard checked immediately before each write."""
 
+    READ_CHANNELS = frozenset({"read_file", "ls", "glob", "grep"})
+    WRITE_CHANNELS = frozenset({"write_file", "edit_file"})
+    ALLOWED_CHANNELS = READ_CHANNELS | WRITE_CHANNELS
+
     def __init__(
         self, workspace, write_scopes, base_hashes, *, workspace_root=False,
         task_id="", enforce_channels=False,
@@ -104,8 +108,7 @@ class WorkspaceWriteGuard:
         return rel
 
     def check_tool_channel(self, tool):
-        safe = {"read_file", "ls", "glob", "grep", "write_file", "edit_file"}
-        if tool not in safe:
+        if tool not in self.ALLOWED_CHANNELS:
             raise WorkspaceScopeError(
                 f"tool '{tool}' is not compatible with guarded workspace execution"
             )

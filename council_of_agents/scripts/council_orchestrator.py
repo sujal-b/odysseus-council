@@ -1316,7 +1316,7 @@ Report what you FIND, not what you think might exist."""
                                     "manager", state,
                                     [{"role": "system",  "content": self._load_prompt("validator_task")},
                                      {"role": "user", "content": self._task_gate_contract_line(t_node)},
-                                     {"role": "user", "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence, t_node)},
+                                     {"role": "user", "content": self._task_gate_evidence_line(task_written_paths, deterministic_evidence, t_node, tool_results=tool_results)},
                                      {"role": "user", "content": f"<task_output>\n{impl_reply}\n</task_output>"}],
                                     emit, owner=owner, written_paths=written_paths
                                 )
@@ -1327,6 +1327,12 @@ Report what you FIND, not what you think might exist."""
                                         t_node.id,
                                     )
                                     if review_verdict == "REVISE":
+                                        if TaskDAG.requires_inspection(t_node):
+                                            evidence_error = self._classify_inspection_evidence(
+                                                t_node, tool_results, impl_reply
+                                            )
+                                            if evidence_error:
+                                                raise evidence_error
                                         raise Exception(f"Manager rejected task {t_node.id}: {task_review}")
 
                             code, file_path = self._extract_code(impl_reply, getattr(state, "workspace", None))
@@ -1378,6 +1384,11 @@ Report what you FIND, not what you think might exist."""
                                 failure_category = TaskFailureCategory.SCOPE_VIOLATION.value
                             elif isinstance(e, WorkspaceConflictError):
                                 failure_category = TaskFailureCategory.WORKSPACE_CONFLICT.value
+                            elif TaskDAG.requires_inspection(t_node) and not any(
+                                tr.get("tool") in {"read_file", "ls", "glob", "grep"}
+                                for tr in tool_results
+                            ):
+                                failure_category = TaskFailureCategory.ZERO_EVIDENCE.value
                             # One alternate strategy is useful; a second
                             # identical outcome is stagnation, not a reason to
                             # keep asking the model to try. Guard rejections
@@ -2057,6 +2068,10 @@ Report what you FIND, not what you think might exist."""
 
         # Per-role tool access — see tools_for_role() (single source of truth).
         role_allowed = tools_for_role(role, route)
+        if workspace_write_guard and getattr(workspace_write_guard, "enforce_channels", False):
+            guard_allowed = getattr(workspace_write_guard, "ALLOWED_CHANNELS", None)
+            if guard_allowed:
+                role_allowed = set(role_allowed) & set(guard_allowed)
         loop_limits = self.CONTROL_AGENT_LOOP_LIMITS.get(role, {})
         if disable_tools:
             # Keep the normal streaming path for roles that ordinarily have
@@ -2065,8 +2080,8 @@ Report what you FIND, not what you think might exist."""
             allowed = set()
         if role_allowed:
             if not disable_tools:
-                disabled_tools = set(TOOL_TAGS) - role_allowed
-                allowed = role_allowed
+                disabled_tools = set(TOOL_TAGS) - set(role_allowed)
+                allowed = set(role_allowed)
 
             session_id_base = session_id.split(":")[0] if isinstance(session_id, str) else ""
             from council_of_agents.scripts.session_store import InMemorySessionStore
@@ -2872,12 +2887,12 @@ Report what you FIND, not what you think might exist."""
             return
         from council_of_agents.scripts.verification_engine import VerificationEngine
         from council_of_agents.scripts.ledger_models import VerificationSpec
-        from council_of_agents.scripts.task_dag import normalize_verification
+        from council_of_agents.scripts.task_dag import TaskDAG, normalize_verification
         engine = VerificationEngine(workspace)
         for node in dag._nodes.values():
             if node.status not in ("FAILED", "BLOCKED"):
                 continue
-            spec_dict = normalize_verification(node.verification)
+            spec_dict = normalize_verification(node.verification, is_mutation=TaskDAG.requires_mutation(node))
             if not spec_dict:
                 continue
             try:
@@ -3009,6 +3024,33 @@ Report what you FIND, not what you think might exist."""
         return TaskExecutionEvidenceError(
             category,
             f"{category.value}: {task.id} required an attributable scoped file diff",
+        )
+
+    @staticmethod
+    def _classify_inspection_evidence(task, tool_results, impl_reply=None):
+        """Return a typed failure when an inspection task lacks read-channel evidence."""
+        from council_of_agents.scripts.task_dag import (
+            TaskDAG,
+            TaskExecutionEvidenceError,
+            TaskFailureCategory,
+        )
+        from council_of_agents.scripts.workspace_revision import WorkspaceWriteGuard
+        if not TaskDAG.requires_inspection(task):
+            return None
+        read_channels = getattr(WorkspaceWriteGuard, "READ_CHANNELS", {"read_file", "ls", "glob", "grep"})
+        successful_reads = [
+            tr for tr in (tool_results or [])
+            if tr.get("tool") in read_channels
+            and int(tr.get("exit_code") or 0) == 0
+            and not tr.get("error")
+        ]
+        if successful_reads:
+            return None
+        has_any_read = any(tr.get("tool") in read_channels for tr in (tool_results or []))
+        category = TaskFailureCategory.TOOL_EXECUTION if has_any_read else TaskFailureCategory.ZERO_EVIDENCE
+        return TaskExecutionEvidenceError(
+            category,
+            f"{category.value}: {task.id} required workspace inspection evidence (read_file, ls, glob, or grep)",
         )
 
     @staticmethod
@@ -3160,7 +3202,10 @@ Report what you FIND, not what you think might exist."""
             fix_prompt = (
                 "The delivered work is INCOMPLETE. Close exactly these gaps and "
                 "nothing else; preserve work already done.\n\n"
-                f"Outstanding gaps:\n{gap_lines}\n"
+                f"Outstanding gaps:\n{gap_lines}\n\n"
+                "Guarded execution rule: use only read_file, ls, glob, grep, "
+                "write_file, and edit_file. Do not use bash or python; the workspace "
+                "guard rejects those channels."
             )
             if gap_answer:
                 fix_prompt += f"\nUser decision for the critical gap: {gap_answer}\n"
@@ -3807,7 +3852,7 @@ Report what you FIND, not what you think might exist."""
         )
 
     @staticmethod
-    def _task_gate_evidence_line(task_written_paths, deterministic_evidence=None, task=None) -> str:
+    def _task_gate_evidence_line(task_written_paths, deterministic_evidence=None, task=None, tool_results=None) -> str:
         """Guard-approved writes and verification result for the task gate.
 
         The gate used to see only the implementer's self-report, so a
@@ -3835,6 +3880,20 @@ Report what you FIND, not what you think might exist."""
                 "on-disk state. Judge the deliverable on disk, not whether "
                 "this attempt re-wrote it."
             )
+        if tool_results:
+            successful_reads = [
+                tr.get("tool") for tr in tool_results
+                if tr.get("tool") in {"read_file", "ls", "glob", "grep"}
+                and int(tr.get("exit_code") or 0) == 0 and not tr.get("error")
+            ]
+            if successful_reads:
+                parts.append(f"Inspection tools executed successfully: {sorted(set(successful_reads))}")
+            else:
+                parts.append("Inspection tools executed: NONE")
+        elif task is not None:
+            from council_of_agents.scripts.task_dag import TaskDAG
+            if TaskDAG.requires_inspection(task):
+                parts.append("Inspection tools executed: NONE")
         if deterministic_evidence is not None:
             passed = bool(getattr(deterministic_evidence, "passed", False))
             parts.append(
@@ -3868,7 +3927,23 @@ Report what you FIND, not what you think might exist."""
                     "Do not use bash or python; use only read_file, ls, glob, grep, write_file, "
                     "and edit_file, then reply."
                 )
-        elif immediate_write:
+        elif category == "zero_evidence_execution":
+            from council_of_agents.scripts.task_dag import TaskDAG
+            if not TaskDAG.requires_mutation(task):
+                strategy = "inspect_immediately"
+                instruction = (
+                    "Immediately make one real read_file, ls, glob, or grep tool call to inspect "
+                    "the workspace. Do not write any file, and do not use bash or python. "
+                    "Inspect the workspace first, then reply with your findings."
+                )
+            else:
+                strategy = "write_immediately"
+                instruction = (
+                    "Immediately make one real write_file or edit_file change inside the declared "
+                    "write scope. Do not answer with a plan, prose-only explanation, or a code block "
+                    "before the first successful write."
+                )
+        elif category == "tool_execution":
             strategy = "write_immediately"
             instruction = (
                 "Immediately make one real write_file or edit_file change inside the declared "

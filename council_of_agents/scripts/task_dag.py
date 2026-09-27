@@ -217,7 +217,7 @@ def reconnaissance_plan_error(tasks, facts: dict | None) -> str | None:
         return "implementation task must depend on bounded discovery output"
     return None
 
-def normalize_verification(raw) -> dict | None:
+def normalize_verification(raw, *, is_mutation: bool = True) -> dict | None:
     """Translate plan-contract verification shapes to the ledger VerificationSpec.
 
     The Strategist contract (and planning-gate fixtures) describe verification
@@ -230,6 +230,11 @@ def normalize_verification(raw) -> dict | None:
     never a run crash).
     """
     if not isinstance(raw, dict) or not raw:
+        return None
+    if not is_mutation and (
+        raw.get("type") in ("shell", "command")
+        or raw.get("adapter") in ("shell", "command")
+    ):
         return None
     if "adapter" in raw and isinstance(raw.get("config"), dict):
         return raw
@@ -432,7 +437,7 @@ class TaskDAG:
             read_scope=list(node.read_scope),
             write_scope=list(node.write_scope),
             base_hashes=dict(node.base_hashes),
-            verification=normalize_verification(node.verification),
+            verification=normalize_verification(node.verification, is_mutation=self.requires_mutation(node)),
             attempt=node.retry_count + 1,
             contract_hash=node.contract_hash,
             workspace_root=node.workspace_root,
@@ -478,6 +483,11 @@ class TaskDAG:
     @staticmethod
     def requires_mutation(node: TaskNode) -> bool:
         return bool(getattr(node, "workspace_root", False) or getattr(node, "write_scope", None))
+
+    @staticmethod
+    def requires_inspection(node: TaskNode) -> bool:
+        """True if the task contract represents read-only inspection work."""
+        return not TaskDAG.requires_mutation(node)
 
     def validate_contracts(self) -> None:
         """Reject an invalid task contract without sealing it."""

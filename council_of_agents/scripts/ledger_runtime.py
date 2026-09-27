@@ -21,7 +21,7 @@ from council_of_agents.scripts.ledger_models import (
 )
 from council_of_agents.scripts.ledger_store import LedgerStore, SQLiteLedgerStore
 from council_of_agents.scripts.loop_controller import LoopController
-from council_of_agents.scripts.task_dag import normalize_verification
+from council_of_agents.scripts.task_dag import TaskDAG, normalize_verification
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +224,7 @@ class CouncilLedgerRuntime:
                     self.ledger.inflight_tasks.pop(node.id, None)
                 self.ledger.tasks[node.id] = candidate_packet
                 spec = VerificationSpec.model_validate(
-                    normalize_verification(node.verification)
+                    normalize_verification(node.verification, is_mutation=TaskDAG.requires_mutation(node))
                     or {"adapter": "agent_audit", "config": {}}
                 )
                 ids = list(node.acceptance_ids) or [node.id]

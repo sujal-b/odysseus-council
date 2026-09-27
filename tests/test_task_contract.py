@@ -311,3 +311,81 @@ def test_accumulated_writes_serialize_and_survive_checkpoint_overlay():
     current.execution_retry = node.get("execution_retry")
     current.accumulated_writes = set(node.get("accumulated_writes") or [])
     assert current.accumulated_writes == {"src/app.py"}
+
+
+def test_requires_inspection_predicate():
+    from council_of_agents.scripts.task_dag import TaskNode
+    read_only_task = TaskNode(id="T1", description="Inspect repo", write_scope=[])
+    mutation_task = TaskNode(id="T2", description="Write code", write_scope=["src/"])
+    root_task = TaskNode(id="T3", description="Root write", workspace_root=True)
+
+    assert TaskDAG.requires_inspection(read_only_task) is True
+    assert TaskDAG.requires_mutation(read_only_task) is False
+
+    assert TaskDAG.requires_inspection(mutation_task) is False
+    assert TaskDAG.requires_mutation(mutation_task) is True
+
+    assert TaskDAG.requires_inspection(root_task) is False
+    assert TaskDAG.requires_mutation(root_task) is True
+
+
+def test_normalize_verification_drops_shell_commands_for_readonly_tasks():
+    cmd_verification = {"type": "shell", "command": "pwd && find . -maxdepth 2"}
+    # For read-only inspection tasks, shell/command specs are dropped
+    assert normalize_verification(cmd_verification, is_mutation=False) is None
+    # File-based inspection remains allowed if specified
+    file_verification = {"type": "file", "path": "README.md", "exists": True}
+    normalized_file = normalize_verification(file_verification, is_mutation=False)
+    assert normalized_file is not None
+    assert normalized_file["adapter"] == "file"
+
+
+def test_classify_inspection_evidence_requires_successful_read_channels():
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+    from council_of_agents.scripts.task_dag import TaskNode, TaskFailureCategory
+
+    task = TaskNode(id="T1", description="Inspect files", write_scope=[])
+
+    # 0 tool calls -> ZERO_EVIDENCE error
+    err = CouncilOrchestrator._classify_inspection_evidence(task, [])
+    assert err is not None
+    assert err.category == TaskFailureCategory.ZERO_EVIDENCE
+    assert "inspection evidence" in str(err)
+
+    # Failed read tool -> TOOL_EXECUTION error
+    failed_tools = [{"tool": "read_file", "output": "error reading", "exit_code": 1, "error": "file not found"}]
+    err = CouncilOrchestrator._classify_inspection_evidence(task, failed_tools)
+    assert err is not None
+    assert err.category == TaskFailureCategory.TOOL_EXECUTION
+
+    # Successful read tool -> passes (None)
+    successful_tools = [{"tool": "ls", "output": "file1.py\nfile2.py", "exit_code": 0, "error": None}]
+    assert CouncilOrchestrator._classify_inspection_evidence(task, successful_tools) is None
+
+
+def test_build_execution_retry_for_readonly_zero_evidence():
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+    from council_of_agents.scripts.task_dag import TaskNode
+
+    read_task = TaskNode(id="T1", description="Inspect files", write_scope=[])
+    retry = CouncilOrchestrator._build_execution_retry(read_task, "zero evidence", "zero_evidence_execution")
+    assert retry["strategy"] == "inspect_immediately"
+    assert "read_file, ls, glob, or grep" in retry["instruction"]
+
+    mutation_task = TaskNode(id="T2", description="Write code", write_scope=["src/"])
+    retry_mut = CouncilOrchestrator._build_execution_retry(mutation_task, "zero evidence", "zero_evidence_execution")
+    assert retry_mut["strategy"] == "write_immediately"
+
+
+def test_task_gate_evidence_line_reports_inspection_tools():
+    from council_of_agents.scripts.council_orchestrator import CouncilOrchestrator
+    from council_of_agents.scripts.task_dag import TaskNode
+
+    read_task = TaskNode(id="T1", description="Inspect files", write_scope=[])
+    line = CouncilOrchestrator._task_gate_evidence_line(
+        task_written_paths=[],
+        task=read_task,
+        tool_results=[{"tool": "ls", "output": "ok", "exit_code": 0, "error": None}]
+    )
+    assert "Inspection tools executed successfully: ['ls']" in line
+
