@@ -292,9 +292,21 @@ class WriteFileTool:
                     _truncate
                 )
         workspace = ctx.get("workspace")
-        lines = content.split("\n", 1)
-        raw_path = lines[0].strip()
-        body = lines[1] if len(lines) > 1 else ""
+        raw_path = ""
+        body = ""
+        _s = (content or "").strip()
+        if _s.startswith("{"):
+            try:
+                _data = json.loads(_s)
+                if isinstance(_data, dict) and "path" in _data:
+                    raw_path = str(_data["path"]).strip()
+                    body = str(_data.get("content", ""))
+            except Exception:
+                pass
+        if not raw_path:
+            lines = content.split("\n", 1)
+            raw_path = lines[0].strip()
+            body = lines[1] if len(lines) > 1 else ""
         try:
             path = (_resolve_tool_path_in_workspace(workspace, raw_path)
                     if workspace else _resolve_tool_path(raw_path))

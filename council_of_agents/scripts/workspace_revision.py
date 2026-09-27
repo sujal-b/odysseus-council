@@ -63,7 +63,7 @@ class WorkspaceWriteGuard:
             match = re.search(r'"path"\s*:\s*"([^"]+)"', text)
             if match:
                 return match.group(1)
-        return text.split("\n", 1)[0].strip() if tool == "write_file" else ""
+        return text.split("\n", 1)[0].strip() if tool in ("write_file", "edit_file") else ""
 
     def attempted_path(self, tool, content):
         """Best-effort relative path for passive diagnostics; never authorizes a write."""

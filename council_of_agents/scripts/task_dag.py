@@ -47,6 +47,32 @@ def repair_file_write_scopes(tasks: list[dict]) -> dict:
     for task in tasks or []:
         if not isinstance(task, dict):
             continue
+
+        ws = task.get("write_scope")
+        if ws in (["./"], ["."]):
+            task["workspace_root"] = True
+            task["write_scope"] = []
+            repaired.append({"id": task.get("id"), "scope": "workspace_root"})
+            continue
+
+        if isinstance(ws, list) and len(ws) == 1 and isinstance(ws[0], str):
+            val = ws[0].strip().replace("\\", "/")
+            if not val.endswith("/"):
+                p = PurePosixPath(val)
+                if p.suffix and not any(part == ".." for part in p.parts):
+                    parent = str(p.parent)
+                    if parent in (".", "", "/"):
+                        task["workspace_root"] = True
+                        task["write_scope"] = []
+                        repaired.append({"id": task.get("id"), "scope": "workspace_root"})
+                    else:
+                        scope_dir = parent.strip("/") + "/"
+                        task["write_scope"] = [scope_dir]
+                        if "workspace_root" in task:
+                            del task["workspace_root"]
+                        repaired.append({"id": task.get("id"), "scope": scope_dir})
+                    continue
+
         # Only inspect tasks with declared empty write_scope and without workspace_root
         if task.get("write_scope") != [] or task.get("workspace_root"):
             continue
@@ -451,7 +477,7 @@ class TaskDAG:
 
     @staticmethod
     def requires_mutation(node: TaskNode) -> bool:
-        return bool(node.workspace_root or node.write_scope)
+        return bool(getattr(node, "workspace_root", False) or getattr(node, "write_scope", None))
 
     def validate_contracts(self) -> None:
         """Reject an invalid task contract without sealing it."""
@@ -640,7 +666,62 @@ class TaskDAG:
     @classmethod
     def from_task_list(cls, tasks: list[dict]) -> TaskDAG:
         dag = cls()
-        for t in tasks:
+        if not tasks:
+            return dag
+
+        # Index tasks, normalize IDs and depends_on
+        task_list = [dict(t) for t in tasks if isinstance(t, dict) and "id" in t]
+        seen_ids = set()
+        for t in task_list:
+            tid = str(t["id"]).strip()
+            if tid in seen_ids:
+                raise ValueError(f"Duplicate task ID: {tid}")
+            seen_ids.add(tid)
+            t["id"] = tid
+
+        all_ids = {t["id"]: t for t in task_list}
+        case_map = {k.casefold(): k for k in all_ids}
+
+        for t in task_list:
+            tid = str(t["id"]).strip()
+            raw_deps = t.get("depends_on") or []
+            clean_deps = []
+            for dep in raw_deps:
+                dep_str = str(dep).strip()
+                if not dep_str or dep_str.casefold() in ("none", "null", "[]"):
+                    continue
+                matched = case_map.get(dep_str.casefold())
+                if matched and matched != tid and matched not in clean_deps:
+                    clean_deps.append(matched)
+            t["depends_on"] = clean_deps
+
+        # Topologically order tasks so prerequisites are added before dependents
+        ordered = []
+        visited = set()
+        visiting = set()
+
+        def visit(tid):
+            if tid in visited:
+                return
+            if tid in visiting:
+                return
+            visiting.add(tid)
+            td = all_ids.get(tid)
+            if td:
+                for dep in list(td.get("depends_on", [])):
+                    if dep in all_ids:
+                        if dep in visiting:
+                            td["depends_on"].remove(dep)
+                        else:
+                            visit(dep)
+                visited.add(tid)
+                ordered.append(td)
+            visiting.remove(tid)
+
+        for tid in all_ids:
+            visit(tid)
+
+        for t in ordered:
             dag.add_task(TaskNode(
                 id=t["id"],
                 description=t.get("description", ""),
