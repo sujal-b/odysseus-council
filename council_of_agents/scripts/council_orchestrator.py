@@ -3844,10 +3844,11 @@ Report what you FIND, not what you think might exist."""
         own acceptance and scope so the gate judges the contract, not the
         request.
         """
+        scope_str = "the workspace root" if getattr(task, "workspace_root", False) else str(sorted(task.write_scope or []))
         return (
             f"Task {getattr(task, 'id', '')}: {getattr(task, 'description', '')}\n"
             f"Task contract: acceptance = {getattr(task, 'acceptance', '') or '(unspecified)'}; "
-            f"write scope = {sorted(task.write_scope or [])}. Judge ONLY against this task's "
+            f"write scope = {scope_str}. Judge ONLY against this task's "
             "acceptance; deliverables owned by other tasks in the plan are not part of this task."
         )
 

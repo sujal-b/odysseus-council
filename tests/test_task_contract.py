@@ -389,3 +389,74 @@ def test_task_gate_evidence_line_reports_inspection_tools():
     )
     assert "Inspection tools executed successfully: ['ls']" in line
 
+
+def test_real_session_contracts_demote_inspection_t1_and_preserve_root_mutation_t2():
+    """Session b20bf249 regression: Strategist authored workspace_root: true on
+    both T1 (inspection) and T2 (root creation). repair_file_write_scopes must
+    demote T1 to read-only (requires_mutation() == False) while preserving
+    T2 as a root mutation task."""
+    import json
+    tasks = [
+        {
+            "id": "T1",
+            "description": (
+                "Inspect workspace root files and environment: list files/dirs (e.g. `ls -la`), "
+                "detect existing Python scripts and any HTTP library usage (requests, urllib), "
+                "and confirm python3 interpreter availability via `python3 --version` and "
+                "`python3 -c \"import requests\"` for optional dependency presence."
+            ),
+            "depends_on": [],
+            "read_scope": ["./"],
+            "write_scope": [],
+            "acceptance": (
+                "Workspace contents and Python environment reported, with positive evidence "
+                "that python3 runs and whether an HTTP library (requests and/or urllib) is available."
+            ),
+            "verification": {"type": "shell", "command": "python3 --version"},
+            "workspace_root": True,
+            "acceptance_ids": [],
+        },
+        {
+            "id": "T2",
+            "description": (
+                "Create `temperature_checker.py` in the workspace root: a script that queries the "
+                "free, no-api-key Open-Meteo geocoding API (https://geocoding-api.open-meteo.com/v1/search) "
+                "to resolve a list of Indian city names, then queries Open-Meteo forecast "
+                "(https://api.open-meteo.com/v1/forecast with current temperature) for each, printing "
+                "city name and current temperature. Use only stdlib (urllib) or requests per T1 findings, "
+                "with graceful error handling per city."
+            ),
+            "depends_on": ["T1"],
+            "read_scope": ["./"],
+            "write_scope": [],
+            "workspace_root": True,
+            "acceptance": (
+                "Script file exists, is syntactically valid, imports cleanly, and accepts/uses a list of "
+                "Indian city names to fetch and print current temperatures from the free Open-Meteo API."
+            ),
+            "verification": {
+                "type": "shell",
+                "command": "python3 -m py_compile temperature_checker.py",
+            },
+            "acceptance_ids": [],
+        },
+    ]
+
+    plan = json.dumps({"tasks": tasks, "risks": []})
+    dag, repaired_tasks = CouncilOrchestrator._task_dag_from_plan(plan)
+
+    t1_node = dag._nodes["T1"]
+    t2_node = dag._nodes["T2"]
+
+    assert t1_node.workspace_root is False
+    assert TaskDAG.requires_mutation(t1_node) is False
+    assert TaskDAG.requires_inspection(t1_node) is True
+
+    assert t2_node.workspace_root is True
+    assert TaskDAG.requires_mutation(t2_node) is True
+    assert TaskDAG.requires_inspection(t2_node) is False
+
+    t2_contract_line = CouncilOrchestrator._task_gate_contract_line(t2_node)
+    assert "write scope = the workspace root" in t2_contract_line
+
+

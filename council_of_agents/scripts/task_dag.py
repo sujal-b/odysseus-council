@@ -50,9 +50,13 @@ def repair_file_write_scopes(tasks: list[dict]) -> dict:
 
         ws = task.get("write_scope")
         if ws in (["./"], ["."]):
-            task["workspace_root"] = True
+            if create_pattern.match(str(task.get("description") or "").strip()):
+                task["workspace_root"] = True
+                repaired.append({"id": task.get("id"), "scope": "workspace_root"})
+            else:
+                task.pop("workspace_root", None)
+                repaired.append({"id": task.get("id"), "scope": "read_only"})
             task["write_scope"] = []
-            repaired.append({"id": task.get("id"), "scope": "workspace_root"})
             continue
 
         if isinstance(ws, list) and len(ws) == 1 and isinstance(ws[0], str):
@@ -73,8 +77,14 @@ def repair_file_write_scopes(tasks: list[dict]) -> dict:
                         repaired.append({"id": task.get("id"), "scope": scope_dir})
                     continue
 
-        # Only inspect tasks with declared empty write_scope and without workspace_root
-        if task.get("write_scope") != [] or task.get("workspace_root"):
+        if task.get("write_scope"):
+            continue
+
+        if task.get("workspace_root"):
+            if not create_pattern.match(str(task.get("description") or "").strip()):
+                # ponytail: creation verb prefix check (create|add|generate|write|implement); tasks like "Build X" get demoted and caught by the contract gate rather than mis-scoped
+                task["workspace_root"] = False
+                repaired.append({"id": task.get("id"), "scope": "read_only"})
             continue
 
         desc = str(task.get("description") or "").strip()

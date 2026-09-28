@@ -14,5 +14,5 @@ Return ONLY a valid JSON object:
   ],
   "risks": ["<material risk>"]
 }
-For root-level changes, set "workspace_root": true and "write_scope": [].
+For root-level changes that create or modify files, set "workspace_root": true and "write_scope": []. Never set "workspace_root": true on read-only tasks.
 </output_format>

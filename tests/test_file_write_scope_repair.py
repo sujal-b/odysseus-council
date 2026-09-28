@@ -147,6 +147,37 @@ def test_fix_verb_task_stays_on_manager_path():
     assert tasks[0]["write_scope"] == []
 
 
+def test_root_scope_inspection_task_is_not_promoted_to_workspace_root():
+    """A read-only task that declared "./" as its write scope must not be
+    promoted to root-write permission. The daemon gate repairs BEFORE contract
+    validation, so "./" reaches the repair pass there; promoting it granted an
+    inspection task the mutation channel that the demotion rule exists to deny."""
+    tasks = [{
+        "id": "T1",
+        "description": "Inspect workspace root files and environment: list files/dirs.",
+        "read_scope": ["./"],
+        "write_scope": ["./"],
+        "acceptance": "Workspace contents reported.",
+    }]
+    assert _strategist_plan_error(tasks, "Inspect the workspace") is None
+    assert tasks[0]["write_scope"] == []
+    assert "workspace_root" not in tasks[0]
+
+
+def test_root_scope_creation_task_still_promotes_to_workspace_root():
+    """The complementary case: a real root-file creation task declaring "./"
+    keeps its root-write grant."""
+    tasks = [{
+        "id": "T2",
+        "description": "Create notes.py implementing CRUD for JSON file notes.",
+        "read_scope": ["./"],
+        "write_scope": ["./"],
+    }]
+    assert _strategist_plan_error(tasks, "Create a notes app") is None
+    assert tasks[0].get("workspace_root") is True
+    assert tasks[0]["write_scope"] == []
+
+
 def test_ambiguous_plan_raises_targeted_revision_in_acceptance_path():
     plan = json.dumps({"tasks": [{
         "id": "T2",
