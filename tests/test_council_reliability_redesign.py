@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from council_of_agents.scripts.agent_runner import AgentRunner
+from council_of_agents.scripts.council_orchestrator import CouncilEvent
 from council_of_agents.scripts.council_retry import ErrorClass, classify_error
 from council_of_agents.scripts.permissions import (
     PermissionManager,
@@ -370,3 +371,71 @@ def test_failure_contract_and_duplicate_suppression_are_bounded():
     assert suppressed["failure_kind"] == "DUPLICATE_SUPPRESSED"
     assert suppressed["fingerprint"] == result["fingerprint"]
     assert len(tool_call_fingerprint("ls", "  .  ")) == 20
+
+
+def test_cancel_keeps_live_stream_open_for_the_worker_terminal_event():
+    """A cancelled worker must be able to deliver its own CANCELLED event.
+
+    Closing the SSE queue inside ``cancel_active_council_session`` raced the
+    orchestrator: it emitted the terminal event into a queue that had already
+    been popped, so the browser only ever saw ``[DONE]`` and kept reporting the
+    run as IN_PROGRESS. With a live task the queue must survive until the SSE
+    generator closes it.
+    """
+    import routes.council_routes as council_routes
+
+    session_id = "cancel-live-stream"
+    queue = asyncio.Queue()
+    blocker = asyncio.Event()
+
+    async def scenario():
+        async def worker():
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                raise
+
+        task = asyncio.create_task(worker())
+        await asyncio.sleep(0)
+        council_routes._running_tasks[session_id] = task
+        council_routes._queues[session_id] = queue
+
+        council_routes.cancel_active_council_session(session_id)
+        await asyncio.sleep(0)
+
+        # The queue is still owned by the stream, not torn down by the cancel.
+        assert council_routes._queues.get(session_id) is queue
+        assert session_id not in council_routes._running_tasks
+
+        # The worker's terminal event is therefore still deliverable.
+        await queue.put(CouncilEvent(event="complete", status="CANCELLED", text="Run cancelled by user."))
+        await queue.put(None)
+        assert (await queue.get()).status == "CANCELLED"
+        assert await queue.get() is None
+
+        await asyncio.gather(task, return_exceptions=True)
+        council_routes._queues.pop(session_id, None)
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        council_routes._running_tasks.pop(session_id, None)
+        council_routes._queues.pop(session_id, None)
+        council_routes._running_sessions.discard(session_id)
+        council_routes._resumes.pop(session_id, None)
+
+
+def test_cancel_without_a_worker_still_closes_the_stream():
+    """Sessions with no live worker keep the original immediate teardown."""
+    import routes.council_routes as council_routes
+
+    session_id = "cancel-idle-stream"
+    queue = asyncio.Queue()
+    council_routes._queues[session_id] = queue
+    council_routes._running_tasks.pop(session_id, None)
+    try:
+        council_routes.cancel_active_council_session(session_id)
+        assert council_routes._queues.get(session_id) is None
+        assert queue.get_nowait() is None
+    finally:
+        council_routes._queues.pop(session_id, None)
