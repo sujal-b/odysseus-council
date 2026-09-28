@@ -199,12 +199,17 @@ def cancel_active_council_session(session_id: str, purge_state: bool = False) ->
         _running_tasks.pop(session_id, None)
     _running_sessions.discard(session_id)
     _resumes.pop(session_id, None)
-    q = _queues.pop(session_id, None)
-    if q is not None:
-        try:
-            q.put_nowait(None)
-        except Exception:
-            pass
+    # When a live task owns the stream it emits its own terminal CANCELLED event
+    # and then a final None, so the SSE generator closes the queue in its
+    # ``finally``. Closing it here would drop that event before the browser sees
+    # it. Only sessions with no worker are torn down directly.
+    if task is None:
+        q = _queues.pop(session_id, None)
+        if q is not None:
+            try:
+                q.put_nowait(None)
+            except Exception:
+                pass
     # Unblock any pending permission requests so the orchestrator can exit cleanly
     try:
         for perm_id, evt in list(GLOBAL_REGISTRY.pending_events.items()):

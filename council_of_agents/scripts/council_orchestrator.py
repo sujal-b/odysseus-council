@@ -392,7 +392,7 @@ class CouncilOrchestrator:
                             state, question, emit, resume_event, options=options
                         )
                         if state.status == "CANCELLED":
-                            await emit(event="complete", status="FAILED", text="Cancelled by user.")
+                            await emit(event="complete", status="CANCELLED", text="Cancelled by user.")
                             return
                         if answer:
                             state.user_prompt = (
@@ -911,7 +911,7 @@ Report what you FIND, not what you think might exist."""
                 resume_event.clear()
                 await resume_event.wait()
                 if state.status == "CANCELLED":
-                    await emit(event="complete", status="FAILED", text="Cancelled by user.")
+                    await emit(event="complete", status="CANCELLED", text="Cancelled by user.")
                     return
                 if requires_override and not getattr(state, "manager_override", False):
                     await emit(
@@ -1617,7 +1617,7 @@ Report what you FIND, not what you think might exist."""
                         workspace, emit, owner, resume_event
                     )
                     if _cancelled:
-                        await emit(event="complete", status="FAILED", text="Cancelled by user.")
+                        await emit(event="complete", status="CANCELLED", text="Cancelled by user.")
                         return
                 except Exception as e:
                     logger.warning("Completeness loop failed: %s", e)
@@ -1928,7 +1928,7 @@ Report what you FIND, not what you think might exist."""
             if self._checkpoint is not None:
                 self._checkpoint.record_final("CANCELLED", "", [], failure={"reason": "cancelled", "checkpoint_eligible": bool(self._checkpoint.approved())})
             try:
-                await emit(event="complete", status="FAILED", text="Run cancelled by user.")
+                await emit(event="complete", status="CANCELLED", text="Run cancelled by user.")
             except Exception:
                 pass
             raise
