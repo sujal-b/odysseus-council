@@ -416,9 +416,18 @@ class CouncilSession {
 
     this._es.onmessage = e => {
       if (e.data === '[DONE]') {
-        this._state.connectionState = 'disconnected';
         this._es.close();
         this._es = null;
+        // The stream closed without a terminal event. A run that never left
+        // IN_PROGRESS/BLOCKED was stopped (the worker emits its own CANCELLED
+        // event, but it can be raced by the stream teardown), so settle the
+        // state here rather than leaving the UI reporting a run that is over.
+        const unfinished = this._state.status === 'IN_PROGRESS' || this._state.status === 'BLOCKED';
+        this._state.update({
+          event: 'connection_state',
+          connectionState: 'disconnected',
+          ...(unfinished ? { status: 'CANCELLED' } : {})
+        });
       }
     };
   }
@@ -998,7 +1007,7 @@ class CouncilUI {
     const isDirect = state.route === 'DIRECT';
     const isPipeline = state.route === 'PIPELINE';
     const isRunning = state.status === 'IN_PROGRESS' || state.status === 'BLOCKED';
-    const isTerminal = state.status === 'COMPLETE' || state.status === 'FAILED';
+    const isTerminal = state.status === 'COMPLETE' || state.status === 'FAILED' || state.status === 'CANCELLED';
 
     // Dirty check — skip if compass-relevant state unchanged
     const compassKey = `${state.route}|${state.status}|${state.activeAgent}`;
