@@ -37232,6 +37232,13 @@ body.theme-frosted .modal {
   min-height: 0;
 }
 
+/* Direct children are ledger rows/cards, never shrink targets. Without this,
+   a tall expanded sibling (burst body, tool body) shrinks min-height:0
+   overflow:hidden cards down to their borders. */
+.ghost-stream-ledger > * {
+  flex-shrink: 0;
+}
+
 .ghost-stream-ledger::-webkit-scrollbar {
   width: 5px;
 }
@@ -38059,6 +38066,7 @@ body.theme-frosted .modal {
 }
 .ghost-tool-card.open .ghost-tool-body {
   max-height: 400px;
+  overflow-y: auto;
   border-top: 1px solid var(--border);
   padding: 6px 10px;
   opacity: 1;
@@ -38238,6 +38246,7 @@ body.theme-frosted .modal {
 }
 .ghost-burst-group.burst-open .ghost-burst-body {
   max-height: 2000px;
+  overflow-y: auto;
   border-top: 1px solid var(--border);
   opacity: 1;
 }

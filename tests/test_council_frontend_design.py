@@ -233,6 +233,21 @@ def test_tool_tag_overflow_containment_invariants():
     assert "white-space: nowrap" in tag_css
 
 
+def test_stream_ledger_flex_shrink_and_drawer_scroll_invariants():
+    # Direct ledger children must not be flex-shrink targets when drawers expand
+    ledger_children = CSS.split(".ghost-stream-ledger > * {", 1)[1].split("}", 1)[0]
+    assert "flex-shrink: 0;" in ledger_children
+
+    # Expanded tool bodies must support vertical scroll for large payloads
+    tool_open = CSS.split(".ghost-tool-card.open .ghost-tool-body {", 1)[1].split("}", 1)[0]
+    assert "overflow-y: auto;" in tool_open
+
+    # Expanded burst bodies must support vertical scroll for large multi-tool bursts
+    burst_open = CSS.split(".ghost-burst-group.burst-open .ghost-burst-body {", 1)[1].split("}", 1)[0]
+    assert "overflow-y: auto;" in burst_open
+
+
+
 
 
 
