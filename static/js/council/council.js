@@ -2469,7 +2469,7 @@ class CouncilUI {
     const layerKeys = Object.keys(layerGroups).map(Number).sort((a, b) => a - b);
 
     const nodeW = isOverlay ? 220 : 160;
-    const nodeH = isOverlay ? 60 : 48;
+    const nodeH = isOverlay ? 64 : 50;
     const padX = isOverlay ? 44 : 32;
     const padY = isOverlay ? 36 : 24;
     const marginX = isOverlay ? 40 : 24;
@@ -2496,6 +2496,50 @@ class CouncilUI {
       return 'dag-node--' + (m[s] || 'pending');
     };
 
+    const _wrapSvgText = (text, maxLineChars = 26, maxLines = 2) => {
+      if (!text) return [];
+      const words = String(text).trim().split(/\s+/);
+      const lines = [];
+      let current = '';
+
+      for (const w of words) {
+        if (!w) continue;
+        if (w.length > maxLineChars) {
+          if (current) {
+            lines.push(current);
+            current = '';
+            if (lines.length === maxLines) break;
+          }
+          lines.push(w.slice(0, maxLineChars - 1) + '…');
+          if (lines.length === maxLines) break;
+          continue;
+        }
+        const test = current ? `${current} ${w}` : w;
+        if (test.length <= maxLineChars) {
+          current = test;
+        } else {
+          if (current) lines.push(current);
+          current = w;
+          if (lines.length === maxLines) break;
+        }
+      }
+      if (current && lines.length < maxLines) {
+        lines.push(current);
+      }
+
+      if (lines.length === maxLines) {
+        const joined = lines.join(' ');
+        if (joined.length < String(text).trim().length) {
+          let last = lines[maxLines - 1];
+          if (!last.endsWith('…')) {
+            last = (last.length > maxLineChars - 1 ? last.slice(0, maxLineChars - 2) : last) + '…';
+            lines[maxLines - 1] = last;
+          }
+        }
+      }
+      return lines;
+    };
+
     let svg = `<svg class="dag-svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`;
     svg += `<defs><marker id="dag-arrow" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
       <path d="M0,0 L8,3 L0,6" fill="none" stroke="var(--border)" stroke-width="1.5"/>
@@ -2517,12 +2561,25 @@ class CouncilUI {
       const p = positions[n.id];
       if (!p) return;
       const desc = typeof n.description === 'string' ? n.description : (n.description != null ? String(n.description) : '');
-      const maxChars = isOverlay ? 75 : 40;
-      const truncDesc = desc.length > maxChars ? desc.slice(0, maxChars - 3) + '…' : desc;
+      const maxLineChars = isOverlay ? 26 : 18;
+      const lines = _wrapSvgText(desc, maxLineChars, 2);
+      let descHtml = '';
+      if (lines.length === 1) {
+        const yPos = isOverlay ? 40 : 34;
+        descHtml = `<text class="dag-node-desc" x="${nodeW/2}" y="${yPos}">${_esc(lines[0])}</text>`;
+      } else if (lines.length >= 2) {
+        const startY = isOverlay ? 33 : 28;
+        const lineSpacing = isOverlay ? 14 : 12;
+        descHtml = `<text class="dag-node-desc" x="${nodeW/2}" y="${startY}">
+          <tspan x="${nodeW/2}" dy="0">${_esc(lines[0])}</tspan>
+          <tspan x="${nodeW/2}" dy="${lineSpacing}">${_esc(lines[1])}</tspan>
+        </text>`;
+      }
       svg += `<g class="dag-node ${statusClass(n.status)}" transform="translate(${p.x},${p.y})">
+        <title>${_esc(n.id)}: ${_esc(desc)}</title>
         <rect class="dag-node-rect" width="${nodeW}" height="${nodeH}"/>
         <text class="dag-node-id" x="${nodeW/2}" y="${isOverlay ? 20 : 16}">${_esc(n.id)}</text>
-        <text class="dag-node-desc" x="${nodeW/2}" y="${isOverlay ? 40 : 34}">${_esc(truncDesc)}</text>
+        ${descHtml}
       </g>`;
     });
 

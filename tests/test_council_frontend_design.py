@@ -212,6 +212,17 @@ def test_execution_stream_monochrome_palette_invariants():
     assert '<span class="bd" style="color:var(--strat);">' not in JS
 
 
+def test_dag_svg_node_text_wrapping_and_tooltip_invariants():
+    # DAG SVG text wrapping helper bounds line width inside node rects
+    assert "_wrapSvgText" in JS
+    assert "<tspan" in JS
+    assert "maxLineChars" in JS
+
+    # Full task description is preserved as a native SVG hover tooltip
+    assert "<title>${_esc(n.id)}: ${_esc(desc)}</title>" in JS
+
+
+
 
 
 
