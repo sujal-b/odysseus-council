@@ -182,6 +182,37 @@ def test_high_workload_task_rail_and_burst_grid_invariants():
     assert ".ghost-editor-stream .row.ghost-burst-header" in CSS
 
 
+def test_execution_stream_monochrome_palette_invariants():
+    # Role tags (.ag) default to muted zinc/neutral monospace tags, not bright orange
+    ag_block = CSS.split(".ghost-editor-stream .ag {", 1)[1].split("}", 1)[0]
+    assert "var(--dim" in ag_block
+    assert "var(--font-mono" in ag_block
+
+    # Role overrides for standard council agents use muted neutral, sys uses fail
+    ag_roles = CSS.split(".ghost-editor-stream .ag.ag--chair,", 1)[1].split(".ghost-editor-stream .ct", 1)[0]
+    assert ".ghost-editor-stream .ag.ag--sys" in ag_roles
+    assert "var(--fail" in ag_roles
+
+    # Tool tags default to muted neutral tags
+    tool_tag_block = CSS.split(".ghost-editor-stream .tool-tag {", 1)[1].split("}", 1)[0]
+    assert "var(--dim" in tool_tag_block
+
+    # Burst header and perspective card substrates default to neutral dark panel mixes
+    assert ".ghost-burst-group:hover" in CSS
+    burst_header_block = CSS.split(".ghost-editor-stream .row.ghost-burst-header {", 1)[1].split("}", 1)[0]
+    assert "var(--strat)" not in burst_header_block
+    assert "var(--panel)" in burst_header_block
+
+    persp_card_block = CSS.split(".ghost-editor-stream .ghost-perspective-card {", 1)[1].split("}", 1)[0]
+    assert "var(--strat" not in persp_card_block
+    assert "var(--panel)" in persp_card_block
+
+    # JS templates do not contain inline candy color overrides
+    assert 'planned <strong style="color:var(--impl)">' not in JS
+    assert '<span class="bd" style="color:var(--strat);">' not in JS
+
+
+
 
 
 

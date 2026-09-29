@@ -1986,7 +1986,7 @@ class CouncilUI {
       } else if (b.type === 'chair') {
         const stepNum = _nextStep();
         const role = _resolveRole('chair');
-        const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--pass)';
+        const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--muted)';
         const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
         html += `
           <div class="row">
@@ -2011,8 +2011,8 @@ class CouncilUI {
           : `<span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>`;
         if (_p) {
           const cardCls = _p.evidence === 'block' ? ' is-blocked' : (_p.evidence === 'must_fix' ? ' is-mustfix' : '');
-          const badgeColor = _pClear ? 'var(--impl)' : (_p.evidence === 'block' ? 'var(--fail)' : 'var(--warn)');
-          const badgeBg = _pClear ? 'rgba(78,184,112,0.1)' : (_p.evidence === 'block' ? 'rgba(224,88,88,0.1)' : 'rgba(223,142,69,0.1)');
+          const badgeColor = _pClear ? 'var(--dim)' : (_p.evidence === 'block' ? 'var(--fail)' : 'var(--warn)');
+          const badgeBg = _pClear ? 'color-mix(in srgb, var(--fg) 6%, transparent)' : (_p.evidence === 'block' ? 'rgba(224,88,88,0.1)' : 'rgba(223,142,69,0.1)');
           const badgeLabel = _p.evidence === 'clear' ? 'AUDIT CLEAR' : (_p.evidence === 'block' ? 'AUDIT BLOCKED' : 'AUDIT FLAGGED');
           html += `
             <div class="ghost-perspective-card${cardCls}">
@@ -2057,7 +2057,7 @@ class CouncilUI {
             <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
             <div class="ct">
-              <span>planned <strong style="color:var(--impl)">${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'} in <strong style="color:var(--chair)">${_waves}</strong> wave${_waves === 1 ? '' : 's'}</span>
+              <span>planned <strong>${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'} in <strong>${_waves}</strong> wave${_waves === 1 ? '' : 's'}</span>
               <span class="tx" title="${_esc(_allLabels)}">${_esc(_labels)}</span>
             </div>
           </div>`;
@@ -2078,7 +2078,7 @@ class CouncilUI {
                 <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
                 <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
                 <div class="ct">
-                  <span class="bd" style="color:var(--impl)">${_esc((f.action || 'updated').toUpperCase())}</span>
+                  <span class="bd">${_esc((f.action || 'updated').toUpperCase())}</span>
                   <span class="tx" title="${_esc(f.name)}">${_esc(f.name)}</span>
                   ${diffSpan}
                 </div>
@@ -2193,7 +2193,7 @@ class CouncilUI {
               <span class="st ${statusCls}" title="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}" aria-label="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}">${_bss}</span>
               <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
               <div class="ct">
-                <span class="bd" style="color:var(--strat);">${_esc(_burstTitle)}</span>
+                <span class="bd">${_esc(_burstTitle)}</span>
                 <span class="tx" title="${_esc(b.checkpoint || '')}">${_cpHtml || _esc(b.checkpoint || '')}</span>
                 <span class="ghost-burst-count" style="margin-left:auto;">${_total}</span>
                 <span class="ghost-burst-chevron" style="margin-left:6px;">${_isOpen ? '▼' : '▶'}</span>

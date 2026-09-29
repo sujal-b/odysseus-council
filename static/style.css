@@ -37432,10 +37432,13 @@ body.theme-frosted .modal {
   flex-shrink: 0;
 }
 .ghost-editor-stream .st.st--done,
-.ghost-editor-stream .st .st-icon--done { color: var(--impl, #4eb870); }
+.ghost-editor-stream .st .st-icon--done {
+  color: color-mix(in srgb, var(--impl, #4eb870) 50%, var(--dim, #8c877f));
+  opacity: 0.85;
+}
 .ghost-editor-stream .st.st--running,
 .ghost-editor-stream .st .st-icon--running {
-  color: var(--strat, #50a0df);
+  color: var(--chair, #df8e45);
   animation: cockpit-spin 1s linear infinite;
 }
 .ghost-editor-stream .st.st--blocked,
@@ -37449,28 +37452,28 @@ body.theme-frosted .modal {
 .ghost-editor-stream .ghost-perspective-card {
   margin: 1px 6px 3px;
   border-radius: 4px;
-  background: color-mix(in srgb, var(--strat, #50a0df) 3%, transparent);
-  border: 1px solid color-mix(in srgb, var(--strat, #50a0df) 20%, transparent);
-  border-left: 3px solid var(--strat, #50a0df);
+  background: color-mix(in srgb, var(--fg) 2%, var(--panel));
+  border: 1px solid var(--border);
+  border-left: 3px solid color-mix(in srgb, var(--fg) 20%, transparent);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .ghost-editor-stream .ghost-perspective-card.is-blocked {
-  background: color-mix(in srgb, var(--fail, #e05858) 3%, transparent);
-  border-color: color-mix(in srgb, var(--fail, #e05858) 24%, transparent);
+  background: color-mix(in srgb, var(--fail, #e05858) 4%, var(--panel));
+  border-color: color-mix(in srgb, var(--fail, #e05858) 28%, transparent);
   border-left-color: var(--fail, #e05858);
 }
 .ghost-editor-stream .ghost-perspective-card.is-mustfix {
-  background: color-mix(in srgb, var(--warn, #df8e45) 3%, transparent);
-  border-color: color-mix(in srgb, var(--warn, #df8e45) 24%, transparent);
+  background: color-mix(in srgb, var(--warn, #df8e45) 4%, var(--panel));
+  border-color: color-mix(in srgb, var(--warn, #df8e45) 28%, transparent);
   border-left-color: var(--warn, #df8e45);
 }
 .ghost-editor-stream .ghost-perspective-card:hover {
-  background: color-mix(in srgb, var(--strat, #50a0df) 6%, transparent);
-  border-color: color-mix(in srgb, var(--strat, #50a0df) 34%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, var(--panel));
+  border-color: color-mix(in srgb, var(--fg) 24%, transparent);
 }
 .ghost-editor-stream .ghost-perspective-card.is-blocked:hover {
-  background: color-mix(in srgb, var(--fail, #e05858) 6%, transparent);
+  background: color-mix(in srgb, var(--fail, #e05858) 6%, var(--panel));
   border-color: color-mix(in srgb, var(--fail, #e05858) 36%, transparent);
 }
 .ghost-editor-stream .ghost-perspective-card .row {
@@ -37481,7 +37484,7 @@ body.theme-frosted .modal {
   background: transparent;
 }
 .ghost-editor-stream .ghost-perspective-card:hover .row {
-  border-bottom-color: color-mix(in srgb, var(--strat, #50a0df) 22%, transparent);
+  border-bottom-color: color-mix(in srgb, var(--fg) 16%, transparent);
 }
 
 .ghost-editor-stream .persp-chips {
@@ -37522,8 +37525,8 @@ body.theme-frosted .modal {
   border-color: color-mix(in srgb, var(--chair, #df8e45) 30%, transparent);
 }
 .ghost-editor-stream .persp-metric-cell--overall.is-ok {
-  background: color-mix(in srgb, var(--impl, #4eb870) 8%, var(--panel));
-  border-color: color-mix(in srgb, var(--impl, #4eb870) 30%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, var(--panel));
+  border-color: color-mix(in srgb, var(--fg) 16%, transparent);
 }
 .ghost-editor-stream .persp-metric-cell--overall.is-mustfix {
   background: color-mix(in srgb, var(--warn, #df8e45) 8%, var(--panel));
@@ -37551,11 +37554,11 @@ body.theme-frosted .modal {
   font-variant-numeric: tabular-nums;
 }
 .ghost-editor-stream .persp-score { color: var(--muted, #736b63); }
-.ghost-editor-stream .persp-score.is-ok { color: var(--impl, #4eb870); }
+.ghost-editor-stream .persp-score.is-ok { color: var(--dim, #a09c95); }
 .ghost-editor-stream .persp-score.is-mustfix { color: var(--warn, #df8e45); }
 .ghost-editor-stream .persp-score.is-block { color: var(--fail, #e05858); }
 .ghost-editor-stream .persp-overall { color: var(--chair, #df8e45); }
-.ghost-editor-stream .persp-overall.is-ok { color: var(--impl, #4eb870); }
+.ghost-editor-stream .persp-overall.is-ok { color: var(--fg, #e2dcd5); }
 .ghost-editor-stream .persp-overall.is-mustfix { color: var(--warn, #df8e45); }
 .ghost-editor-stream .persp-overall.is-block { color: var(--fail, #e05858); }
 
@@ -37591,9 +37594,9 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--fg) 5%, transparent);
 }
 .ghost-editor-stream .persp-chip.is-ok {
-  color: var(--impl, #4eb870);
-  border-color: color-mix(in srgb, var(--impl, #4eb870) 35%, transparent);
-  background: color-mix(in srgb, var(--impl, #4eb870) 10%, transparent);
+  color: var(--dim, #a09c95);
+  border-color: color-mix(in srgb, var(--fg) 14%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
 }
 .ghost-editor-stream .persp-chip.is-invalid {
   color: var(--fail, #e05858);
@@ -37618,11 +37621,12 @@ body.theme-frosted .modal {
 }
 
 .ghost-editor-stream .ag {
-  color: var(--chair, #df8e45);
-  font-weight: 700;
+  color: var(--dim, #a09c95);
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-size: 10px;
+  font-weight: 600;
   width: 48px;
   flex-shrink: 0;
-  font-size: 10.5px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   padding: 0 6px;
@@ -37633,14 +37637,16 @@ body.theme-frosted .modal {
   transition: color 0.15s ease, filter 0.15s ease;
 }
 .ghost-editor-stream .ag:hover {
-  filter: brightness(1.2);
+  color: var(--fg, #e2dcd5);
 }
 .ghost-editor-stream .ag.ag--chair,
 .ghost-editor-stream .ag.ag--strat,
 .ghost-editor-stream .ag.ag--impl,
-.ghost-editor-stream .ag.ag--mgr,
+.ghost-editor-stream .ag.ag--mgr {
+  color: var(--dim, #a09c95);
+}
 .ghost-editor-stream .ag.ag--sys {
-  color: var(--chair, #df8e45);
+  color: var(--fail, #e05858);
 }
 
 .ghost-editor-stream .ct {
@@ -38128,18 +38134,18 @@ body.theme-frosted .modal {
   margin: 2px 6px 3px;
 }
 .ghost-burst-group:hover {
-  border-color: color-mix(in srgb, var(--strat) 35%, transparent);
+  border-color: color-mix(in srgb, var(--fg) 20%, transparent);
 }
 .ghost-editor-stream .row.ghost-burst-header {
   cursor: pointer;
   user-select: none;
-  background: color-mix(in srgb, var(--strat) 5%, transparent);
+  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
   border-bottom: 1px solid var(--border);
   margin: 0;
   border-radius: 4px 4px 0 0;
 }
 .ghost-editor-stream .row.ghost-burst-header:hover {
-  background: color-mix(in srgb, var(--strat) 10%, transparent);
+  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
 .ghost-burst-header {
   display: flex;
@@ -38148,11 +38154,11 @@ body.theme-frosted .modal {
   padding: 6px 10px;
   cursor: pointer;
   user-select: none;
-  background: color-mix(in srgb, var(--strat) 5%, transparent);
+  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
   transition: background 0.15s ease;
 }
 .ghost-burst-header:hover {
-  background: color-mix(in srgb, var(--strat) 10%, transparent);
+  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
 /* Icon mosaic */
 .ghost-burst-icons {
@@ -38254,7 +38260,7 @@ body.theme-frosted .modal {
   font-family: var(--font-mono, 'Consolas', monospace);
 }
 
-/* Fixed-width Monospace Tool Badge */
+/* Fixed-width Monospace Tool Badge - Monochrome IDE Palette */
 .ghost-editor-stream .tool-tag {
   width: 48px;
   flex-shrink: 0;
@@ -38267,33 +38273,38 @@ body.theme-frosted .modal {
   line-height: 18px;
   padding: 0 4px;
   border-radius: 3px;
-  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
+  background: color-mix(in srgb, var(--fg) 4%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
-  color: var(--strat, #50a0df);
+  color: var(--dim, #a09c95);
   text-align: center;
   box-sizing: border-box;
   text-transform: none;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.ghost-editor-stream .tool-tag:hover {
+  color: var(--fg, #e2dcd5);
+  border-color: color-mix(in srgb, var(--fg) 24%, transparent);
 }
 .ghost-editor-stream .tool-tag--write_file,
 .ghost-editor-stream .tool-tag--edit_file {
-  color: #a67cff;
-  border-color: color-mix(in srgb, #a67cff 30%, transparent);
-  background: color-mix(in srgb, #a67cff 8%, transparent);
+  color: var(--fg, #e2dcd5);
+  border-color: color-mix(in srgb, var(--fg) 16%, transparent);
+  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
 .ghost-editor-stream .tool-tag--bash,
 .ghost-editor-stream .tool-tag--python {
-  color: var(--warn, #df8e45);
-  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
-  background: color-mix(in srgb, var(--warn) 8%, transparent);
+  color: var(--fg, #e2dcd5);
+  border-color: color-mix(in srgb, var(--fg) 16%, transparent);
+  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
 .ghost-editor-stream .tool-tag--ls,
 .ghost-editor-stream .tool-tag--glob,
 .ghost-editor-stream .tool-tag--grep,
 .ghost-editor-stream .tool-tag--read_file,
 .ghost-editor-stream .tool-tag--view_file {
-  color: var(--impl, #4eb870);
-  border-color: color-mix(in srgb, var(--impl) 30%, transparent);
-  background: color-mix(in srgb, var(--impl) 8%, transparent);
+  color: var(--dim, #a09c95);
+  border-color: color-mix(in srgb, var(--fg) 12%, transparent);
+  background: color-mix(in srgb, var(--fg) 4%, var(--panel));
 }
 
 .burst-item {
