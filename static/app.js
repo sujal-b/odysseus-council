@@ -4224,7 +4224,7 @@ if (document.readyState === 'loading') {
     var picker   = document.getElementById('model-picker-wrap');
     var pinned   = document.getElementById('pinned-tools-bar');
     var inputBar = document.querySelector('.chat-input-bar');
-    var councilCenter = document.querySelector('.council-center');
+    var councilCenter = document.getElementById('council-panel');
 
     if (textarea) {
       _savedPlaceholder = textarea.placeholder;

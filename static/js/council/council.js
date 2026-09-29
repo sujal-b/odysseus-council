@@ -961,17 +961,23 @@ class CouncilUI {
     const status = String(state.status || 'PENDING').toUpperCase();
     statusEl.textContent = labels[status] || status.toLowerCase();
     statusEl.dataset.status = status;
-    const agent = state.activeAgent ? state.activeAgent.charAt(0).toUpperCase() + state.activeAgent.slice(1) : '';
+    const meta = _roleMeta(state.activeAgent);
     if (status === 'FAILED') {
       stageEl.textContent = state.error ? `Error: ${state.error}` : 'Execution terminated with error';
     } else if (status === 'COMPLETE') {
       stageEl.textContent = 'All steps verified complete';
     } else if (status === 'CANCELLED') {
       stageEl.textContent = 'Run stopped by user';
+    } else if (status === 'BLOCKED') {
+      stageEl.textContent = `${meta.name || 'Manager'} › awaiting review`;
     } else {
-      stageEl.textContent = state.activeTool
-        ? `${agent || 'Agent'} · ${state.activeTool}`
-        : (agent ? `${agent} active` : 'Waiting for a task');
+      if (state.activeTool) {
+        stageEl.textContent = `${meta.name} › running ${state.activeTool}`;
+      } else if (state.activeAgent) {
+        stageEl.textContent = `${meta.name} › thinking`;
+      } else {
+        stageEl.textContent = 'Waiting for a task';
+      }
     }
     routeEl.textContent = state.route || '--';
 
@@ -1101,104 +1107,6 @@ class CouncilUI {
   }
 
 
-  /* Helper to clean thinking text and strip JSON formatting noise, supporting partial streaming */
-  _cleanThinkingText(text, agent) {
-    if (!text) return '';
-    let clean = text.trim();
-
-    // 1. If strategist, strip the tasks block
-    if (agent === 'strategist') {
-      clean = clean.replace(/```tasks[\s\S]*?```/gi, '');
-      clean = clean.replace(/```json\s*\[[\s\S]*?\]\s*```/gi, '');
-      clean = clean.replace(/^\s*\[[\s\S]*?\]\s*$/g, '');
-    }
-
-    // 2. Try target keys first (reason, summary, notes, thought, thinking)
-    const targetKeys = ['reason', 'summary', 'notes', 'thought', 'thinking'];
-    for (const key of targetKeys) {
-      const regex = new RegExp(`"${key}"\\s*:\\s*"`, 'i');
-      const match = regex.exec(clean);
-      if (match) {
-        const startIndex = match.index + match[0].length;
-        const remainder = clean.slice(startIndex);
-        let endIdx = -1;
-        let escaped = false;
-        for (let i = 0; i < remainder.length; i++) {
-          if (escaped) {
-            escaped = false;
-          } else if (remainder[i] === '\\') {
-            escaped = true;
-          } else if (remainder[i] === '"') {
-            endIdx = i;
-            break;
-          }
-        }
-        let val = endIdx !== -1 ? remainder.slice(0, endIdx) : remainder;
-        return val.replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\t/g, '\t').trim();
-      }
-    }
-
-    // 3. Try to parse as raw JSON if it starts with { and doesn't match above keys
-    if (clean.includes('```json')) {
-      try {
-        const jsonStr = clean.split('```json')[1].split('```')[0].trim();
-        const data = JSON.parse(jsonStr);
-        const keys = ['reason', 'summary', 'notes', 'thought', 'thinking', 't', 'description'];
-        for (const k of keys) {
-          if (data[k] && typeof data[k] === 'string') {
-            return data[k];
-          }
-        }
-      } catch (e) {}
-    } else if (clean.startsWith('{')) {
-      try {
-        const data = JSON.parse(clean);
-        const keys = ['reason', 'summary', 'notes', 'thought', 'thinking', 't', 'description'];
-        for (const k of keys) {
-          if (data[k] && typeof data[k] === 'string') {
-            return data[k];
-          }
-        }
-      } catch (e) {}
-    }
-
-    // 4. Strip leftover JSON formatting characters if we fail parsing (e.g. while streaming)
-    if (clean.startsWith('{')) {
-      clean = clean.replace(/^\{\s*"complexity"\s*:\s*"[^"]*",?\s*/gi, '');
-      clean = clean.replace(/^\{\s*"verdict"\s*:\s*"[^"]*",?\s*/gi, '');
-      clean = clean.replace(/^\{\s*"status"\s*:\s*"[^"]*",?\s*/gi, '');
-      
-      clean = clean.replace(/^\s*"[^"]+"\s*:\s*"[^"]*",?\s*/g, '');
-      clean = clean.replace(/^\s*"[^"]+"\s*:\s*\[[\s\S]*?\],?\s*/g, '');
-
-      for (const key of targetKeys) {
-        const r = new RegExp(`^\\s*"${key}"\\s*:\\s*"`, 'i');
-        clean = clean.replace(r, '');
-      }
-
-      if (clean.startsWith('{')) {
-        clean = clean.slice(1).trim();
-      }
-    }
-
-    // Strip general wrapper noise
-    clean = clean.replace(/^```(json|tasks)?\s*/i, '');
-    clean = clean.replace(/```$/, '');
-    clean = clean.trim();
-
-    // Clean up trailing quotes, commas, braces
-    if (clean.endsWith('}')) {
-      clean = clean.slice(0, -1).trim();
-    }
-    if (clean.endsWith('"') && (clean.match(/"/g) || []).length % 2 !== 0) {
-      clean = clean.slice(0, -1);
-    }
-    if (clean.endsWith(',')) {
-      clean = clean.slice(0, -1).trim();
-    }
-
-    return clean;
-  }
 
   /* Helper to compile real file stats using computeLineDiff and state.fileVersions */
   _getFileStats(name, state, diffMemo = null) {
@@ -1389,22 +1297,73 @@ class CouncilUI {
     return { verdict, summary, issues };
   }
 
-  /* Active-agent badge text, including elapsed-on-agent while running. */
+  /* Active-agent badge plain text for accessibility, titles, and fallbacks */
   _ghostBadgeText(state) {
-    const statusWord = _statusWord(state.status).toUpperCase();
-    let base;
-    if (state.activeAgent) {
-      const toolStr = state.activeTool ? ` (Tool: ${state.activeTool})` : '';
-      base = `${state.activeAgent.toUpperCase()}${toolStr} · ${statusWord}`;
+    const status = String(state?.status || 'PENDING').toUpperCase();
+    if (status === 'COMPLETE') return 'Verified complete';
+    if (status === 'FAILED') return 'Failed';
+    if (status === 'CANCELLED') return 'Stopped';
+    if (status === 'PENDING') return 'Idle';
+    if (status === 'BLOCKED') {
+      const meta = _roleMeta(state.activeAgent);
+      return `${meta.name || 'Manager'} › awaiting review`;
+    }
+    const meta = _roleMeta(state.activeAgent);
+    const roleName = meta.name || 'Council';
+    let verb = 'thinking';
+    if (state.activeTool) {
+      verb = `running ${state.activeTool}`;
+    }
+    let text = `${roleName} › ${verb}`;
+    if (state.activeAgent && state.activeAgentSince) {
+      const elapsed = _fmtElapsed(Date.now() - state.activeAgentSince);
+      if (elapsed) text += ` · ${elapsed}`;
+    }
+    if (state.lastHeartbeatText && state.lastHeartbeatText !== 'Waiting for model response') {
+      text += ` (${state.lastHeartbeatText})`;
+    }
+    return text;
+  }
+
+  /* Active-agent badge semantic HTML with micro-typography */
+  _ghostBadgeHtml(state) {
+    const status = String(state?.status || 'PENDING').toUpperCase();
+    if (status === 'COMPLETE') {
+      return '<span class="ticker-complete">Verified complete</span>';
+    }
+    if (status === 'FAILED') {
+      return '<span class="ticker-failed">Failed</span>';
+    }
+    if (status === 'CANCELLED') {
+      return '<span class="ticker-cancelled">Stopped</span>';
+    }
+    if (status === 'PENDING') {
+      return '<span class="ticker-idle">Idle</span>';
+    }
+    if (status === 'BLOCKED') {
+      const meta = _roleMeta(state.activeAgent);
+      return `<span class="ticker-role ticker-role--${meta.cls}">${_esc(meta.name || 'Manager')}</span>` +
+             ` <span class="ticker-sep">›</span> ` +
+             `<span class="ticker-verb ticker-verb--blocked">awaiting review</span>`;
+    }
+    const meta = _roleMeta(state.activeAgent);
+    let verbHtml;
+    if (state.activeTool) {
+      verbHtml = `running <code class="ticker-tool">${_esc(state.activeTool)}</code>`;
     } else {
-      base = statusWord;
+      verbHtml = 'thinking';
     }
-    const running = state.status === 'IN_PROGRESS' || state.status === 'BLOCKED';
-    if (running && state.activeAgent && state.activeAgentSince) {
-      base += ` · ${_fmtElapsed(Date.now() - state.activeAgentSince)}`;
+    let html = `<span class="ticker-role ticker-role--${meta.cls}">${_esc(meta.name || 'Council')}</span>` +
+               ` <span class="ticker-sep">›</span> ` +
+               `<span class="ticker-verb">${verbHtml}</span>`;
+    if (state.activeAgent && state.activeAgentSince) {
+      const elapsed = _fmtElapsed(Date.now() - state.activeAgentSince);
+      if (elapsed) {
+        html += ` <span class="ticker-sep">·</span> ` +
+                `<span class="ticker-time">${_esc(elapsed)}</span>`;
+      }
     }
-    if (running && state.lastHeartbeatText) base += ` · ${state.lastHeartbeatText}`;
-    return base;
+    return html;
   }
 
   /* Ghost Editor: stream text, toggle cursor blink */
@@ -1427,7 +1386,8 @@ class CouncilUI {
     const agentEl = document.getElementById('council-ghost-agent');
     const pulseDot = document.querySelector('#council-ghost-status .council-pulse-dot');
     if (agentEl) {
-      agentEl.textContent = this._ghostBadgeText(state);
+      agentEl.innerHTML = this._ghostBadgeHtml(state);
+      agentEl.title = this._ghostBadgeText(state);
 
       // Update color and animation based on status
       if (state.status === 'FAILED') {
@@ -3779,70 +3739,6 @@ class CouncilUI {
 }
 
 /* ─── Helpers ────────────────────────────────────────────────────── */
-function cleanLogText(text, agent = '') {
-  if (!text) return '';
-  let clean = text.trim();
-
-  // Strip markdown tasks block
-  clean = clean.replace(/```tasks[\s\S]*?```/gi, '');
-  clean = clean.replace(/```json\s*\[[\s\S]*?\]\s*```/gi, '');
-  clean = clean.replace(/^\s*\[[\s\S]*?\]\s*$/g, '');
-
-  // Try parsing json
-  try {
-    let jsonStr = clean;
-    if (jsonStr.includes('```json')) {
-      jsonStr = jsonStr.split('```json')[1].split('```')[0].trim();
-    } else if (jsonStr.includes('```')) {
-      jsonStr = jsonStr.split('```')[1].split('```')[0].trim();
-    }
-    if (jsonStr.startsWith('{') && jsonStr.endsWith('}')) {
-      const data = JSON.parse(jsonStr);
-      const keys = ['reason', 'summary', 'notes', 'thought', 'thinking', 'text'];
-      for (const k of keys) {
-        if (data[k] && typeof data[k] === 'string') {
-          return data[k].trim();
-        }
-      }
-    }
-  } catch(e) {}
-
-  // Try target keys via regex
-  const targetKeys = ['reason', 'summary', 'notes', 'thought', 'thinking', 'text'];
-  for (const key of targetKeys) {
-    const regex = new RegExp(`"${key}"\\s*:\\s*"`, 'i');
-    const match = regex.exec(clean);
-    if (match) {
-      const startIndex = match.index + match[0].length;
-      const remainder = clean.slice(startIndex);
-      let endIdx = -1;
-      let escaped = false;
-      for (let i = 0; i < remainder.length; i++) {
-        if (escaped) {
-          escaped = false;
-        } else if (remainder[i] === '\\') {
-          escaped = true;
-        } else if (remainder[i] === '"') {
-          endIdx = i;
-          break;
-        }
-      }
-      let val = endIdx !== -1 ? remainder.slice(0, endIdx) : remainder;
-      return val.replace(/\\"/g, '"').replace(/\\n/g, '\n').trim();
-    }
-  }
-
-  // Strip general wrapper noise
-  clean = clean.replace(/^```(json|tasks)?\s*/i, '');
-  clean = clean.replace(/```$/, '');
-  clean = clean.trim();
-  if (clean.startsWith('{') && clean.endsWith('}')) {
-    clean = clean.slice(1, -1).trim();
-  }
-
-  return clean.replace(/\s+/g, ' ').trim();
-}
-
 // Deterministic, display-only task labels. The implementation prompt remains
 // available to the agent, but the primary UI gets a short noun instead of a
 // copied prompt fragment. This intentionally avoids another model call.
@@ -4052,21 +3948,29 @@ function parseFileOperations(item) {
   return null;
 }
 
-function getTaskAttempts(taskId, log) {
-  let attempts = [];
-  let taskEvents = log.filter(e => e.event === 'task_status_update' && e.extra?.task_id === taskId);
-  
-  taskEvents.forEach((e, idx) => {
-    let status = e.extra?.task_status;
-    if (status === 'FAILED') {
-      attempts.push({ status: 'REJECTED', note: 'Compiler/Error' });
-    } else if (status === 'DONE') {
-      attempts.push({ status: 'APPROVED', note: '' });
-    }
-  });
-  
-  return attempts;
+function _roleMeta(agent) {
+  const key = String(agent || '').toLowerCase().trim();
+  const map = {
+    implementer: { name: 'Implementer', cls: 'impl' },
+    impl: { name: 'Implementer', cls: 'impl' },
+    perspective_analyzer: { name: 'Perspective Analyzer', cls: 'strat' },
+    perspective: { name: 'Perspective Analyzer', cls: 'strat' },
+    chair: { name: 'Chair', cls: 'chair' },
+    chairperson: { name: 'Chair', cls: 'chair' },
+    strategist: { name: 'Strategist', cls: 'strat' },
+    strat: { name: 'Strategist', cls: 'strat' },
+    manager: { name: 'Manager', cls: 'mgr' },
+    mgr: { name: 'Manager', cls: 'mgr' },
+    completeness_auditor: { name: 'Completeness Auditor', cls: 'mgr' },
+    system: { name: 'System', cls: 'sys' },
+    sys: { name: 'System', cls: 'sys' }
+  };
+  if (map[key]) return map[key];
+  if (!key) return { name: 'Council', cls: 'sys' };
+  const capitalized = key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ');
+  return { name: capitalized, cls: 'sys' };
 }
+
 function _statusWord(status) {
   const map = { IN_PROGRESS: 'working', BLOCKED: 'waiting', COMPLETE: 'done', FAILED: 'error', PENDING: 'idle' };
   return map[status] || status.toLowerCase();
@@ -4453,7 +4357,8 @@ export function init() {
     if (state.status === 'IN_PROGRESS' || state.status === 'BLOCKED') {
       const agentEl = document.getElementById('council-ghost-agent');
       if (agentEl && state.activeAgent && state.activeAgentSince) {
-        agentEl.textContent = ui._ghostBadgeText(state);
+        agentEl.innerHTML = ui._ghostBadgeHtml(state);
+        agentEl.title = ui._ghostBadgeText(state);
       }
     }
 

@@ -37095,14 +37095,84 @@ body.theme-frosted .modal {
   font-weight: 650;
 }
 .council-pane-status {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 11px;
-  color: var(--council-copper);
-  text-transform: uppercase;
-  letter-spacing: .08em;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: .02em;
+  font-weight: 500;
+  line-height: 1;
+}
+
+#council-ghost-agent {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  text-transform: none;
+}
+
+.ticker-role {
   font-weight: 600;
+  color: var(--council-copper, #c27d38);
+}
+.ticker-role--impl { color: var(--color-implementer, #4eb870); }
+.ticker-role--strat { color: #6ba6e8; }
+.ticker-role--mgr { color: var(--warn, #df8e45); }
+.ticker-role--chair { color: var(--council-copper, #c27d38); }
+.ticker-role--sys { color: var(--muted, #9aa0a6); }
+
+.ticker-sep {
+  color: var(--muted, #6a6158);
+  font-weight: 400;
+  user-select: none;
+  font-size: 10px;
+}
+
+.ticker-verb {
+  color: color-mix(in srgb, var(--fg, #e1e4e6) 88%, transparent);
+  font-weight: 450;
+}
+
+.ticker-verb--blocked {
+  color: var(--warn, #df8e45);
+}
+
+.ticker-tool {
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-size: 10.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 8%, var(--panel, #1a1714));
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  color: var(--fg);
+}
+
+.ticker-time {
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+  color: color-mix(in srgb, var(--fg, #e1e4e6) 72%, transparent);
+}
+
+.ticker-idle {
+  color: var(--muted, #6a6158);
+  font-weight: 500;
+}
+
+.ticker-complete {
+  color: var(--pass, #4eb870);
+  font-weight: 600;
+}
+
+.ticker-failed {
+  color: var(--sys, #e05858);
+  font-weight: 600;
+}
+
+.ticker-cancelled {
+  color: var(--muted, #6a6158);
 }
 
 /* Pulsing dot — copper brand, not theme-dependent */
@@ -38494,7 +38564,7 @@ body.theme-frosted .modal {
 }
 
 /* Nesting chat-input-bar inside council mode */
-.council-center .chat-input-bar {
+.council-panel .chat-input-bar {
   max-width: 100% !important;
   width: auto !important;
   margin: 12px 16px 16px 16px !important;
@@ -40123,19 +40193,19 @@ body.theme-frosted .modal {
 }
 
 /* Ensure chat input in council mode never forces horizontal overflow */
-.council-center .chat-input-bar {
+.council-panel .chat-input-bar {
   max-width: 100% !important;
   width: auto !important;
   margin: 10px 14px 14px 14px !important;
   overflow: hidden !important;
   min-width: 0 !important;
 }
-.council-center .chat-input-top {
+.council-panel .chat-input-top {
   position: relative !important;
   overflow: hidden !important;
   min-width: 0 !important;
 }
-.council-center .chat-input-top textarea[style*="position: absolute"] {
+.council-panel .chat-input-top textarea[style*="position: absolute"] {
   left: 0 !important;
   right: 0 !important;
   max-width: 100% !important;
@@ -40572,7 +40642,7 @@ body.theme-frosted .modal {
   .ghost-footer-kill-hint {
     display: none !important;
   }
-  .council-center .chat-input-bar {
+  .council-panel .chat-input-bar {
     margin: 6px 10px 8px 10px !important;
     padding: 6px 10px !important;
     flex-shrink: 0;
@@ -40647,11 +40717,11 @@ body.theme-frosted .modal {
     padding: 2px 10px;
     font-size: 10px;
   }
-  .council-center .chat-input-bar {
+  .council-panel .chat-input-bar {
     margin: 4px 10px 6px 10px !important;
     padding: 4px 8px !important;
   }
-  .council-center .chat-input-bar textarea {
+  .council-panel .chat-input-bar textarea {
     height: 28px !important;
     min-height: 28px !important;
     font-size: 11.5px !important;
@@ -40699,7 +40769,7 @@ body.theme-frosted .modal {
   .ghost-editor-footer {
     display: none !important;
   }
-  .council-center .chat-input-bar {
+  .council-panel .chat-input-bar {
     margin: 2px 6px 4px 6px !important;
   }
 }

@@ -145,4 +145,23 @@ def test_perspective_card_container_and_telemetry_deck_invariants():
     assert 'aria-label="Perspective analysis metrics"' in JS
 
 
+def test_active_agent_status_ticker_invariants():
+    # Micro-typography classes and clean sentence casing
+    assert "_ghostBadgeHtml(state)" in JS
+    assert "_ghostBadgeText(state)" in JS
+    assert "_roleMeta(state.activeAgent)" in JS
+    assert '<span id="council-ghost-agent"><span class="ticker-idle">Idle</span></span>' in HTML
+
+    # CSS styles for semantic ticker elements
+    assert ".ticker-role" in CSS
+    assert ".ticker-sep" in CSS
+    assert ".ticker-verb" in CSS
+    assert ".ticker-tool" in CSS
+    assert ".ticker-time" in CSS
+    assert ".ticker-idle" in CSS
+    assert ".council-pane-status {" in CSS
+    assert "text-transform: none;" in CSS
+
+
+
 

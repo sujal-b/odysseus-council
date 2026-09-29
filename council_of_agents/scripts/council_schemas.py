@@ -795,20 +795,16 @@ def _ensure_strict_schema(schema_dict: dict) -> None:
             _ensure_strict_schema(ref)
 
 
-def _ensure_all_required(schema_dict: dict) -> None:
-    _ensure_strict_schema(schema_dict)
-
-
 def build_response_format(role: str) -> dict | None:
     schema = SCHEMA_MAP.get(role)
     if not schema:
         return None
     schema_dict = schema.model_json_schema()
-    _ensure_all_required(schema_dict)
+    _ensure_strict_schema(schema_dict)
     return {
         "type": "json_schema",
         "json_schema": {
-            "name": role.replace("_", "_"),
+            "name": role,
             "schema": schema_dict,
             "strict": True,
         },
