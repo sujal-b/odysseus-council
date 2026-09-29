@@ -222,6 +222,18 @@ def test_dag_svg_node_text_wrapping_and_tooltip_invariants():
     assert "<title>${_esc(n.id)}: ${_esc(desc)}</title>" in JS
 
 
+def test_tool_tag_overflow_containment_invariants():
+    # Tool tag text must be compactly mapped to 4-5 char verbs
+    assert "_shortToolName" in JS
+
+    # CSS must strictly contain tool tags and prevent horizontal text blowout
+    tag_css = CSS.split(".ghost-editor-stream .tool-tag {", 1)[1].split("}", 1)[0]
+    assert "overflow: hidden" in tag_css
+    assert "text-overflow: ellipsis" in tag_css
+    assert "white-space: nowrap" in tag_css
+
+
+
 
 
 

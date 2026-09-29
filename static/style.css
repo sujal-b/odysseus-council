@@ -38265,10 +38265,18 @@ body.theme-frosted .modal {
   font-size: 9px;
   font-family: var(--font-mono, 'Consolas', monospace);
 }
+.ghost-editor-stream .row.row--burst-item .tool-tag {
+  margin: 0 6px;
+}
 
 /* Fixed-width Monospace Tool Badge - Monochrome IDE Palette */
 .ghost-editor-stream .tool-tag {
   width: 48px;
+  min-width: 48px;
+  box-sizing: border-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
@@ -38283,7 +38291,6 @@ body.theme-frosted .modal {
   border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
   color: color-mix(in srgb, var(--fg) 82%, var(--dim, #a09c95));
   text-align: center;
-  box-sizing: border-box;
   text-transform: none;
   transition: color 0.15s ease, border-color 0.15s ease;
 }

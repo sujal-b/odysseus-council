@@ -1787,6 +1787,19 @@ class CouncilUI {
       return '';
     };
 
+    // Helper: compact tool badge verb to fit fixed 48px ledger column
+    const _shortToolName = (tool) => {
+      const t = String(tool || '').toLowerCase();
+      if (t === 'write_file' || t === 'write_to_file') return 'write';
+      if (t === 'read_file' || t === 'view_file') return 'read';
+      if (t === 'edit_file' || t === 'replace_file_content') return 'edit';
+      if (t === 'patch_file') return 'patch';
+      if (t === 'run_command') return 'bash';
+      if (t === 'list_dir') return 'ls';
+      if (t.endsWith('_file')) return t.replace(/_file$/, '');
+      return t;
+    };
+
     // Helper: build collapsed summary text. This is deliberately semantic:
     // the primary stream must never expose raw commands, JSON, quotes, or
     // absolute paths merely because a tool emitted them.
@@ -1945,7 +1958,7 @@ class CouncilUI {
             <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
             <div class="ct">
-              <span class="tool-tag tool-tag--${_esc(b.tool)}">${_esc(b.tool)}</span>
+              <span class="tool-tag tool-tag--${_esc(b.tool)}" title="${_esc(b.tool)}">${_esc(_shortToolName(b.tool))}</span>
               <span class="tx" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>
               ${diffHtml}
               ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
@@ -2157,7 +2170,7 @@ class CouncilUI {
           return `<div class="row row--burst-item" tabindex="0">
             <span class="id id--sub" style="color:var(--muted);opacity:0.35;font-size:9px;font-family:var(--font-mono, monospace);">··</span>
             <span class="st ${_itemStatusCls}">${_isi}</span>
-            <span class="tool-tag tool-tag--${_esc(item.tool)}">${_esc(item.tool)}</span>
+            <span class="tool-tag tool-tag--${_esc(item.tool)}" title="${_esc(item.tool)}">${_esc(_shortToolName(item.tool))}</span>
             <div class="ct">
               <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
             </div>
