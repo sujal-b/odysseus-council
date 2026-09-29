@@ -163,5 +163,25 @@ def test_active_agent_status_ticker_invariants():
     assert "text-transform: none;" in CSS
 
 
+def test_high_workload_task_rail_and_burst_grid_invariants():
+    # Wave grouping & bounding for complex task sets (T100+)
+    assert "_computeTaskWaves(nodes)" in JS
+    assert "dag-rail-wave" in JS
+    assert ".dag-rail-wave" in CSS
+    assert ".dag-rail-more" in CSS
+    assert ".dag-rail-pill-summary" in CSS
+    assert "_taskCount <= 5" in JS
+
+    # Unified 4-column grid alignment for tool cards and bursts
+    assert "_extractToolTarget = (tool, args = {}, cmd = '') =>" in JS
+    assert "row row--burst-item" in JS
+    assert "row ghost-burst-header" in JS
+    assert "tool-tag" in JS
+    assert ".ghost-editor-stream .tool-tag" in CSS
+    assert ".ghost-editor-stream .row.row--burst-item" in CSS
+    assert ".ghost-editor-stream .row.ghost-burst-header" in CSS
+
+
+
 
 

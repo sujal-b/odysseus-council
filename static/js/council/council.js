@@ -1750,6 +1750,43 @@ class CouncilUI {
       return parts[parts.length - 1] || '';
     };
 
+    // Helper: extract concrete tool target argument (e.g. pattern, query, filename) cleanly
+    const _extractToolTarget = (tool, args = {}, cmd = '') => {
+      let a = args && typeof args === 'object' ? args : {};
+      if ((!a || Object.keys(a).length === 0) && typeof cmd === 'string' && cmd.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(cmd.trim());
+          if (parsed && typeof parsed === 'object') a = parsed;
+        } catch {}
+      }
+      const t = String(tool || '').toLowerCase();
+      if (t === 'glob') {
+        const pat = a.pattern || a.glob || a.path || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+        return pat ? String(pat) : '';
+      }
+      if (t === 'grep') {
+        const q = a.query || a.pattern || a.search || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+        const p = a.path ? ` in ${_shortPath(a.path)}` : '';
+        return q ? `"${q}"${p}` : '';
+      }
+      if (t === 'ls' || t === 'list_dir') {
+        return a.path || a.dir || '.';
+      }
+      if (t === 'read_file' || t === 'view_file' || t === 'edit_file' || t === 'write_file' || t === 'write_to_file') {
+        const p = a.path || a.file || a.TargetFile || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+        return _shortPath(p);
+      }
+      if (t === 'bash' || t === 'python' || t === 'run_command') {
+        const c = a.command || a.cmd || a.CommandLine || cmd || '';
+        return typeof c === 'string' ? c.split('\n')[0].slice(0, 50) : '';
+      }
+      const generic = a.path || a.file || a.name || a.query || a.pattern || '';
+      if (typeof generic === 'string' && generic && !generic.startsWith('{')) {
+        return _shortPath(generic);
+      }
+      return '';
+    };
+
     // Helper: build collapsed summary text. This is deliberately semantic:
     // the primary stream must never expose raw commands, JSON, quotes, or
     // absolute paths merely because a tool emitted them.
@@ -1882,14 +1919,15 @@ class CouncilUI {
     const _renderToolCard = (b, stepNum, memo) => {
       const args = b.args || {};
       const statusCls = b.status === 'SUCCESS' ? 'st--done' : b.status === 'FAILED' ? 'st--failed' : 'st--running';
+      const target = _extractToolTarget(b.tool, args, b.command);
       const summary = _toolSummary(b.tool, args, b.command);
+      const displayLabel = target || summary;
       const body = _toolBody(b.tool, args, b.command, b.output);
 
-      const rawPath = args.path || args.file || (typeof b.command === 'string' ? b.command.split('\n')[0] : '');
-      const fileName = _shortPath(rawPath);
       let diffHtml = '';
       if (b.tool === 'write_file' || b.tool === 'edit_file') {
-        const stats = this._getFileStats(rawPath || fileName, state, memo);
+        const rawPath = args.path || args.file || (target && !target.includes(' ') ? target : '');
+        const stats = this._getFileStats(rawPath, state, memo);
         if (stats.added > 0 || stats.removed > 0) {
           diffHtml = `<span class="payload-diff"><span class="diff-add">+${stats.added}</span> <span class="diff-del">-${stats.removed}</span> <span class="diff-lines-label">lines</span></span>`;
         } else if (args.content) {
@@ -1907,8 +1945,8 @@ class CouncilUI {
             <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
             <div class="ct">
-              <span style="color:var(--strat);font-weight:600">${_esc(b.tool)}</span>
-              <span class="tx" title="${_esc(summary)}">${_esc(fileName || summary)}</span>
+              <span class="tool-tag tool-tag--${_esc(b.tool)}">${_esc(b.tool)}</span>
+              <span class="tx" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>
               ${diffHtml}
               ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
             </div>
@@ -2009,7 +2047,10 @@ class CouncilUI {
         const role = _resolveRole('strat');
         const _taskCount = b.tasks.length;
         const _waves = executionWaveCount(b.tasks);
-        const _labels = b.tasks.map(t => `${t.i} ${t.t}`).join(' · ');
+        const _allLabels = b.tasks.map(t => `${t.i} ${t.t}`).join(' · ');
+        const _labels = _taskCount <= 5
+          ? _allLabels
+          : `${b.tasks.slice(0, 4).map(t => `${t.i} ${t.t}`).join(' · ')} · +${_taskCount - 4} more`;
         html += `
           <div class="row">
             <span class="id">${stepNum}</span>
@@ -2017,7 +2058,7 @@ class CouncilUI {
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
             <div class="ct">
               <span>planned <strong style="color:var(--impl)">${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'} in <strong style="color:var(--chair)">${_waves}</strong> wave${_waves === 1 ? '' : 's'}</span>
-              <span class="tx" title="${_esc(_labels)}">${_esc(_labels)}</span>
+              <span class="tx" title="${_esc(_allLabels)}">${_esc(_labels)}</span>
             </div>
           </div>`;
       } else if (b.type === 'impl') {
@@ -2091,30 +2132,41 @@ class CouncilUI {
         _seenBurstKeys.add(_burstKey);
         const _wasRunning = this._burstStatus.get(_burstKey);
         if (_wasRunning === true && !b.running) {
-          _openBursts.delete(_burstKey);
+          if (!b.hasFailure) {
+            _openBursts.delete(_burstKey);
+          }
         }
         this._burstStatus.set(_burstKey, b.running);
         const _isOpen   = _openBursts.has(_burstKey);
-        const _burstIcons = [...new Set(b.items.map(x => _toolKind(x.tool).icon))].slice(0, 3).join('');
         const _total = b.items.length;
-        const _bsc = b.running ? '#50a0df' : b.hasFailure ? 'var(--fail)' : 'var(--impl)';
+        const role = _resolveRole(b.agent || 'impl');
+        const statusCls = b.running ? 'st--running' : b.hasFailure ? 'st--failed' : 'st--done';
         const _bss = b.running ? _statusIcon('running') : b.hasFailure ? _statusIcon('failed') : _statusIcon('done');
+        const _distinctTools = [...new Set(b.items.map(x => x.tool))];
+        const _toolSummaryStr = _distinctTools.slice(0, 3).join(', ') + (_distinctTools.length > 3 ? ` +${_distinctTools.length - 3}` : '');
+        const _burstTitle = b.running
+          ? `Running tools (${_total})`
+          : `Ran ${_total} tool${_total === 1 ? '' : 's'} (${_toolSummaryStr})`;
+
         const _itemsHtml = b.items.map(item => {
-          const _ik  = _toolKind(item.tool);
-          const _is  = _toolSummary(item.tool, item.args || {}, item.command);
-          const _isc = item.status === 'SUCCESS' ? 'var(--impl)' : item.status === 'FAILED' ? 'var(--fail)' : '#50a0df';
+          const _target = _extractToolTarget(item.tool, item.args || {}, item.command);
+          const _is = _toolSummary(item.tool, item.args || {}, item.command);
+          const _itemStatusCls = item.status === 'SUCCESS' ? 'st--done' : item.status === 'FAILED' ? 'st--failed' : 'st--running';
           const _isi = _statusIcon(item.status);
-          return `<div class="burst-item">
-            <span class="burst-item-status" style="color:${_isc}">${_isi}</span>
-            <span class="burst-item-icon">${_ik.icon}</span>
-            <span class="burst-item-tool">${_esc(item.tool)}</span>
-            <span class="burst-item-summary">${_esc(_is)}</span>
+          const _display = _target ? `${_target}` : _is;
+          return `<div class="row row--burst-item" tabindex="0">
+            <span class="id id--sub" style="color:var(--muted);opacity:0.35;font-size:9px;font-family:var(--font-mono, monospace);">··</span>
+            <span class="st ${_itemStatusCls}">${_isi}</span>
+            <span class="tool-tag tool-tag--${_esc(item.tool)}">${_esc(item.tool)}</span>
+            <div class="ct">
+              <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
+            </div>
           </div>`;
         }).join('');
 
         let _cpHtml;
         if (b.running) {
-          const _cpWords = b.checkpoint.split(' ').filter(w => w.length > 0);
+          const _cpWords = (b.checkpoint || '').split(' ').filter(w => w.length > 0);
           if (_cpWords.length === 0) {
             _cpHtml = '';
           } else {
@@ -2128,7 +2180,7 @@ class CouncilUI {
             ).join(' ');
           }
         } else {
-          _cpHtml = b.checkpoint;
+          _cpHtml = b.checkpoint || '';
         }
 
         html += `
@@ -2136,13 +2188,16 @@ class CouncilUI {
                data-burst-open="${_isOpen ? '1' : '0'}"
                data-burst-key="${_esc(_burstKey)}"
                style="margin: 1px 6px;">
-            <div class="ghost-burst-header" style="padding: 3px 8px; min-height: 26px;">
-              <span class="id" style="border:none;padding:0 6px 0 0;width:26px;text-align:right;">${stepNum}</span>
-              <span class="ghost-burst-icons">${_burstIcons}</span>
-              <span class="ghost-burst-checkpoint">${_cpHtml}</span>
-              <span class="ghost-burst-count">${_total}</span>
-              <span class="ghost-burst-status" style="color:${_bsc}">${_bss}</span>
-              <span class="ghost-burst-chevron">▶</span>
+            <div class="row ghost-burst-header" tabindex="0">
+              <span class="id">${stepNum}</span>
+              <span class="st ${statusCls}" title="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}" aria-label="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}">${_bss}</span>
+              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+              <div class="ct">
+                <span class="bd" style="color:var(--strat);">${_esc(_burstTitle)}</span>
+                <span class="tx" title="${_esc(b.checkpoint || '')}">${_cpHtml || _esc(b.checkpoint || '')}</span>
+                <span class="ghost-burst-count" style="margin-left:auto;">${_total}</span>
+                <span class="ghost-burst-chevron" style="margin-left:6px;">${_isOpen ? '▼' : '▶'}</span>
+              </div>
             </div>
             <div class="ghost-burst-body">${_itemsHtml}</div>
           </div>`;
@@ -2284,18 +2339,47 @@ class CouncilUI {
     }
 
     railEl.style.display = 'flex';
-    let pillsHtml = '';
-    nodes.forEach(n => {
+    const waveMap = _computeTaskWaves(nodes);
+    const totalWaves = Math.max(1, ...Array.from(waveMap.values()));
+
+    let activeWave = totalWaves;
+    for (const n of nodes) {
+      const s = String(n.status || 'PENDING').toUpperCase();
+      if (s !== 'DONE') {
+        activeWave = waveMap.get(String(n.id)) || 1;
+        break;
+      }
+    }
+
+    const renderPill = (n) => {
       const status = String(n.status || 'PENDING').toUpperCase();
       const statusCls = status === 'DONE' ? 'done' : (status === 'IN_PROGRESS' || status === 'RUNNING') ? 'in-progress' : status === 'FAILED' ? 'failed' : status === 'BLOCKED' ? 'blocked' : 'pending';
       const summary = n.summary || compactTaskLabel(n.description, n.id);
-      pillsHtml += `
+      return `
         <button type="button" class="council-dag-pill dag-pill--${statusCls}" data-task-id="${_esc(n.id)}" title="${_esc(n.id)}: ${_esc(n.description || '')}">
           <span class="dag-pill-dot"></span>
           <span class="dag-pill-id">${_esc(n.id)}</span>
           <span class="dag-pill-summary">${_esc(summary)}</span>
         </button>`;
-    });
+    };
+
+    let pillsHtml = '';
+    if (nodes.length <= 5) {
+      nodes.forEach(n => { pillsHtml += renderPill(n); });
+    } else {
+      const activeNodes = nodes.filter(n => (waveMap.get(String(n.id)) || 1) === activeWave);
+      const doneBefore = nodes.filter(n => (waveMap.get(String(n.id)) || 1) < activeWave && String(n.status || '').toUpperCase() === 'DONE').length;
+      const upcoming = nodes.filter(n => (waveMap.get(String(n.id)) || 1) > activeWave).length;
+
+      pillsHtml += `<span class="dag-rail-wave" title="Active execution wave">Wave ${activeWave}/${totalWaves}</span>`;
+      if (doneBefore > 0) {
+        pillsHtml += `<span class="dag-rail-pill-summary" title="${doneBefore} tasks verified in prior waves">✓ ${doneBefore} done</span>`;
+      }
+      activeNodes.forEach(n => { pillsHtml += renderPill(n); });
+      if (upcoming > 0) {
+        pillsHtml += `<span class="dag-rail-more" title="${upcoming} tasks in upcoming waves">+${upcoming} more</span>`;
+      }
+    }
     railEl.innerHTML = pillsHtml;
   }
 
@@ -3834,6 +3918,23 @@ function executionWaveCount(tasks) {
     return value;
   };
   return Math.max(1, ...Array.from(byId.keys()).map(id => depth(id)));
+}
+
+function _computeTaskWaves(nodes) {
+  const byId = new Map((nodes || []).map(n => [String(n.id || n.i), n]));
+  const memo = new Map();
+  const depth = (id, trail = new Set()) => {
+    if (memo.has(id)) return memo.get(id);
+    if (trail.has(id)) return 1;
+    const node = byId.get(id);
+    const deps = Array.isArray(node?.dependencies || node?.dp) ? (node.dependencies || node.dp) : [];
+    const nextTrail = new Set(trail).add(id);
+    const val = deps.length ? 1 + Math.max(0, ...deps.map(dep => depth(String(dep), nextTrail))) : 1;
+    memo.set(id, val);
+    return val;
+  };
+  (nodes || []).forEach(n => depth(String(n.id || n.i)));
+  return memo;
 }
 
 function compactAgentActivity(agent, tool = '') {

@@ -38125,10 +38125,21 @@ body.theme-frosted .modal {
   border-radius: 5px;
   overflow: hidden;
   transition: border-color 0.2s ease;
-  margin-bottom: 2px;
+  margin: 2px 6px 3px;
 }
 .ghost-burst-group:hover {
   border-color: color-mix(in srgb, var(--strat) 35%, transparent);
+}
+.ghost-editor-stream .row.ghost-burst-header {
+  cursor: pointer;
+  user-select: none;
+  background: color-mix(in srgb, var(--strat) 5%, transparent);
+  border-bottom: 1px solid var(--border);
+  margin: 0;
+  border-radius: 4px 4px 0 0;
+}
+.ghost-editor-stream .row.ghost-burst-header:hover {
+  background: color-mix(in srgb, var(--strat) 10%, transparent);
 }
 .ghost-burst-header {
   display: flex;
@@ -38152,8 +38163,6 @@ body.theme-frosted .modal {
   opacity: 0.9;
 }
 /* Concise checkpoint sentence */
-/* Concise checkpoint sentence. data-burst-key on the parent is used by JS
-   to restore open/closed state across innerHTML re-renders (see council.js). */
 .ghost-burst-checkpoint {
   flex: 1;
   min-width: 0;
@@ -38165,7 +38174,6 @@ body.theme-frosted .modal {
   white-space: nowrap;
   letter-spacing: 0.01em;
 }
-/* Inline <code> snippet inside checkpoint (e.g. "Ran `pip install…`") */
 .ghost-burst-checkpoint code {
   display: inline;
   font-family: var(--font);
@@ -38179,14 +38187,15 @@ body.theme-frosted .modal {
 /* Count pill */
 .ghost-burst-count {
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
   color: var(--muted);
   background: color-mix(in srgb, var(--fg) 6%, transparent);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 1px 6px;
+  padding: 0 6px;
+  line-height: 16px;
 }
 /* Status dot/checkmark */
 .ghost-burst-status {
@@ -38216,11 +38225,77 @@ body.theme-frosted .modal {
   transition: max-height 0.24s ease, opacity 0.2s ease, border-top-width 0.2s ease;
 }
 .ghost-burst-group.burst-open .ghost-burst-body {
-  max-height: 600px;
+  max-height: 2000px;
   border-top: 1px solid var(--border);
   opacity: 1;
 }
-/* Individual item rows inside the body */
+
+/* Individual item rows inside the body - aligned to cockpit 4-column row metrics */
+.ghost-editor-stream .row.row--burst-item {
+  border-bottom: 1px solid color-mix(in srgb, var(--fg) 5%, transparent);
+  background: color-mix(in srgb, var(--fg) 2%, transparent);
+  margin: 0;
+  border-radius: 0;
+  min-height: 24px;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+}
+.ghost-editor-stream .row.row--burst-item:last-child {
+  border-bottom: none;
+}
+.ghost-editor-stream .row.row--burst-item:hover {
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.ghost-editor-stream .row.row--burst-item .id--sub {
+  color: var(--muted);
+  opacity: 0.35;
+  font-size: 9px;
+  font-family: var(--font-mono, 'Consolas', monospace);
+}
+
+/* Fixed-width Monospace Tool Badge */
+.ghost-editor-stream .tool-tag {
+  width: 48px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 18px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  color: var(--strat, #50a0df);
+  text-align: center;
+  box-sizing: border-box;
+  text-transform: none;
+}
+.ghost-editor-stream .tool-tag--write_file,
+.ghost-editor-stream .tool-tag--edit_file {
+  color: #a67cff;
+  border-color: color-mix(in srgb, #a67cff 30%, transparent);
+  background: color-mix(in srgb, #a67cff 8%, transparent);
+}
+.ghost-editor-stream .tool-tag--bash,
+.ghost-editor-stream .tool-tag--python {
+  color: var(--warn, #df8e45);
+  border-color: color-mix(in srgb, var(--warn) 30%, transparent);
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+.ghost-editor-stream .tool-tag--ls,
+.ghost-editor-stream .tool-tag--glob,
+.ghost-editor-stream .tool-tag--grep,
+.ghost-editor-stream .tool-tag--read_file,
+.ghost-editor-stream .tool-tag--view_file {
+  color: var(--impl, #4eb870);
+  border-color: color-mix(in srgb, var(--impl) 30%, transparent);
+  background: color-mix(in srgb, var(--impl) 8%, transparent);
+}
+
 .burst-item {
   display: flex;
   align-items: center;
@@ -40282,6 +40357,34 @@ body.theme-frosted .modal {
 }
 .council-dag-rail::-webkit-scrollbar {
   display: none;
+}
+.dag-rail-wave {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--council-copper, #c27d38);
+  background: color-mix(in srgb, var(--council-copper) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--council-copper) 30%, transparent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.dag-rail-pill-summary,
+.dag-rail-more {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted, #736b63);
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 10%, transparent);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  user-select: none;
+}
+.dag-rail-pill-summary {
+  color: var(--impl, #4eb870);
+  border-color: color-mix(in srgb, var(--impl) 25%, transparent);
 }
 .dag-rail-label {
   font-size: 10px;
