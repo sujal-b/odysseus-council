@@ -257,17 +257,19 @@ class AgentRunner:
         
         # Use target keys that align with the role output schemas
         if role == "chair":
-            return StreamingJsonExtractor("reason")
+            return StreamingJsonExtractor(["reason", "reasoning", "assessment"])
         elif role == "chair_arbitration":
-            return StreamingJsonExtractor("reasoning")
+            return StreamingJsonExtractor(["reasoning", "reason"])
         elif role == "manager":
-            return StreamingJsonExtractor("summary")
+            return StreamingJsonExtractor(["summary", "reasoning", "verdict"])
         elif role == "implementer":
-            return StreamingJsonExtractor("notes")
+            return StreamingJsonExtractor(["notes", "summary", "explanation"])
         elif role == "perspective_analyzer":
-            return StreamingJsonExtractor("synthesis")
+            return StreamingJsonExtractor(["synthesis", "summary", "notes"])
         elif role == "debate_response":
-            return StreamingJsonExtractor("reasoning")
+            return StreamingJsonExtractor(["reasoning", "reason"])
+        elif role == "strategist":
+            return StreamingJsonExtractor(["risks", "summary", "rationale"])
         return None
 
     async def invoke(
@@ -409,7 +411,10 @@ class AgentRunner:
                         await emit_progress(event="thought_delta", agent=role, status="IN_PROGRESS", text=clean)
             else:
                 async def on_chunk(c):
-                    await emit_progress(event="thought_delta", agent=role, status="IN_PROGRESS", text=c)
+                    from council_of_agents.scripts.council_orchestrator import StreamingJsonExtractor
+                    clean = StreamingJsonExtractor._clean_markup(c)
+                    if clean:
+                        await emit_progress(event="thought_delta", agent=role, status="IN_PROGRESS", text=clean)
 
             pulse_task = asyncio.create_task(liveness_pulse()) if self.emit else None
             call_task = None

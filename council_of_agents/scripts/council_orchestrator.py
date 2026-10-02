@@ -1,6 +1,6 @@
 import asyncio, time, logging, re, pathlib, json, os, hashlib
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Optional, Union, Sequence, List
 
 from src.llm_core import llm_call_async, stream_llm, stream_llm_with_fallback
 from src.agent_loop import stream_agent_loop, raise_for_error_chunk
@@ -39,11 +39,16 @@ class CouncilEvent:
 class StreamingJsonExtractor:
     """Extracts a text field value from a streaming JSON string without emitting JSON syntax.
     
-    Includes a smart fallback: if no JSON key matches after 250 characters,
-    it falls back to raw streaming to avoid any hung streams.
+    Includes a smart fallback: if no JSON key matches after 350 characters,
+    it falls back to sanitized streaming to avoid any hung streams while stripping
+    leaked DSML and tool-call markup.
     """
-    def __init__(self, target_key: str):
-        self.target_key = target_key
+    def __init__(self, target_key: Union[str, Sequence[str]]):
+        if isinstance(target_key, str):
+            self.target_keys = [target_key]
+        else:
+            self.target_keys = list(target_key)
+        self.target_key = self.target_keys[0] if self.target_keys else "reason"
         self.buffer = ""
         self.tracking = False
         self.in_string = False
@@ -51,21 +56,42 @@ class StreamingJsonExtractor:
         self.fallback = False
         self.fallback_threshold = 250
 
+    @staticmethod
+    def _clean_markup(text: str) -> str:
+        if not text:
+            return ""
+        # 1. Strip standalone or paired XML/DSML tags safely without runaway multiline eating
+        s = re.sub(r'<[^>]*DSML[^>]*>', '', text, flags=re.IGNORECASE)
+        s = re.sub(r'<[^>]*\b(?:invoke|parameter|tool_call|tool_calls|calls|channel)\b[^>]*>', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'<[^>]*\bthink(?:ing)?\b[^>]*>', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'<[|｜][^>]+[|｜]>', '', s)
+        s = re.sub(r'<\|im_(?:start|end)\|>', '', s, flags=re.IGNORECASE)
+        s = re.sub(r'<\s*[/／]?\s*>', '', s)
+        return s
+
+
     def feed_chunk(self, chunk: str) -> str:
         self.buffer += chunk
         if self.fallback:
-            return chunk
+            return self._clean_markup(chunk)
 
         output = ""
         if not self.tracking:
-            pattern = rf'"{re.escape(self.target_key)}"\s*:\s*'
-            match = re.search(pattern, self.buffer)
-            if match:
+            # Check if any candidate key matches
+            matched_key = None
+            for key in self.target_keys:
+                pattern = rf'"{re.escape(key)}"\s*:\s*'
+                match = re.search(pattern, self.buffer)
+                if match:
+                    matched_key = match
+                    break
+
+            if matched_key:
                 self.tracking = True
-                self.buffer = self.buffer[match.end():]
+                self.buffer = self.buffer[matched_key.end():]
             elif len(self.buffer) > self.fallback_threshold:
                 self.fallback = True
-                return self.buffer
+                return self._clean_markup(self.buffer)
 
         if self.tracking:
             chars_processed = 0
@@ -88,7 +114,7 @@ class StreamingJsonExtractor:
                         output += char
             self.buffer = self.buffer[chars_processed:]
             
-        return output
+        return self._clean_markup(output)
 
 
 # ── Per-role tool policy (single source of truth) ───────────────────────────
@@ -3324,26 +3350,35 @@ Report what you FIND, not what you think might exist."""
     def _clean_thought_text(self, role: str, text: str) -> str:
         if not text:
             return ""
-        clean = text.strip()
+        clean = StreamingJsonExtractor._clean_markup(text).strip()
         
         # 1. Parse JSON if applicable
         try:
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
+            json_target = clean
+            if "```json" in json_target:
+                json_target = json_target.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+            elif json_target.startswith("```"):
+                json_target = json_target.split("```", 1)[1].rsplit("```", 1)[0].strip()
+            if "{" in json_target:
+                json_target = "{" + json_target.split("{", 1)[1].rsplit("}", 1)[0] + "}"
             
-            data = json.loads(clean)
-            if role == "chair":
-                return data.get("reason", text)
-            elif role == "chair_arbitration":
-                return data.get("reasoning", text)
-            elif role == "manager":
-                return data.get("summary", text)
-            elif role == "implementer":
-                return data.get("notes", text)
+            data = json.loads(json_target)
+            if isinstance(data, dict):
+                if role == "chair":
+                    return data.get("reason") or data.get("reasoning") or clean
+                elif role == "chair_arbitration":
+                    return data.get("reasoning") or data.get("reason") or clean
+                elif role == "manager":
+                    return data.get("summary") or data.get("reasoning") or clean
+                elif role == "implementer":
+                    return data.get("notes") or data.get("summary") or data.get("explanation") or clean
+                elif role == "strategist":
+                    strat_val = data.get("risks") or data.get("summary") or data.get("rationale")
+                    if strat_val:
+                        if isinstance(strat_val, list):
+                            return " · ".join(str(item) for item in strat_val)
+                        return str(strat_val)
+
         except Exception:
             pass
 

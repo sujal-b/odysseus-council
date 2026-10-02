@@ -7,6 +7,7 @@
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 4L16 22L6 22Z' fill='%23e06c75'/%3E%3Cpath d='M16 8L16 22L24 22Z' fill='%23e06c75' opacity='0.6'/%3E%3Cpath d='M4 24Q10 20 16 24Q22 28 28 24' stroke='%23e06c75' stroke-width='2.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="manifest" href="/static/manifest.json">
   <meta name="theme-color" content="#282c34">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <!-- Disable iOS / Android auto-linkifying of numbers (phone/date/address)
@@ -1830,7 +1831,10 @@
               </div>
               <div id="set-searchKeyRow" class="settings-row" style="display:none;">
                 <label class="settings-label">API Key</label>
-                <input id="set-searchApiKey" type="password" placeholder="API key" class="settings-select">
+                <form autocomplete="off" onsubmit="event.preventDefault();" style="display:contents;">
+                  <input type="text" name="username" autocomplete="username" style="display:none;" aria-hidden="true" tabindex="-1">
+                  <input id="set-searchApiKey" type="password" placeholder="API key" class="settings-select" autocomplete="new-password">
+                </form>
               </div>
               <div id="set-searchCxRow" class="settings-row" style="display:none;">
                 <label class="settings-label">CX ID</label>
@@ -2070,13 +2074,16 @@
           <div class="admin-card">
             <h2><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Change Password</h2>
             <div class="settings-col">
-              <input id="settings-pw-current" type="password" placeholder="Current password" autocomplete="current-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
-              <input id="settings-pw-new" type="password" placeholder="New password (min 8)" autocomplete="new-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
-              <input id="settings-pw-confirm" type="password" placeholder="Confirm new password" autocomplete="new-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
-              <div class="settings-row" style="margin-top:2px;justify-content:flex-end;">
-                <span id="settings-pw-msg" style="font-size:11px;margin-right:auto;"></span>
-                <button class="admin-btn-add" id="settings-pw-save">Update Password</button>
-              </div>
+              <form autocomplete="off" onsubmit="event.preventDefault();" style="display:contents;">
+                <input type="text" name="username" autocomplete="username" style="display:none;" aria-hidden="true" tabindex="-1">
+                <input id="settings-pw-current" type="password" placeholder="Current password" autocomplete="current-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
+                <input id="settings-pw-new" type="password" placeholder="New password (min 8)" autocomplete="new-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
+                <input id="settings-pw-confirm" type="password" placeholder="Confirm new password" autocomplete="new-password" style="padding:6px 8px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--fg);font-family:inherit;font-size:12px;">
+                <div class="settings-row" style="margin-top:2px;justify-content:flex-end;">
+                  <span id="settings-pw-msg" style="font-size:11px;margin-right:auto;"></span>
+                  <button class="admin-btn-add" id="settings-pw-save">Update Password</button>
+                </div>
+              </form>
             </div>
           </div>
           <div class="admin-card" id="settings-2fa-card">
@@ -2201,11 +2208,11 @@
           </div>
           <div class="admin-card">
             <h2><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>Add User</h2>
-            <div class="admin-add-form">
-              <input id="adm-newUsername" type="text" placeholder="Username">
-              <input id="adm-newPassword" type="password" placeholder="Password (min 8)">
+            <form class="admin-add-form" autocomplete="on" onsubmit="event.preventDefault();">
+              <input id="adm-newUsername" type="text" placeholder="Username" autocomplete="username">
+              <input id="adm-newPassword" type="password" placeholder="Password (min 8)" autocomplete="new-password">
               <div class="admin-switch-inline" title="Grant full admin access"><label class="admin-switch"><input type="checkbox" id="adm-newIsAdmin"><span class="admin-slider"></span></label> Admin</div>
-            </div>
+            </form>
             <div class="settings-row" style="margin-top:6px;">
               <button class="admin-btn-add" id="adm-addBtn">Add User</button>
               <span id="adm-addMsg" style="font-size:11px"></span>
@@ -2235,7 +2242,10 @@
                      endpoints rarely need a key; hiding it by default keeps
                      the form a single visual line. -->
                 <div class="admin-model-form-row" id="adm-epLocalApiKey-row" style="display:none;">
-                  <input id="adm-epLocalApiKey" type="password" placeholder="API key (optional — for protected local endpoints)" autocomplete="off" style="flex:1">
+                  <form autocomplete="off" onsubmit="event.preventDefault();" style="display:contents;">
+                    <input type="text" name="username" autocomplete="username" style="display:none;" aria-hidden="true" tabindex="-1">
+                    <input id="adm-epLocalApiKey" type="password" placeholder="API key (optional — for protected local endpoints)" autocomplete="off" style="flex:1">
+                  </form>
                 </div>
                 <!-- Action row: LLM/Image type, Quickstart buttons (Scan,
                      Ollama), Key reveal toggle, Test, Add — all inline so
@@ -2310,7 +2320,10 @@
                      paste a key via the provider preset flow rather than
                      typing it free-form, so the row only appears on demand. -->
                 <div class="admin-model-form-row" id="adm-epApiKey-row" style="display:none;">
-                  <input id="adm-epApiKey" type="password" placeholder="API key" autocomplete="off" style="flex:1">
+                  <form autocomplete="off" onsubmit="event.preventDefault();" style="display:contents;">
+                    <input type="text" name="username" autocomplete="username" style="display:none;" aria-hidden="true" tabindex="-1">
+                    <input id="adm-epApiKey" type="password" placeholder="API key" autocomplete="off" style="flex:1">
+                  </form>
                 </div>
                 <div class="admin-model-form-row" style="margin-top:-4px;">
                   <select id="adm-epKind" style="padding:5px;width:82px;">

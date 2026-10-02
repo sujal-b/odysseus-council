@@ -793,6 +793,7 @@ class CouncilUI {
     this._implementerFilesCache = null;
     this._autoFollow = true;
     this._dagOverlayOpen = false;
+    this._activeThoughtExpanded = false;
     this._telemetry = new CouncilTelemetry(this._state);
     this._state.telemetry = this._telemetry;
     this._telemetry.start();
@@ -855,6 +856,7 @@ class CouncilUI {
     this._implementerFilesCache = null;
     this._telemetry?.reset();
     this._autoFollow = true;
+    this._activeThoughtExpanded = false;
     this._state.fileVersions = {};
     if (this._dagOverlayOpen) {
       this._toggleDagOverlay(false);
@@ -1435,7 +1437,12 @@ class CouncilUI {
       if (liveCard) {
         const textEl = liveCard.querySelector('.ghost-chair-text, .ghost-think-text');
         if (textEl) {
-          textEl.innerHTML = _ghostMd(state.thoughts) + '<span class="ghost-typing-cursor"></span>';
+          const scrollContainer = liveCard.querySelector('.active-cockpit-content') || textEl;
+          const isAtBottom = (scrollContainer.scrollHeight - scrollContainer.scrollTop - scrollContainer.clientHeight) < 40;
+          textEl.innerHTML = _ghostMd(state.thoughts, state.activeAgent) + '<span class="ghost-typing-cursor"></span>';
+          if (isAtBottom) {
+            scrollContainer.scrollTop = scrollContainer.scrollHeight;
+          }
         }
         if (this._autoFollow !== false) {
           ledger.scrollTop = ledger.scrollHeight;
@@ -1510,6 +1517,7 @@ class CouncilUI {
           type: 'think',
           agent: agent,
           text: compactAgentActivity(agent),
+          thoughtText: typeof e.text === 'string' ? e.text : (typeof e.extra?.thoughts === 'string' ? e.extra.thoughts : ''),
           outcome: outcome,
           duration: dur,
           perspective: (agent === 'perspective_analyzer' && e.extra?.perspective) ? e.extra.perspective : null
@@ -1980,18 +1988,22 @@ class CouncilUI {
         const role = _resolveRole(b.agent || (b.type === 'chair' ? 'chair' : 'impl'));
         const durText = b.duration ? `<span class="active-cockpit-timer">${_esc(b.duration)}</span>` : '';
         const titleText = b.type === 'chair' ? 'Chair Evaluation' : 'Thought streaming...';
+        const isExp = this._activeThoughtExpanded ? 'is-expanded' : '';
         html += `
           <div class="row row--active" data-live-stream aria-live="off">
             <span class="id">${stepNum}</span>
-            <div class="active-cockpit-box">
+            <div class="active-cockpit-box role--${role.cls} ${isExp}">
               <div class="active-cockpit-header">
                 <span class="active-spinner" aria-hidden="true"></span>
                 <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
                 <span class="active-cockpit-title">${titleText}</span>
                 ${durText}
+                <button type="button" class="active-cockpit-toggle" title="Toggle drawer expansion (E)" aria-label="Toggle drawer expansion">
+                  <span class="cockpit-toggle-label">${this._activeThoughtExpanded ? 'Collapse' : 'Expand'}</span>
+                </button>
               </div>
-              <div class="ghost-md ${b.type === 'chair' ? 'ghost-chair-text' : 'ghost-think-text'}">
-                ${_ghostMd(b.reason || b.text || '')}<span class="ghost-typing-cursor"></span>
+              <div class="active-cockpit-content ghost-md ${b.type === 'chair' ? 'ghost-chair-text' : 'ghost-think-text'}">
+                ${_ghostMd(b.reason || b.text || '', b.agent || 'chair')}<span class="ghost-typing-cursor"></span>
               </div>
               ${b.outcome ? `<p style="font-size:10px;color:var(--think);margin:4px 0 0 0">→ ${_esc(b.outcome)}</p>` : ''}
             </div>
@@ -2043,16 +2055,21 @@ class CouncilUI {
               ${_perspChips(_p)}
             </div>`;
         } else {
+          const hasThought = Boolean(b.thoughtText && b.thoughtText.trim() && b.thoughtText !== b.text);
           html += `
-            <div class="row">
-              <span class="id">${stepNum}</span>
-              ${statusCell}
-              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
-              <div class="ct">
-                <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
-                ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
-                ${durBadge}
+            <div class="ghost-thought-card${hasThought ? ' has-drawer' : ''}">
+              <div class="row ghost-thought-header" tabindex="0">
+                <span class="id">${stepNum}</span>
+                ${statusCell}
+                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <div class="ct">
+                  <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
+                  ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
+                  ${durBadge}
+                  ${hasThought ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
+                </div>
               </div>
+              ${hasThought ? `<div class="ghost-thought-body"><div class="ghost-md ghost-think-text">${_ghostMd(b.thoughtText, b.agent)}</div></div>` : ''}
             </div>`;
         }
       } else if (b.type === 'strat') {
@@ -3566,6 +3583,29 @@ class CouncilUI {
         }
       }
 
+      // Expand/collapse Active Cockpit Drawer (.active-cockpit-toggle)
+      const cockpitToggle = e.target.closest('.active-cockpit-toggle');
+      if (cockpitToggle) {
+        e.stopPropagation();
+        this._activeThoughtExpanded = !this._activeThoughtExpanded;
+        const box = cockpitToggle.closest('.active-cockpit-box');
+        if (box) {
+          box.classList.toggle('is-expanded', this._activeThoughtExpanded);
+          const lbl = box.querySelector('.cockpit-toggle-label');
+          if (lbl) lbl.textContent = this._activeThoughtExpanded ? 'Collapse' : 'Expand';
+        }
+        return;
+      }
+
+      // Expand/collapse Completed Thought Card (.ghost-thought-header)
+      const thoughtHeader = e.target.closest('.ghost-thought-header');
+      if (thoughtHeader && !e.target.closest('.tx') && !e.target.closest('.ag') && !e.target.closest('.st')) {
+        const card = thoughtHeader.closest('.ghost-thought-card');
+        if (card && card.classList.contains('has-drawer')) {
+          card.classList.toggle('open');
+        }
+      }
+
       // Expand/collapse Think line (.think-line)
       const thinkEl = e.target.closest('.think-line');
       if (thinkEl) {
@@ -3869,6 +3909,19 @@ class CouncilUI {
       return;
     }
 
+    // E / e: Toggle active cockpit thought drawer expansion
+    if (e.key === 'e' || e.key === 'E') {
+      const liveBox = document.querySelector('.active-cockpit-box');
+      if (liveBox) {
+        e.preventDefault();
+        this._activeThoughtExpanded = !this._activeThoughtExpanded;
+        liveBox.classList.toggle('is-expanded', this._activeThoughtExpanded);
+        const lbl = liveBox.querySelector('.cockpit-toggle-label');
+        if (lbl) lbl.textContent = this._activeThoughtExpanded ? 'Collapse' : 'Expand';
+        return;
+      }
+    }
+
     // F: Focus Files tab in contextual panel
     if (e.key === 'f' || e.key === 'F') {
       e.preventDefault();
@@ -4046,16 +4099,461 @@ function _esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+function _cleanNoiseAndTags(text) {
+  if (!text) return '';
+  let s = String(text);
+  // 1. Strip standalone or paired XML/DSML tags safely without runaway multiline eating
+  s = s.replace(/<[^>]*DSML[^>]*>/gi, '');
+  s = s.replace(/<[^>]*\b(?:invoke|parameter|tool_call|tool_calls|calls|channel)\b[^>]*>/gi, '');
+  s = s.replace(/<[^>]*\bthink(?:ing)?\b[^>]*>/gi, '');
+  s = s.replace(/<[|｜][^>]+[|｜]>/g, '');
+  s = s.replace(/<\|im_(?:start|end)\|>/gi, '');
+  s = s.replace(/<\s*[/／]?\s*>/g, '');
+  // 2. Clean up excessive blank lines
+  s = s.replace(/^\s*\n+/, '').replace(/\n{3,}/g, '\n\n');
+  return s;
+}
+
+function _normalizeStreamBoundaries(text) {
+  if (!text) return '';
+  let s = text;
+  // 1. Separate glued braces: '}{' -> '}\n\n{'
+  s = s.replace(/\}\s*\{/g, '}\n\n{');
+  // 2. Separate glued closing brace to word: '}I'll inspect' -> '}\n\nI'll inspect'
+  s = s.replace(/\}([A-Za-z])/g, '}\n\n$1');
+  // 3. Separate glued word to opening brace: 'path = ./{' -> 'path = ./\n\n{'
+  s = s.replace(/([a-zA-Z0-9.,!?:;=\-\/])\{/g, '$1\n\n{');
+  // 4. Separate glued sentences: 'environment.I'll' -> 'environment. I'll'
+  s = s.replace(/([a-z0-9][.!?])([A-Z])/g, '$1 $2');
+  // 5. Repair half-JSON missing root brace ONLY when preceded by prose e.g. 'incorrect.,\n"issues": ['
+  s = s.replace(/([a-zA-Z.!?])\s*,\s*(["']issues["']\s*:\s*\[[\s\S]*?\](?:\s*,\s*["']confidence["']\s*:\s*[\d.]+)?)(\s*\})/g, '$1\n\n{\n$2$3');
+  return s;
+}
+
+
+function _formatToolDeclarations(text) {
+  if (!text) return text;
+  const toolListRegex = /Tool call list:\s*((?:Tool:\s*[a-zA-Z0-9_-]+[\s\S]*?(?=(?:Tool:|\n\s*\n[A-Z]|\n\s*\{|$)))+)/gi;
+  return text.replace(toolListRegex, (match, body) => {
+    const toolRegex = /Tool:\s*([a-zA-Z0-9_-]+)([\s\S]*?)(?=(?:Tool:|$))/gi;
+    const chips = [];
+    let tMatch;
+    while ((tMatch = toolRegex.exec(body)) !== null) {
+      const toolName = tMatch[1].trim();
+      const paramsText = tMatch[2].trim();
+      const params = [];
+      const paramLineRegex = /-\s*([a-zA-Z0-9_-]+)\s*=\s*([^\n\r]+)/g;
+      let pMatch;
+      while ((pMatch = paramLineRegex.exec(paramsText)) !== null) {
+        params.push(`${pMatch[1]}: ${pMatch[2].trim()}`);
+      }
+      const paramStr = params.length > 0 ? `(${params.join(', ')})` : '';
+      chips.push(`<span class="tool-plan-chip"><span class="tool-plan-name">${_esc(toolName)}</span> <span class="tool-plan-args">${_esc(paramStr)}</span></span>`);
+    }
+    if (chips.length > 0) {
+      return `\n\n<div class="ghost-tool-plan-deck"><div class="tool-plan-header"><span class="tool-plan-badge">DECLARED TOOLS</span></div><div class="tool-plan-chips">${chips.join(' ')}</div></div>\n\n`;
+    }
+    return match;
+  });
+}
+
+function _dedupeStatements(text) {
+  if (!text || text.length < 20) return text;
+  // Paragraph-level deduplication
+  const paras = text.split(/\n{2,}/);
+  const deduped = [];
+  const seenPreambleKeys = new Set();
+
+  for (let i = 0; i < paras.length; i++) {
+    const cur = paras[i].trim();
+    if (!cur) continue;
+
+    // Check consecutive similarity
+    const prev = deduped.length > 0 ? deduped[deduped.length - 1].trim() : null;
+    if (prev && _isSimilarStatement(cur, prev)) continue;
+
+    // Check sliding boilerplate preamble duplicates (e.g. repeated "Let me inspect the workspace...")
+    const norm = cur.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    if (norm.length > 25 && (norm.startsWith('letmeinspect') || norm.startsWith('illinspect') || norm.startsWith('iwillinspect'))) {
+      const key = norm.slice(0, 35);
+      if (seenPreambleKeys.has(key)) continue;
+      seenPreambleKeys.add(key);
+    }
+
+    deduped.push(paras[i]);
+  }
+  let res = deduped.join('\n\n');
+  // Sentence-level immediate duplicate loops e.g. "Sentence A. Sentence A."
+  res = res.replace(/([A-Z][^.!?\n]{15,}[.!?])\s*\1+/g, '$1');
+  return res;
+}
+
+function _isSimilarStatement(a, b) {
+  if (a === b) return true;
+  const ca = a.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  const cb = b.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+  if (ca.length > 15 && ca === cb) return true;
+  if (ca.length > 25 && (ca.startsWith(cb) || cb.startsWith(ca)) && Math.abs(ca.length - cb.length) < 8) return true;
+  return false;
+}
+
+function _formatTabularData(text) {
+  if (!text || !text.includes('\t')) return text;
+  const lines = text.split('\n');
+  const out = [];
+  let inTabTable = false;
+  let tabRows = [];
+
+  const flushTable = () => {
+    if (tabRows.length >= 2) {
+      const colCount = Math.max(...tabRows.map(r => r.length));
+      out.push('| ' + tabRows[0].concat(Array(colCount - tabRows[0].length).fill('')).join(' | ') + ' |');
+      out.push('| ' + Array(colCount).fill('---').join(' | ') + ' |');
+      for (let i = 1; i < tabRows.length; i++) {
+        out.push('| ' + tabRows[i].concat(Array(colCount - tabRows[i].length).fill('')).join(' | ') + ' |');
+      }
+    } else {
+      tabRows.forEach(r => out.push(r.join('\t')));
+    }
+    tabRows = [];
+    inTabTable = false;
+  };
+
+  for (const line of lines) {
+    if (line.includes('\t')) {
+      const parts = line.split('\t').map(p => p.trim());
+      if (parts.length >= 2) {
+        inTabTable = true;
+        tabRows.push(parts);
+        continue;
+      }
+    }
+    if (inTabTable) {
+      flushTable();
+    }
+    out.push(line);
+  }
+  if (inTabTable) flushTable();
+  return out.join('\n');
+}
+
+function _renderFindingCard(data) {
+  const sev = String(data.severity || data.level || 'warning').toLowerCase();
+  const taskId = data.task_id || data.task || data.id || '';
+  const desc = data.description || data.desc || data.issue || data.summary || '';
+  const evidence = data.evidence || data.notes || data.reason || '';
+
+  const toneClass = (sev === 'critical' || sev === 'error' || sev === 'fail' || sev === 'block')
+    ? 'is-block'
+    : (sev === 'must_fix' || sev === 'mustfix')
+    ? 'is-mustfix'
+    : (sev === 'warning' || sev === 'warn')
+    ? 'is-warn'
+    : 'is-ok';
+
+  let html = `<div class="ghost-telemetry-finding ${toneClass}">`;
+  html += `<div class="telemetry-finding-header">`;
+  html += `<span class="telemetry-badge ${toneClass}">${_esc(sev.toUpperCase())}</span>`;
+  if (taskId) {
+    html += `<span class="telemetry-task-chip">${_esc(taskId)}</span>`;
+  }
+  html += `</div>`;
+  if (desc) {
+    html += `<div class="telemetry-finding-desc">${_esc(desc)}</div>`;
+  }
+  if (evidence) {
+    html += `<div class="telemetry-finding-evidence"><span class="evidence-tag">Evidence:</span> ${_esc(evidence)}</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function _renderReviewCard(data) {
+  const verdict = String(data.verdict || 'REVISE').toUpperCase();
+  const toneClass = (verdict === 'APPROVED' || verdict === 'DONE' || verdict === 'CLEAR')
+    ? 'is-ok'
+    : (verdict === 'REVISE' || verdict === 'WARN')
+    ? 'is-warn'
+    : 'is-block';
+
+  const confText = typeof data.confidence === 'number'
+    ? `${Math.round(data.confidence * 100)}% Confidence`
+    : '';
+
+  const issues = Array.isArray(data.issues) ? data.issues : [];
+
+  let html = `<div class="ghost-telemetry-card ghost-telemetry-review ${toneClass}">`;
+  html += `<div class="telemetry-finding-header">`;
+  html += `<span class="telemetry-badge ${toneClass}">${_esc(verdict)}</span>`;
+  if (confText) {
+    html += `<span class="telemetry-confidence-pill">${_esc(confText)}</span>`;
+  }
+  html += `<span class="telemetry-deliverable-title">Manager Review</span>`;
+  html += `</div>`;
+
+  if (data.summary) {
+    html += `<div class="telemetry-finding-desc">${_esc(data.summary)}</div>`;
+  }
+
+  if (issues.length > 0) {
+    html += `<div class="telemetry-review-issues">`;
+    issues.forEach(iss => {
+      const sev = String(iss.severity || 'warning').toLowerCase();
+      const issTone = (sev === 'critical' || sev === 'error' || sev === 'block') ? 'is-block' : (sev === 'must_fix' || sev === 'mustfix') ? 'is-mustfix' : 'is-warn';
+      html += `<div class="telemetry-issue-item ${issTone}">`;
+      html += `<div class="telemetry-issue-head">`;
+      html += `<span class="telemetry-badge ${issTone}">${_esc(sev.toUpperCase())}</span>`;
+      if (iss.task_id) html += `<span class="telemetry-task-chip">${_esc(iss.task_id)}</span>`;
+      if (iss.description) html += `<span class="telemetry-issue-desc">${_esc(iss.description)}</span>`;
+      html += `</div>`;
+      if (iss.evidence) html += `<div class="telemetry-finding-evidence"><span class="evidence-tag">Evidence:</span> ${_esc(iss.evidence)}</div>`;
+      if (iss.suggestion) html += `<div class="telemetry-finding-suggestion"><span class="suggestion-tag">💡 Suggestion:</span> ${_esc(iss.suggestion)}</div>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function _renderDeliverableCard(data) {
+  const status = String(data.status || 'DONE').toUpperCase();
+  const toneClass = (status === 'DONE' || status === 'COMPLETED' || status === 'SUCCESS')
+    ? 'is-ok'
+    : (status === 'BLOCKED' || status === 'FAILED')
+    ? 'is-block'
+    : 'is-warn';
+
+  const filesCreated = Array.isArray(data.files_created) ? data.files_created : [];
+  const filesModified = Array.isArray(data.files_modified) ? data.files_modified : [];
+
+  let html = `<div class="ghost-telemetry-card ghost-telemetry-deliverable ${toneClass}">`;
+  html += `<div class="telemetry-finding-header">`;
+  html += `<span class="telemetry-badge ${toneClass}">${_esc(status)}</span>`;
+  if (data.task_id) html += `<span class="telemetry-task-chip">${_esc(data.task_id)}</span>`;
+  html += `<span class="telemetry-deliverable-title">Task Deliverable</span>`;
+  const fileSummary = [];
+  if (filesCreated.length > 0) fileSummary.push(`+${filesCreated.length} created`);
+  if (filesModified.length > 0) fileSummary.push(`${filesModified.length} edited`);
+  if (fileSummary.length > 0) {
+    html += `<span class="telemetry-file-pills">${_esc(fileSummary.join(' · '))}</span>`;
+  }
+  html += `</div>`;
+
+  if (data.verification_details) {
+    html += `<div class="telemetry-deliverable-section"><span class="section-label">Verification:</span> ${_esc(data.verification_details)}</div>`;
+  }
+  if (data.notes) {
+    html += `<div class="telemetry-deliverable-section"><span class="section-label">Notes:</span> ${_esc(data.notes)}</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+function _renderPlanCard(data) {
+  const tasks = Array.isArray(data.tasks) ? data.tasks : [];
+  const risks = Array.isArray(data.risks) ? data.risks : [];
+
+  let html = `<div class="ghost-telemetry-card ghost-telemetry-plan">`;
+  html += `<div class="telemetry-finding-header">`;
+  html += `<span class="telemetry-badge is-strat">STRATEGIST PLAN</span>`;
+  html += `<span class="telemetry-plan-stats">${tasks.length} task${tasks.length === 1 ? '' : 's'} · ${risks.length} risk${risks.length === 1 ? '' : 's'}</span>`;
+  html += `</div>`;
+
+  if (tasks.length > 0) {
+    html += `<div class="telemetry-plan-tasks">`;
+    tasks.forEach(t => {
+      const deps = Array.isArray(t.depends_on) && t.depends_on.length > 0 ? ` (depends on ${t.depends_on.join(', ')})` : '';
+      html += `<div class="telemetry-plan-task-row">`;
+      html += `<span class="telemetry-task-chip">${_esc(t.id || 'TX')}</span>`;
+      html += `<span class="telemetry-task-desc">${_esc(t.description || t.summary || '')}${_esc(deps)}</span>`;
+      html += `</div>`;
+    });
+    html += `</div>`;
+  }
+
+  if (risks.length > 0) {
+    html += `<div class="telemetry-plan-risks">`;
+    html += `<div class="risks-header">⚠ Identified Risks</div>`;
+    html += `<ul class="risks-list">`;
+    risks.forEach(r => {
+      html += `<li>${_esc(r)}</li>`;
+    });
+    html += `</ul>`;
+    html += `</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function _renderToolCallsCard(data) {
+  const calls = Array.isArray(data.tool_calls) ? data.tool_calls : [];
+  let html = `<div class="ghost-tool-plan-deck"><div class="tool-plan-header"><span class="tool-plan-badge">TOOL INVOCATIONS</span></div><div class="tool-plan-chips">`;
+  calls.forEach(c => {
+    const tool = c.tool || 'tool';
+    const params = c.parameters || {};
+    const paramStr = Object.entries(params).map(([k, v]) => `${k}: ${v}`).join(', ');
+    html += `<span class="tool-plan-chip"><span class="tool-plan-name">${_esc(tool)}</span> <span class="tool-plan-args">(${_esc(paramStr)})</span></span> `;
+  });
+  html += `</div></div>`;
+  return html;
+}
+
+function _renderJsonTelemetryCard(parsed) {
+  if (parsed.status && (parsed.summary || parsed.notes || parsed.files_modified || parsed.verification_details)) {
+    return _renderDeliverableCard(parsed);
+  }
+  // Generic formatted JSON block
+  try {
+    const formatted = JSON.stringify(parsed, null, 2);
+    return `<div class="ghost-telemetry-code"><div class="telemetry-code-header"><span class="telemetry-code-tag">STRUCTURED DATA</span></div><pre class="telemetry-code-body">${_esc(formatted)}</pre></div>`;
+  } catch (e) {
+    return '';
+  }
+}
+
+function safeParseJson(str) {
+  if (!str || typeof str !== 'string') return null;
+  const trimmed = str.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch (e1) {
+    try {
+      // Repair invalid escapes: backtick \`, single-quote \', or raw Windows backslashes
+      let fixed = trimmed;
+      fixed = fixed.replace(/\\\\/g, '\u0001');
+      fixed = fixed.replace(/\\([`'])/g, '$1');
+      fixed = fixed.replace(/\\(?![/\"bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
+      fixed = fixed.replace(/\u0001/g, '\\\\');
+      return JSON.parse(fixed);
+    } catch (e2) {
+      return null;
+    }
+  }
+}
+
+function extractJsonBlocks(text) {
+  const blocks = [];
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '{') {
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+      let startIndex = i;
+      let found = false;
+
+      for (let j = i; j < text.length; j++) {
+        const char = text[j];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (!inString) {
+          if (char === '{') {
+            depth++;
+          } else if (char === '}') {
+            depth--;
+            if (depth === 0) {
+              const candidate = text.slice(startIndex, j + 1);
+              const parsed = safeParseJson(candidate);
+              if (parsed && typeof parsed === 'object') {
+                blocks.push({
+                  start: startIndex,
+                  end: j + 1,
+                  raw: candidate,
+                  parsed: parsed
+                });
+                i = j + 1;
+                found = true;
+                break;
+              }
+            }
+          }
+        }
+      }
+      if (found) continue;
+    }
+    i++;
+  }
+  return blocks;
+}
+
 // Render streamed LLM thought text as structured markdown (headers, lists,
-// tables, code, paragraphs) instead of raw escaped text. Mirrors chat.js'
-// streaming path; falls back to escaped text if the parser throws on a
-// partial chunk. Used for the ghost editor "System Thought" / chair blocks.
-function _ghostMd(text) {
+// tables, code, paragraphs) with de-duplication, noise-stripping, and
+// structured JSON parsing. Falls back to escaped text if the parser throws.
+function _ghostMd(text, agent) {
   const s = String(text || '');
   if (!s) return '';
-  try { return markdownModule.mdToHtml(markdownModule.squashOutsideCode(s)); }
-  catch (e) { return _esc(s); }
+  const cacheKey = `${agent || ''}|${s}`;
+  if (_ghostMd._cacheKey === cacheKey && _ghostMd._cacheVal !== undefined) {
+    return _ghostMd._cacheVal;
+  }
+  try {
+    let clean = _cleanNoiseAndTags(s);
+    clean = _normalizeStreamBoundaries(clean);
+    clean = _dedupeStatements(clean);
+    clean = _formatToolDeclarations(clean);
+    clean = _formatTabularData(clean);
+
+    const jsonBlocks = extractJsonBlocks(clean);
+    const cards = [];
+
+    // Replace json blocks from end to start so character indices remain valid
+    for (let b = jsonBlocks.length - 1; b >= 0; b--) {
+      const block = jsonBlocks[b];
+      const parsed = block.parsed;
+      let cardHtml = '';
+
+      if (parsed.verdict || (parsed.issues && Array.isArray(parsed.issues))) {
+        cardHtml = _renderReviewCard(parsed);
+      } else if (parsed.status && (parsed.notes || parsed.verification_details || parsed.files_created || parsed.files_modified || parsed.summary)) {
+        cardHtml = _renderDeliverableCard(parsed);
+      } else if (parsed.tasks && Array.isArray(parsed.tasks)) {
+        cardHtml = _renderPlanCard(parsed);
+      } else if (parsed.tool_calls && Array.isArray(parsed.tool_calls)) {
+        cardHtml = _renderToolCallsCard(parsed);
+      } else if (parsed.severity || (parsed.description && parsed.evidence)) {
+        cardHtml = _renderFindingCard(parsed);
+      } else {
+        cardHtml = _renderJsonTelemetryCard(parsed);
+      }
+
+      const cardIdx = cards.length;
+      cards.push(cardHtml);
+      clean = clean.slice(0, block.start) + `\n\n__TELEMETRY_CARD_${cardIdx}__\n\n` + clean.slice(block.end);
+    }
+
+    let html = markdownModule.mdToHtml(markdownModule.squashOutsideCode(clean));
+
+    cards.forEach((card, idx) => {
+      const placeholder = `__TELEMETRY_CARD_${idx}__`;
+      const wrappedRegex = new RegExp(`<p>\\s*${placeholder}\\s*<\\/p>`, 'g');
+      if (wrappedRegex.test(html)) {
+        html = html.replace(wrappedRegex, card);
+      } else {
+        html = html.replace(placeholder, card);
+      }
+    });
+
+    _ghostMd._cacheKey = cacheKey;
+    _ghostMd._cacheVal = html;
+    return html;
+  } catch (e) {
+    return _esc(s);
+  }
 }
+
 
 function sameFileOperation(left, right) {
   if (!left || !right || left.op !== right.op) return false;
