@@ -603,7 +603,7 @@ _API_HOSTS = frozenset([
     "api.together.xyz", "api.fireworks.ai",
     "api.perplexity.ai", "api.x.ai",
     "ollama.com", "api.venice.ai",
-    "api.githubcopilot.com",
+    "api.githubcopilot.com", "api.nilovr.com",
     # Local OpenAI-compatible endpoints (llama.cpp, vLLM, LM Studio, etc.).
     # Without these, `_is_api_model` falls back to keyword sniffing on the
     # model name, so well-behaved local servers don't get native tool
@@ -2126,7 +2126,7 @@ async def stream_agent_loop(
         # via vLLM's `--enable-auto-tool-choice`. Belt-and-suspenders
         # with the per-endpoint flag above.
         "minimax", "kimi", "mimo", "yi-", "phi-3", "phi-4", "command-r",
-        "glm-4", "internlm", "hermes",
+        "glm-4", "internlm", "hermes", "nemotron",
         # deepseek-v2/v3/chat support tools via the cloud API; deepseek-r1
         # (reasoning model) does not — handled by the blocklist below.
         "deepseek-v", "deepseek-chat",
@@ -2158,7 +2158,8 @@ async def stream_agent_loop(
     ):
         _is_api_model = False
     else:
-        _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools
+        _url_is_v1_api = bool(endpoint_url and "/v1" in endpoint_url and not _is_ollama_native and not _ollama_openai_compat)
+        _is_api_model = any(h in endpoint_url for h in _API_HOSTS) or _model_supports_tools or _url_is_v1_api
     messages, mcp_schemas = _build_system_prompt(
         messages, model, active_document, mcp_mgr, disabled_tools,
         needs_admin=_needs_admin, relevant_tools=_relevant_tools,
