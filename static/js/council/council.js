@@ -1430,6 +1430,15 @@ class CouncilUI {
       }
     }
 
+    // Heartbeat carries liveness only: update active cockpit timer and bypass full ledger rebuild
+    if (eventType === 'heartbeat') {
+      const timerEl = ledger.querySelector('[data-live-stream] .active-cockpit-timer');
+      if (timerEl && state.activeAgentSince) {
+        timerEl.textContent = _fmtElapsed(Date.now() - state.activeAgentSince);
+      }
+      return;
+    }
+
     // Once the live card exists, streamed tokens update the live card content in-place.
     // This provides lightning-fast streaming with zero full-ledger rebuilds.
     if (eventType === 'thought_delta' && ledger.querySelector('[data-live-stream]')) {
@@ -1634,6 +1643,14 @@ class CouncilUI {
 
       const processedBlocks = [];
       const _burstScope = (item) => `${item.taskId || ''}|${item.agent || ''}`;
+      const live = state.status === 'IN_PROGRESS' || state.status === 'BLOCKED';
+      if (!live) {
+        blocks.forEach(b => {
+          if (b.type === 'tool_call' && b.status === 'RUNNING') {
+            b.status = 'FAILED';
+          }
+        });
+      }
       let bi = 0;
       while (bi < blocks.length) {
         if (blocks[bi].type === 'tool_call') {
@@ -1646,7 +1663,7 @@ class CouncilUI {
           ) bj++;
           const run = blocks.slice(bi, bj);
           if (run.length >= 2) {
-            const isRunning  = run.some(r => r.status === 'RUNNING');
+            const isRunning  = live && run.some(r => r.status === 'RUNNING');
             const hasFailure = run.some(r => r.status === 'FAILED');
             processedBlocks.push({
               type: 'burst_group',
@@ -2239,7 +2256,7 @@ class CouncilUI {
         const role = _resolveRole('sys');
         const attemptLabel = b.count > 1 ? ` · ${b.count} attempts` : '';
         html += `
-          <div class="row" style="background:rgba(239,68,68,0.06);border-left:3px solid var(--sys);">
+          <div class="row row--sys-error">
             <span class="id">${stepNum}</span>
             <span class="st st--failed" title="Failed" aria-label="Failed">${_statusIcon('failed')}</span>
             <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>

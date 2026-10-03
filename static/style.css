@@ -37203,6 +37203,12 @@ body.theme-frosted .modal {
   --warn: var(--color-warning, #df8e45);
   --fail: var(--color-error, #e05858);
   --font: var(--code-font, 'Fira Code', monospace);
+  --stream-id-w: 32px;
+  --stream-st-w: 24px;
+  --stream-ag-w: 54px;
+  --stream-grid: var(--stream-id-w) var(--stream-st-w) var(--stream-ag-w) minmax(0, 1fr);
+  --stream-divider: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  --stream-indent: calc(var(--stream-id-w) + var(--stream-st-w) + var(--stream-ag-w) + 16px);
 
   flex: 1;
   margin: 0;
@@ -37384,8 +37390,9 @@ body.theme-frosted .modal {
 .ghost-md .ghost-typing-cursor { vertical-align: baseline; }
 
 .ghost-editor-stream .row {
-  display: flex;
-  align-items: flex-start;
+  display: grid;
+  grid-template-columns: var(--stream-grid);
+  align-items: center;
   gap: 0;
   padding: 3px 8px;
   background: transparent;
@@ -37413,23 +37420,24 @@ body.theme-frosted .modal {
   color: color-mix(in srgb, var(--fg) 55%, transparent);
   font-size: 11px;
   font-family: var(--font);
-  width: 26px;
+  width: var(--stream-id-w);
+  box-sizing: border-box;
   flex-shrink: 0;
   text-align: right;
   padding-right: 6px;
-  border-right: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-right: var(--stream-divider);
   user-select: none;
   line-height: 20px;
 }
 
 .ghost-editor-stream .st {
-  width: 24px;
+  width: var(--stream-st-w);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   padding: 0 4px;
-  border-right: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-right: var(--stream-divider);
   user-select: none;
   min-height: 20px;
   box-sizing: border-box;
@@ -37448,6 +37456,8 @@ body.theme-frosted .modal {
 .ghost-editor-stream .st.st--running,
 .ghost-editor-stream .st .st-icon--running {
   color: var(--chair, #df8e45);
+}
+.ghost-editor-stream .st .st-icon--running {
   animation: cockpit-spin 1s linear infinite;
 }
 .ghost-editor-stream .st.st--blocked,
@@ -37463,19 +37473,18 @@ body.theme-frosted .modal {
   border-radius: 4px;
   background: color-mix(in srgb, var(--fg) 2%, var(--panel));
   border: 1px solid var(--border);
-  border-left: 3px solid color-mix(in srgb, var(--fg) 20%, transparent);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--fg) 20%, transparent), 0 1px 3px rgba(0, 0, 0, 0.2);
   transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .ghost-editor-stream .ghost-perspective-card.is-blocked {
   background: color-mix(in srgb, var(--fail, #e05858) 4%, var(--panel));
   border-color: color-mix(in srgb, var(--fail, #e05858) 28%, transparent);
-  border-left-color: var(--fail, #e05858);
+  box-shadow: inset 3px 0 0 var(--fail, #e05858), 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 .ghost-editor-stream .ghost-perspective-card.is-mustfix {
   background: color-mix(in srgb, var(--warn, #df8e45) 4%, var(--panel));
   border-color: color-mix(in srgb, var(--warn, #df8e45) 28%, transparent);
-  border-left-color: var(--warn, #df8e45);
+  box-shadow: inset 3px 0 0 var(--warn, #df8e45), 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 .ghost-editor-stream .ghost-perspective-card:hover {
   background: color-mix(in srgb, var(--fg) 4%, var(--panel));
@@ -37487,9 +37496,10 @@ body.theme-frosted .modal {
 }
 .ghost-editor-stream .ghost-perspective-card .row {
   margin: 0;
+  border: none;
   border-bottom: 1px solid color-mix(in srgb, var(--fg) 8%, transparent);
   border-radius: 4px 4px 0 0;
-  min-height: 28px;
+  min-height: 26px;
   background: transparent;
 }
 .ghost-editor-stream .ghost-perspective-card:hover .row {
@@ -37502,7 +37512,7 @@ body.theme-frosted .modal {
   align-items: center;
   gap: 6px;
   padding: 5px 10px 7px;
-  margin-left: 104px;
+  margin-left: var(--stream-indent);
 }
 @media (max-width: 720px) {
   .ghost-editor-stream .persp-chips {
@@ -37634,16 +37644,20 @@ body.theme-frosted .modal {
   font-family: var(--font-mono, 'Consolas', monospace);
   font-size: 10px;
   font-weight: 700;
-  width: 48px;
+  width: var(--stream-ag-w);
+  box-sizing: border-box;
   flex-shrink: 0;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   padding: 0 6px;
-  border-right: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
+  border-right: var(--stream-divider);
   user-select: none;
   line-height: 20px;
   cursor: help;
   transition: color 0.15s ease, filter 0.15s ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ghost-editor-stream .ag:hover {
   color: #ffffff;
@@ -37659,7 +37673,6 @@ body.theme-frosted .modal {
 }
 
 .ghost-editor-stream .ct {
-  flex: 1;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -37670,6 +37683,17 @@ body.theme-frosted .modal {
   line-height: 20px;
   font-size: 11px;
   font-family: var(--font);
+  box-sizing: border-box;
+}
+
+.ghost-editor-stream .ct > span:not(.tx) {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.ghost-editor-stream .row.row--sys-error {
+  box-shadow: inset 3px 0 0 var(--sys);
+  background: rgba(239, 68, 68, 0.06);
 }
 
 .ghost-editor-stream .bd {
@@ -37914,14 +37938,14 @@ body.theme-frosted .modal {
 .ghost-thought-body {
   max-height: 0;
   overflow: hidden;
-  padding: 0 10px 0 104px;
+  padding: 0 10px 0 var(--stream-indent);
   transition: max-height 0.22s ease, opacity 0.18s ease;
   opacity: 0;
 }
 .ghost-thought-card.open .ghost-thought-body {
   max-height: 320px;
   overflow-y: auto;
-  padding: 6px 10px 8px 104px;
+  padding: 6px 10px 8px var(--stream-indent);
   opacity: 1;
 }
 .ghost-thought-card.open .ghost-tool-chevron {
@@ -38364,6 +38388,7 @@ body.theme-frosted .modal {
   .ghost-editor-stream .active-cockpit-box,
   .ghost-editor-stream .ghost-typing-cursor,
   .ghost-editor-stream .active-spinner,
+  .ghost-editor-stream .st .st-icon--running,
   .ghost-burst-group.burst-running .bw {
     animation: none !important;
     transition: none !important;
@@ -38553,17 +38578,15 @@ body.theme-frosted .modal {
 .ghost-tool-card:hover {
   border-color: color-mix(in srgb, var(--strat) 40%, transparent);
 }
-.ghost-tool-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
+.ghost-editor-stream .row.ghost-tool-header {
+  gap: 0;
+  padding: 3px 8px;
   cursor: pointer;
   user-select: none;
   background: rgba(80,160,223,0.03);
   transition: background 0.15s ease;
 }
-.ghost-tool-header:hover {
+.ghost-editor-stream .row.ghost-tool-header:hover {
   background: rgba(80,160,223,0.06);
 }
 .ghost-tool-chevron {
@@ -38666,33 +38689,24 @@ body.theme-frosted .modal {
   border-radius: 5px;
   overflow: hidden;
   transition: border-color 0.2s ease;
-  margin: 2px 6px 3px;
+  margin: 1px 6px;
 }
 .ghost-burst-group:hover {
   border-color: color-mix(in srgb, var(--fg) 20%, transparent);
 }
 .ghost-editor-stream .row.ghost-burst-header {
+  gap: 0;
+  padding: 3px 8px;
   cursor: pointer;
   user-select: none;
   background: color-mix(in srgb, var(--fg) 3%, var(--panel));
+  border: none;
   border-bottom: 1px solid var(--border);
   margin: 0;
   border-radius: 4px 4px 0 0;
-}
-.ghost-editor-stream .row.ghost-burst-header:hover {
-  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
-}
-.ghost-burst-header {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 10px;
-  cursor: pointer;
-  user-select: none;
-  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
   transition: background 0.15s ease;
 }
-.ghost-burst-header:hover {
+.ghost-editor-stream .row.ghost-burst-header:hover {
   background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
 /* Icon mosaic */
@@ -38765,6 +38779,9 @@ body.theme-frosted .modal {
   opacity: 0;
   transition: max-height 0.24s ease, opacity 0.2s ease, border-top-width 0.2s ease;
 }
+.ghost-burst-group:not(.burst-open) .ghost-burst-body .st-icon--running {
+  animation: none !important;
+}
 .ghost-burst-group.burst-open .ghost-burst-body {
   max-height: 2000px;
   overflow-y: auto;
@@ -38796,7 +38813,24 @@ body.theme-frosted .modal {
   font-family: var(--font-mono, 'Consolas', monospace);
 }
 .ghost-editor-stream .row.row--burst-item .tool-tag {
-  margin: 0 6px;
+  margin: 0;
+  width: var(--stream-ag-w);
+  box-sizing: border-box;
+  border: none;
+  border-right: var(--stream-divider);
+  border-radius: 0;
+  background: transparent;
+  color: var(--dim, #a09c95);
+  font-family: var(--font-mono, 'Consolas', monospace);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  padding: 0 6px;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  text-transform: uppercase;
 }
 
 /* Fixed-width Monospace Tool Badge - Monochrome IDE Palette */
