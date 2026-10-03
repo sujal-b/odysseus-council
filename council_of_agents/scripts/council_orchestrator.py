@@ -1164,7 +1164,7 @@ Report what you FIND, not what you think might exist."""
 
                                         broker_cfg = self._router.role_config(
                                             "implementer",
-                                            getattr(state, "role_overrides", {}).get("implementer", {}),
+                                            self._effective_overrides("implementer", getattr(state, "role_overrides", {})),
                                         )
                                         broker_context_length = get_context_length(
                                             broker_cfg.endpoint_url,
@@ -1842,7 +1842,7 @@ Report what you FIND, not what you think might exist."""
             # Skill generation from failures (existing logic)
             if learning_mode != "on" and not outcome.success and outcome.failed_tasks:
                 try:
-                    chair_cfg = self._router.role_config("chair", state.role_overrides.get("chair", {}))
+                    chair_cfg = self._router.role_config("chair", self._effective_overrides("chair", getattr(state, "role_overrides", {})))
                     chair_headers = self._resolve_headers(chair_cfg.endpoint_url)
                     skill_task = asyncio.create_task(
                         outcome_store.generate_skill_from_failure(
@@ -1877,7 +1877,7 @@ Report what you FIND, not what you think might exist."""
                 )
             ):
                 try:
-                    chair_cfg = self._router.role_config("chair", state.role_overrides.get("chair", {}))
+                    chair_cfg = self._router.role_config("chair", self._effective_overrides("chair", getattr(state, "role_overrides", {})))
                     chair_headers = self._resolve_headers(chair_cfg.endpoint_url)
                     skill_entry = await outcome_store.generate_skill_from_success(
                         session_id=state.session_id,
@@ -2019,7 +2019,7 @@ Report what you FIND, not what you think might exist."""
 
     async def _call_agent(self, role, session_id, overrides, messages, on_chunk=None, emit_cb=None, written_paths=None, owner=None, tool_results_out=None, route: str = "PIPELINE", workspace_write_guard=None, context_fallback=None, disable_tools: bool = False, required_contract=None, workspace: Optional[str] = None):
         tracker = getattr(self, "_run_context_tracker", None)
-        cfg = self._router.role_config(role, overrides)
+        cfg = self._router.role_config(role, self._effective_overrides(role, overrides))
         url = cfg.endpoint_url
         model = cfg.model
         temperature = cfg.temperature
@@ -2133,6 +2133,7 @@ Report what you FIND, not what you think might exist."""
                 full_reply = ""
                 thinking_reply = ""
                 _thinking_pulse_ts = 0.0
+                active_tool_start = None
                 while True:
                     try:
                         async for chunk in stream_agent_loop(
@@ -2178,6 +2179,11 @@ Report what you FIND, not what you think might exist."""
 
                                     type_val = data.get("type")
                                     if type_val in ("tool_start", "tool_output", "tool_progress") and emit_cb:
+                                        if type_val == "tool_start":
+                                            active_tool_start = data
+                                        elif type_val == "tool_output":
+                                            active_tool_start = None
+
                                         text = ""
                                         if type_val == "tool_start":
                                             text = f"Executing {data.get('tool')}: {data.get('command')}"
@@ -2294,12 +2300,46 @@ Report what you FIND, not what you think might exist."""
                                                     )
                                 except Exception as parse_err:
                                     logger.debug(f"Failed to parse event chunk {chunk}: {parse_err}")
+                        if active_tool_start is not None and emit_cb:
+                            tool_name = active_tool_start.get("tool") or "tool"
+                            await emit_cb(
+                                event="tool_output",
+                                status="IN_PROGRESS",
+                                text=f"Tool {tool_name} finished: completed without output",
+                                agent="implementer",
+                                extra={
+                                    "type": "tool_output",
+                                    "tool": tool_name,
+                                    "command": active_tool_start.get("command", ""),
+                                    "output": "Completed without output",
+                                    "exit_code": 0,
+                                }
+                            )
+                            active_tool_start = None
                         break
                     except Exception as e:
                         from council_of_agents.scripts.permissions import PermissionRequired, GLOBAL_REGISTRY, PermissionManager
                         from src.tool_security import owner_is_admin_or_single_user
                         
                         if not isinstance(e, PermissionRequired):
+                            if active_tool_start is not None and emit_cb:
+                                tool_name = active_tool_start.get("tool") or "tool"
+                                output_msg = str(e or "Tool execution interrupted")
+                                await emit_cb(
+                                    event="tool_output",
+                                    status="IN_PROGRESS",
+                                    text=f"Tool {tool_name} finished: {output_msg}",
+                                    agent="implementer",
+                                    extra={
+                                        "type": "tool_output",
+                                        "tool": tool_name,
+                                        "command": active_tool_start.get("command", ""),
+                                        "output": output_msg,
+                                        "exit_code": 1,
+                                        "error": output_msg,
+                                    }
+                                )
+                                active_tool_start = None
                             raise
                         
                         is_admin = owner_is_admin_or_single_user(owner)
@@ -2409,6 +2449,7 @@ Report what you FIND, not what you think might exist."""
                     full_reply = ""
                     thinking_reply = ""  # fallback: used when model puts everything in <think>
                     _thinking_pulse_ts = 0.0
+                    other_tool_start = None
                     async for chunk in stream_agent_loop(
                         endpoint_url=url,
                         model=model,
@@ -2451,6 +2492,11 @@ Report what you FIND, not what you think might exist."""
 
                                 type_val = data.get("type")
                                 if type_val in ("tool_start", "tool_output", "tool_progress") and emit_cb:
+                                    if type_val == "tool_start":
+                                        other_tool_start = data
+                                    elif type_val == "tool_output":
+                                        other_tool_start = None
+
                                     text = ""
                                     if type_val == "tool_start":
                                         text = f"Executing {data.get('tool')}: {data.get('command')}"
@@ -2468,6 +2514,22 @@ Report what you FIND, not what you think might exist."""
                                     )
                             except Exception:
                                 pass
+                    if other_tool_start is not None and emit_cb:
+                        tool_name = other_tool_start.get("tool") or "tool"
+                        await emit_cb(
+                            event="tool_output",
+                            status="IN_PROGRESS",
+                            text=f"Tool {tool_name} finished: completed without output",
+                            agent=role,
+                            extra={
+                                "type": "tool_output",
+                                "tool": tool_name,
+                                "command": other_tool_start.get("command", ""),
+                                "output": "Completed without output",
+                                "exit_code": 0,
+                            }
+                        )
+                        other_tool_start = None
                     # If the model put everything in reasoning tokens and nothing in the
                     # visible reply, use the thinking content so the run doesn't silently fail.
                     if not full_reply.strip() and thinking_reply.strip():
@@ -2482,6 +2544,24 @@ Report what you FIND, not what you think might exist."""
                     from src.tool_security import owner_is_admin_or_single_user
 
                     if not isinstance(e, PermissionRequired):
+                        if other_tool_start is not None and emit_cb:
+                            tool_name = other_tool_start.get("tool") or "tool"
+                            output_msg = str(e or "Tool execution interrupted")
+                            await emit_cb(
+                                event="tool_output",
+                                status="IN_PROGRESS",
+                                text=f"Tool {tool_name} finished: {output_msg}",
+                                agent=role,
+                                extra={
+                                    "type": "tool_output",
+                                    "tool": tool_name,
+                                    "command": other_tool_start.get("command", ""),
+                                    "output": output_msg,
+                                    "exit_code": 1,
+                                    "error": output_msg,
+                                }
+                            )
+                            other_tool_start = None
                         raise
 
                     is_admin = owner_is_admin_or_single_user(owner)
@@ -2644,6 +2724,16 @@ Report what you FIND, not what you think might exist."""
         self._header_cache[base] = headers
         return headers
 
+    def _effective_overrides(self, role: str, overrides: Optional[dict] = None) -> dict:
+        router = getattr(self, "_router", None)
+        if router is not None and hasattr(router, "effective_overrides"):
+            return router.effective_overrides(role, overrides)
+        if isinstance(overrides, dict):
+            if "model" in overrides or "endpoint_url" in overrides:
+                return overrides
+            return overrides.get(role, {}) or {}
+        return {}
+
     def _context_fallback_for(self, role: str, overrides: Optional[dict] = None) -> Optional[dict]:
         """Return one configured recovery model for a context overflow.
 
@@ -2652,7 +2742,7 @@ Report what you FIND, not what you think might exist."""
         single bounded hop and remains configured with the role's model route.
         """
         try:
-            cfg = self._router.role_config(role, overrides or {})
+            cfg = self._router.role_config(role, self._effective_overrides(role, overrides))
             primary = (cfg.endpoint_url, cfg.model)
             for candidate in cfg.context_fallbacks or []:
                 if not isinstance(candidate, dict) or not candidate.get("model"):
@@ -4041,7 +4131,7 @@ Report what you FIND, not what you think might exist."""
     ) -> Optional[dict]:
         """Chair reflects on run quality. Returns reflection dict or None."""
         try:
-            cfg = self._router.role_config("chair", state.role_overrides.get("chair", {}))
+            cfg = self._router.role_config("chair", self._effective_overrides("chair", getattr(state, "role_overrides", {})))
             headers = self._resolve_headers(cfg.endpoint_url)
 
             reflection_prompt = f"""You are reviewing a completed Council of Agents run. Reflect on execution quality.

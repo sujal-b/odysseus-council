@@ -1581,3 +1581,51 @@ def test_write_file_parser_unwraps_json_object_calls():
         "path": "src/app.py", "content": "def health(): pass"}
     # Non-JSON first line stays text.
     assert _parse_write_file("notes.txt\nhello")["path"] == "notes.txt"
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_reconciles_unclosed_tool_start_on_error():
+    """P4 regression: if a stream yields tool_start and aborts or raises before
+    tool_output, CouncilOrchestrator._call_agent must emit a reconciling tool_output
+    so count(tool_start) == count(tool_output)."""
+    import json
+    router = MagicMock()
+    dummy_cfg = MagicMock()
+    dummy_cfg.endpoint_url = "http://mock"
+    dummy_cfg.model = "mock-model"
+    dummy_cfg.temperature = 0.5
+    dummy_cfg.max_tokens = 100
+    dummy_cfg.fallbacks = []
+    router.role_config.return_value = dummy_cfg
+    router.effective_overrides.return_value = {}
+
+    orchestrator = CouncilOrchestrator(router)
+    orchestrator._resolve_headers = MagicMock(return_value={})
+
+    async def fake_stream(*args, **kwargs):
+        # Yield tool_start then raise an error without yielding tool_output
+        yield f'data: {json.dumps({"type": "tool_start", "tool": "read_file", "command": ".env"})}\n\n'
+        raise PermissionError("Security block: path '.env' is sensitive")
+
+    emitted_events = []
+    async def fake_emit(**kwargs):
+        emitted_events.append(kwargs)
+
+    with patch("council_of_agents.scripts.council_orchestrator.stream_agent_loop", side_effect=fake_stream), \
+         patch("council_of_agents.scripts.council_orchestrator.get_context_length", return_value=8192):
+        with pytest.raises(PermissionError):
+            await orchestrator._call_agent(
+                role="implementer",
+                session_id="test-p4-session",
+                overrides={},
+                messages=[{"role": "user", "content": "hi"}],
+                emit_cb=fake_emit,
+            )
+
+    starts = [e for e in emitted_events if e.get("event") == "tool_start"]
+    outputs = [e for e in emitted_events if e.get("event") == "tool_output"]
+    assert len(starts) == 1
+    assert len(outputs) == 1
+    assert outputs[0]["extra"]["exit_code"] == 1
+    assert "Security block" in outputs[0]["text"]
+
