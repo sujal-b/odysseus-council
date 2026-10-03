@@ -26,6 +26,13 @@ class CouncilConfig(BaseModel):
     roles: Dict[str, ModelConfig]
     escalation: EscalationConfig = EscalationConfig()
 
+_PARENT_ROLES = {
+    "perspective_analyzer": "manager",
+    "completeness_auditor": "manager",
+    "debate_response": "strategist",
+    "chair_arbitration": "chair",
+}
+
 class CouncilRouter:
     def __init__(self, config_path: str):
         self._path = config_path
@@ -54,6 +61,22 @@ class CouncilRouter:
     def get(self) -> CouncilConfig:
         self._reload()
         return self._config
+
+    def effective_overrides(self, role: str, full_overrides: Optional[dict] = None) -> dict:
+        """Resolve effective role overrides, inheriting from companion/parent role if omitted."""
+        if not full_overrides or not isinstance(full_overrides, dict):
+            return {}
+        if "model" in full_overrides or "endpoint_url" in full_overrides:
+            return full_overrides
+        own = full_overrides.get(role)
+        if isinstance(own, dict) and own:
+            return own
+        parent_role = _PARENT_ROLES.get(role)
+        if parent_role:
+            parent_override = full_overrides.get(parent_role)
+            if isinstance(parent_override, dict) and parent_override:
+                return parent_override
+        return {}
 
     def role_config(self, role: str, overrides: dict = None) -> ModelConfig:
         roles = self.get().roles

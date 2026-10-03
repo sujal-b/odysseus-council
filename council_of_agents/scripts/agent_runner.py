@@ -172,6 +172,12 @@ class AgentRunner:
         self._recovery = None  # resolved per invoke (role-specific, evidence-gated)
         self._recovery_decision = "not evaluated"
 
+    def _effective_overrides(self, role: str) -> dict:
+        router = getattr(self.orchestrator, "_router", None)
+        if router is not None and hasattr(router, "effective_overrides"):
+            return router.effective_overrides(role, getattr(self.state, "role_overrides", None))
+        return getattr(self.state, "role_overrides", {}).get(role, {}) or {}
+
     def _resolve_recovery(self, role=None, overrides=None):
         """One bounded, evidence-gated recovery candidate with its decision."""
         role = role or getattr(self.state, "active_role", None)
@@ -199,7 +205,7 @@ class AgentRunner:
         failure (fail closed downstream). Never converts a provider failure
         into a model success — callers still record the provider trigger.
         """
-        overrides = dict(kwargs.get("overrides") or self.state.role_overrides.get(role, {}) or {})
+        overrides = dict(kwargs.get("overrides") or self._effective_overrides(role) or {})
         overrides["endpoint_url"] = recovery["endpoint_url"]
         overrides["model"] = recovery["model"]
         if recovery.get("temperature") is not None:
@@ -287,7 +293,7 @@ class AgentRunner:
         if recovery_fallback is None and not context_fallback_attempted:
             resolver = getattr(self.orchestrator, "_context_fallback_for", None)
             if resolver:
-                candidate = resolver(role, self.state.role_overrides.get(role, {}))
+                candidate = resolver(role, self._effective_overrides(role))
                 if isinstance(candidate, dict):
                     recovery_fallback = candidate
 
@@ -317,7 +323,7 @@ class AgentRunner:
         # Recovery is role-specific and evidence-gated: resolve it for THIS
         # invoke (production creates one runner per call, the canary reuses a
         # runner across roles, and state.active_role is never set).
-        self._recovery = self._resolve_recovery(role, self.state.role_overrides.get(role, {}))
+        self._recovery = self._resolve_recovery(role, self._effective_overrides(role))
         original_messages = copy.deepcopy(messages)
         # Preserve the established first-attempt mutation semantics for normal
         # tool-enabled roles. Only a schema-repair pass switches to the clean
@@ -435,7 +441,7 @@ class AgentRunner:
                     call_kwargs.pop("required_contract", None)
                 call_task = asyncio.create_task(
                     self.orchestrator._call_agent(
-                        role, self.state.session_id, self.state.role_overrides.get(role, {}),
+                        role, self.state.session_id, self._effective_overrides(role),
                         attempt_messages, on_chunk=on_chunk, emit_cb=emit_progress, **call_kwargs
                     )
                 )
@@ -711,7 +717,7 @@ class AgentRunner:
     def _record_contract_diagnostics(self, role, attempts, repair_attempted, repair_result, recovery_attempted, recovery_result, final_reason, recovery):
         """Persist hash-only contract diagnostics in state and existing checkpoint."""
         router = getattr(self.orchestrator, "_router", None)
-        cfg = router.role_config(role, self.state.role_overrides.get(role, {})) if router else None
+        cfg = router.role_config(role, self._effective_overrides(role)) if router else None
         payload = {
             "role": role, "stage": role,
             "provider": getattr(cfg, "endpoint_url", ""), "model": getattr(cfg, "model", ""),
@@ -738,7 +744,7 @@ class AgentRunner:
             if not hasattr(self.state, "metadata") or self.state.metadata is None:
                 self.state.metadata = {}
             router = getattr(self.orchestrator, "_router", None)
-            cfg = router.role_config(role, self.state.role_overrides.get(role, {})) if router else None
+            cfg = router.role_config(role, self._effective_overrides(role)) if router else None
             self.state.metadata[f"{role}_recovery_state"] = {
                 "failure_class": failure_class, "schema_repair_used": bool(repair_used),
                 "recovery_attempted": bool(recovery), "recovery_used": bool(recovery_used),
