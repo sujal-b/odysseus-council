@@ -1631,14 +1631,7 @@ class CouncilUI {
     let finalBlocks = blocks;
     try {
       const _burstCheckpoint = (items) => {
-        const counts = new Map();
-        items.forEach(item => {
-          const intent = compactToolIntent(item.tool, item.args || {}, item.command);
-          counts.set(intent, (counts.get(intent) || 0) + 1);
-        });
-        return [...counts.entries()]
-          .map(([intent, count]) => count > 1 ? `${intent} ×${count}` : intent)
-          .join(' · ') || `${items.length} actions`;
+        return formatBurstTelemetry(items, false).breakdown;
       };
 
       const processedBlocks = [];
@@ -2189,11 +2182,8 @@ class CouncilUI {
         const role = _resolveRole(b.agent || 'impl');
         const statusCls = b.running ? 'st--running' : b.hasFailure ? 'st--failed' : 'st--done';
         const _bss = b.running ? _statusIcon('running') : b.hasFailure ? _statusIcon('failed') : _statusIcon('done');
-        const _distinctTools = [...new Set(b.items.map(x => x.tool))];
-        const _toolSummaryStr = _distinctTools.slice(0, 3).join(', ') + (_distinctTools.length > 3 ? ` +${_distinctTools.length - 3}` : '');
-        const _burstTitle = b.running
-          ? `Running tools (${_total})`
-          : `Ran ${_total} tool${_total === 1 ? '' : 's'} (${_toolSummaryStr})`;
+        const _telemetry = formatBurstTelemetry(b.items, b.running);
+        const _mutationCls = _telemetry.isMutation ? ' is-mutation' : '';
 
         const _itemsHtml = b.items.map(item => {
           const _target = _extractToolTarget(item.tool, item.args || {}, item.command);
@@ -2212,8 +2202,9 @@ class CouncilUI {
         }).join('');
 
         let _cpHtml;
+        const _burstBreakdownText = _telemetry.breakdown;
         if (b.running) {
-          const _cpWords = (b.checkpoint || '').split(' ').filter(w => w.length > 0);
+          const _cpWords = (_burstBreakdownText || '').split(' ').filter(w => w.length > 0);
           if (_cpWords.length === 0) {
             _cpHtml = '';
           } else {
@@ -2227,7 +2218,7 @@ class CouncilUI {
             ).join(' ');
           }
         } else {
-          _cpHtml = b.checkpoint || '';
+          _cpHtml = _burstBreakdownText || '';
         }
 
         html += `
@@ -2240,8 +2231,9 @@ class CouncilUI {
               <span class="st ${statusCls}" title="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}" aria-label="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}">${_bss}</span>
               <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
               <div class="ct">
-                <span class="bd">${_esc(_burstTitle)}</span>
-                <span class="tx" title="${_esc(b.checkpoint || '')}">${_cpHtml || _esc(b.checkpoint || '')}</span>
+                <span class="burst-primary-label${_mutationCls}">${_esc(_telemetry.category)}</span>
+                <span class="burst-divider-dot">·</span>
+                <span class="tx burst-breakdown" title="${_esc(_burstBreakdownText)}">${_cpHtml || _esc(_burstBreakdownText)}</span>
                 <span class="ghost-burst-count" style="margin-left:auto;">${_total}</span>
                 <span class="ghost-burst-chevron" style="margin-left:6px;">${_isOpen ? '▼' : '▶'}</span>
               </div>
@@ -4018,6 +4010,62 @@ function compactFailureCode(code, text) {
   if (/context|token|overflow/.test(lower)) return 'CONTEXT';
   if (/verification|compiler|syntax|test/.test(lower)) return 'CHECK';
   return 'ERROR';
+}
+
+function formatBurstTelemetry(items, isRunning = false) {
+  let edits = 0;
+  let reads = 0;
+  let queries = 0;
+  let checks = 0;
+  let builds = 0;
+  let others = 0;
+
+  for (const item of (items || [])) {
+    const t = String(item?.tool || '').toLowerCase();
+    if (t === 'write_file' || t === 'edit_file') {
+      edits++;
+    } else if (t === 'read_file' || t === 'view_file') {
+      reads++;
+    } else if (t === 'glob' || t === 'grep' || t === 'ls') {
+      queries++;
+    } else if (t === 'bash' || t === 'python') {
+      const raw = String(item?.args?.command || item?.args?.code || item?.command || '').toLowerCase();
+      if (/install|build|bundle/.test(raw)) {
+        builds++;
+      } else {
+        checks++;
+      }
+    } else {
+      others++;
+    }
+  }
+
+  let category = 'Workspace Operations';
+  let isMutation = false;
+  if (edits > 0) {
+    category = isRunning ? 'Updating files...' : 'File Modifications';
+    isMutation = true;
+  } else if (checks > 0) {
+    category = isRunning ? 'Running checks...' : 'Test Verification';
+  } else if (builds > 0) {
+    category = isRunning ? 'Building project...' : 'Build Pipeline';
+  } else if (reads > 0 && queries === 0) {
+    category = isRunning ? 'Reading source...' : 'Source Inspection';
+  } else if (queries > 0 || reads > 0) {
+    category = isRunning ? 'Inspecting workspace...' : 'Workspace Discovery';
+  }
+
+  const parts = [];
+  if (edits > 0) parts.push(`${edits} edit${edits === 1 ? '' : 's'}`);
+  if (reads > 0) parts.push(`${reads} read${reads === 1 ? '' : 's'}`);
+  if (queries > 0) parts.push(`${queries} ${reads > 0 || edits > 0 ? 'quer' + (queries === 1 ? 'y' : 'ies') : 'path quer' + (queries === 1 ? 'y' : 'ies')}`);
+  if (checks > 0) parts.push(`${checks} check${checks === 1 ? '' : 's'}`);
+  if (builds > 0) parts.push(`${builds} build op${builds === 1 ? '' : 's'}`);
+  if (others > 0) parts.push(`${others} op${others === 1 ? '' : 's'}`);
+
+  const breakdown = parts.join(' · ') || `${(items || []).length} operations`;
+
+  return { category, breakdown, isMutation };
 }
 
 function compactToolIntent(tool, args = {}, cmd = '') {

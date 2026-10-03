@@ -38709,6 +38709,38 @@ body.theme-frosted .modal {
 .ghost-editor-stream .row.ghost-burst-header:hover {
   background: color-mix(in srgb, var(--fg) 6%, var(--panel));
 }
+
+/* Burst Semantic Telemetry */
+.ghost-editor-stream .burst-primary-label {
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--fg, #e2dcd5);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 0;
+}
+.ghost-editor-stream .burst-primary-label.is-mutation {
+  color: var(--impl, #4eb870);
+}
+.ghost-editor-stream .burst-divider-dot {
+  color: var(--muted, #736b63);
+  font-size: 11px;
+  user-select: none;
+  flex-shrink: 0;
+}
+.ghost-editor-stream .burst-breakdown {
+  color: var(--dim, #a09c95);
+  font-size: 10.5px;
+  font-family: var(--font);
+}
+@media (max-width: 480px) {
+  .ghost-editor-stream .burst-breakdown,
+  .ghost-editor-stream .burst-divider-dot {
+    display: none;
+  }
+}
+
 /* Icon mosaic */
 .ghost-burst-icons {
   flex-shrink: 0;
@@ -38742,15 +38774,16 @@ body.theme-frosted .modal {
 /* Count pill */
 .ghost-burst-count {
   flex-shrink: 0;
-  font-size: 10.5px;
-  font-weight: 700;
+  font-size: 10px;
+  font-weight: 600;
   letter-spacing: 0.04em;
-  color: var(--muted);
-  background: color-mix(in srgb, var(--fg) 6%, transparent);
-  border: 1px solid var(--border);
+  color: var(--dim, #a09c95);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
   border-radius: 10px;
   padding: 0 6px;
   line-height: 16px;
+  font-variant-numeric: tabular-nums;
 }
 /* Status dot/checkmark */
 .ghost-burst-status {
