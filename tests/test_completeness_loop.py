@@ -120,6 +120,9 @@ async def test_loop_drives_partial_to_complete():
     assert cancelled is False
     assert "gap-fill" in impl                          # implementer re-dispatched
     assert o._invoke_agent_safe.await_count == 1       # exactly one gap-fill
+    gap_messages = o._invoke_agent_safe.await_args.args[2]
+    assert gap_messages[-1]["role"] == "user"
+    assert "Outstanding gaps" in gap_messages[-1]["content"]
     assert metrics["before"] == pytest.approx(2 / 3)
     assert metrics["after"] == 1.0                      # driven to complete
     assert metrics["gaps_closed"] == 1

@@ -1210,8 +1210,20 @@ class CouncilUI {
             } else if (cleanOutput.startsWith('```')) {
               cleanOutput = cleanOutput.split('```')[1].split('```')[0].trim();
             }
-            if (cleanOutput.startsWith('{')) {
-              const data = JSON.parse(cleanOutput);
+            const blocks = (typeof extractJsonBlocks === 'function') ? extractJsonBlocks(cleanOutput) : [];
+            let data = null;
+            if (blocks.length > 0) {
+              const target = blocks.find(b => b.parsed && (b.parsed.files_created || b.parsed.files_modified)) || blocks[0];
+              data = target?.parsed;
+            } else {
+              const s = cleanOutput.indexOf('{');
+              const e = cleanOutput.lastIndexOf('}');
+              if (s !== -1 && e > s) {
+                const sliced = cleanOutput.slice(s, e + 1);
+                data = typeof safeParseJson === 'function' ? safeParseJson(sliced) : null;
+              }
+            }
+            if (data && typeof data === 'object') {
               if (Array.isArray(data.files_created)) {
                 data.files_created.forEach(file => {
                   seenFiles.add(file);
@@ -1284,8 +1296,24 @@ class CouncilUI {
         } else if (clean.startsWith('```')) {
           clean = clean.split('```')[1].split('```')[0].trim();
         }
-        if (clean.startsWith('{')) {
-          data = JSON.parse(clean);
+        // Extract JSON robustly: models can append tokens (<|im_end|>function),
+        // include markdown fences, or output surrounding prose.
+        const blocks = (typeof extractJsonBlocks === 'function') ? extractJsonBlocks(clean) : [];
+        const target = blocks.find(b => b.parsed && b.parsed.verdict) || blocks[0];
+        if (target && target.parsed && typeof target.parsed === 'object') {
+          data = target.parsed;
+        } else {
+          const direct = typeof safeParseJson === 'function' ? safeParseJson(clean) : null;
+          if (direct && typeof direct === 'object') {
+            data = direct;
+          } else {
+            const start = clean.indexOf('{');
+            const end = clean.lastIndexOf('}');
+            if (start !== -1 && end > start) {
+              const sliced = clean.slice(start, end + 1);
+              data = typeof safeParseJson === 'function' ? safeParseJson(sliced) : JSON.parse(sliced);
+            }
+          }
         }
       } catch (e) {
         console.warn("Failed to parse manager_review JSON:", e);
@@ -1706,19 +1734,12 @@ class CouncilUI {
           type: 'chair', complexity: state.complexity || 'PENDING',
           reason: state.thoughts, streaming: true, duration: dur
         });
-      } else if (state.activeAgent === 'strategist') {
+      } else {
+        // Every non-chair role streams into the same live "think" row. An
+        // explicit per-role list here silently dropped any role not yet added
+        // (perspective_analyzer) from the execution stream while it worked.
         finalBlocks.push({
-          type: 'think', agent: 'strategist',
-          text: state.thoughts, streaming: true, duration: dur
-        });
-      } else if (state.activeAgent === 'implementer') {
-        finalBlocks.push({
-          type: 'think', agent: 'implementer',
-          text: state.thoughts, streaming: true, duration: dur
-        });
-      } else if (state.activeAgent === 'manager') {
-        finalBlocks.push({
-          type: 'think', agent: 'manager',
+          type: 'think', agent: state.activeAgent,
           text: state.thoughts, streaming: true, duration: dur
         });
       }
@@ -1750,6 +1771,8 @@ class CouncilUI {
       manager: { tag: 'MGR', cls: 'mgr', name: 'Manager' },
       mgr: { tag: 'MGR', cls: 'mgr', name: 'Manager' },
       perspective_analyzer: { tag: 'PERS', cls: 'strat', name: 'Perspective Analyzer' },
+      completeness_auditor: { tag: 'AUDT', cls: 'mgr', name: 'Completeness Auditor' },
+      chair_arbitration: { tag: 'ARBT', cls: 'chair', name: 'Chair Arbitration' },
       system: { tag: 'SYS', cls: 'sys', name: 'System' },
       sys: { tag: 'SYS', cls: 'sys', name: 'System' },
     };
@@ -4492,6 +4515,7 @@ function safeParseJson(str) {
       fixed = fixed.replace(/\\([`'])/g, '$1');
       fixed = fixed.replace(/\\(?![/\"bfnrt]|u[0-9a-fA-F]{4})/g, '\\\\');
       fixed = fixed.replace(/\u0001/g, '\\\\');
+      fixed = fixed.replace(/,\s*([}\]])/g, '$1');
       return JSON.parse(fixed);
     } catch (e2) {
       return null;

@@ -174,7 +174,14 @@ class CouncilOrchestrator:
     # is still receiving model/tool progress may continue, but never beyond
     # this cap. Both sit on the slow nvidia provider; leaving the Manager at
     # the 60s inactivity cap let a working model kill the run (slice run 6).
-    AGENT_HARD_TIMEOUTS = {"strategist": 180, "manager": 180}
+    AGENT_HARD_TIMEOUTS = {
+        "chair": 180,
+        "strategist": 180,
+        "manager": 180,
+        "perspective_analyzer": 180,
+        "completeness_auditor": 180,
+        "validator_task": 180,
+    }
     AGENT_MAX_RETRIES = {
         "chair": 2,
         "strategist": 1,
@@ -634,25 +641,31 @@ Report what you FIND, not what you think might exist."""
                         "All subsequent implementation tasks MUST include 'T1' in depends_on.\n"
                     )
 
-                strat_reply = (
-                    self._checkpoint.stage_reply("strategist")
-                    if self._checkpoint and self._checkpoint.stage_done("strategist")
-                    else await self._invoke_agent_safe(
-                        "strategist", state,
-                        [{"role": "system",  "content": self._load_prompt("strategist")},
-                         {"role": "user",    "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None), skill_context=skill_context, past_context=past_context, success_context=success_context)},
-                         {"role": "user", "content": (
-                             f"Chair decision data:\n{self._contract('chair', chair_reply)}\n"
-                             f"{discovery_note}\n"
-                             "Return the Strategist JSON contract now."
-                         )}],
-                        emit, owner=owner, written_paths=written_paths, disable_tools=True
+                try:
+                    strat_reply = (
+                        self._checkpoint.stage_reply("strategist")
+                        if self._checkpoint and self._checkpoint.stage_done("strategist")
+                        else await self._invoke_agent_safe(
+                            "strategist", state,
+                            [{"role": "system",  "content": self._load_prompt("strategist")},
+                             {"role": "user",    "content": self._envelope_user_msg(state.user_prompt, workspace=workspace, repository_context=getattr(state, "repository_context", None), skill_context=skill_context, past_context=past_context, success_context=success_context)},
+                             {"role": "user", "content": (
+                                 f"Chair decision data:\n{self._contract('chair', chair_reply)}\n"
+                                 f"{discovery_note}\n"
+                                 "Return the Strategist JSON contract now."
+                             )}],
+                            emit, owner=owner, written_paths=written_paths, disable_tools=True
+                        )
                     )
-                )
+                except Exception as e:
+                    logger.warning("Strategist agent invocation failed (%s); engaging safe fallback task DAG.", e)
+                    strat_reply = None
 
                 if not strat_reply:
                     logger.warning("Strategist returned empty reply; engaging safe fallback task DAG.")
                     strat_reply = self._strategist_fallback_plan(state.user_prompt)
+                    if hasattr(state, "metadata") and isinstance(state.metadata, dict):
+                        state.metadata.pop("strategist_failure", None)
                     await emit(event="warning", agent="strategist", status="IN_PROGRESS",
                                text="Strategist produced no content after retries; generated baseline fallback DAG for Manager review.",
                                extra={"fallback_dag": True})
@@ -677,13 +690,19 @@ Report what you FIND, not what you think might exist."""
                             {"role": "assistant", "content": strat_reply},
                             {"role": "user", "content": f"Your plan was rejected by contract validation: {e}. Please revise the task DAG strictly according to the contract rules and return ONLY the corrected JSON object."}
                         ]
-                        strat_reply = await self._invoke_agent_safe(
-                            "strategist", state, strat_retry_messages, emit,
-                            owner=owner, written_paths=written_paths, disable_tools=True
-                        )
+                        try:
+                            strat_reply = await self._invoke_agent_safe(
+                                "strategist", state, strat_retry_messages, emit,
+                                owner=owner, written_paths=written_paths, disable_tools=True
+                            )
+                        except Exception as retry_exc:
+                            logger.warning("Strategist retry agent invocation failed: %s", retry_exc)
+                            strat_reply = None
                         if not strat_reply:
                             logger.warning("Strategist retry returned empty reply; engaging fallback DAG.")
                             strat_reply = self._strategist_fallback_plan(state.user_prompt)
+                            if hasattr(state, "metadata") and isinstance(state.metadata, dict):
+                                state.metadata.pop("strategist_failure", None)
                             dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
                             await emit(event="warning", agent="strategist", status="IN_PROGRESS",
                                        text="Strategist retry was empty; generated baseline fallback DAG for Manager review.",
@@ -694,6 +713,8 @@ Report what you FIND, not what you think might exist."""
                     else:
                         logger.warning("Strategist plan validation failed on final attempt (%s); engaging safe fallback DAG.", e)
                         strat_reply = self._strategist_fallback_plan(state.user_prompt)
+                        if hasattr(state, "metadata") and isinstance(state.metadata, dict):
+                            state.metadata.pop("strategist_failure", None)
                         dag, tasks = self._task_dag_from_plan(strat_reply, state.user_prompt, reconnaissance=getattr(self, "_reconnaissance", None))
                         await emit(event="warning", agent="strategist", status="IN_PROGRESS",
                                    text=f"Strategist plan rejected by contract validation ({e}); generated baseline fallback DAG for Manager review.",
@@ -3260,12 +3281,22 @@ Report what you FIND, not what you think might exist."""
         from council_of_agents.scripts.workspace_revision import (
             WorkspaceWriteGuard, snapshot_workspace,
         )
-        # Gap-fill re-dispatches implementer with the same workspace confinement
-        # as the DAG tasks: safe tools only, writes confined to the workspace.
-        gap_guard = WorkspaceWriteGuard(
-            workspace, ["."], snapshot_workspace(workspace, ["."]).file_hashes,
-            enforce_channels=True, task_id="completeness-gap-fill",
+        gap_workspace = (
+            workspace if isinstance(workspace, (str, pathlib.Path)) and str(workspace).strip()
+            else getattr(state, "workspace", None)
         )
+        if not gap_workspace or not str(gap_workspace).strip() or not pathlib.Path(gap_workspace).exists():
+            gap_guard = None
+        else:
+            try:
+                base_hashes = snapshot_workspace(gap_workspace, ["."]).file_hashes
+            except Exception as snap_exc:
+                logger.warning("Could not snapshot workspace for completeness loop: %s", snap_exc)
+                base_hashes = {}
+            gap_guard = WorkspaceWriteGuard(
+                gap_workspace, ["."], base_hashes,
+                enforce_channels=True, task_id="completeness-gap-fill",
+            )
         criteria = self._collect_criteria(dag)
         if not criteria and (getattr(state, "user_prompt", "") or "").strip():
             # Non-DAG MEDIUM/COMPLEX work still needs a definition of done.
@@ -3321,7 +3352,9 @@ Report what you FIND, not what you think might exist."""
                 f"Outstanding gaps:\n{gap_lines}\n\n"
                 "Guarded execution rule: use only read_file, ls, glob, grep, "
                 "write_file, and edit_file. Do not use bash or python; the workspace "
-                "guard rejects those channels."
+                "guard rejects those channels. You must produce the required files "
+                "using write_file or edit_file; do not stop after only inspecting "
+                "with ls or glob."
             )
             if gap_answer:
                 fix_prompt += f"\nUser decision for the critical gap: {gap_answer}\n"
@@ -3329,9 +3362,9 @@ Report what you FIND, not what you think might exist."""
             try:
                 gap_reply = await self._invoke_agent_safe(
                     "implementer", state,
-                    [{"role": "system",    "content": self._load_prompt("implementer", workspace=workspace)},
-                     {"role": "user",      "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
-                     {"role": "assistant", "content": fix_prompt}],
+                    [{"role": "system", "content": self._load_prompt("implementer", workspace=workspace)},
+                     {"role": "user",   "content": self._envelope_user_msg(state.user_prompt, workspace=workspace)},
+                     {"role": "user",   "content": fix_prompt}],
                     emit, owner=owner, written_paths=written_paths, route=route,
                     tool_results_out=gap_tools, workspace_write_guard=gap_guard
                 )
@@ -3356,15 +3389,16 @@ Report what you FIND, not what you think might exist."""
         # closed at restore (their deliverable must be provable, not assumed).
         last_audit_criteria = (completeness or {}).get("criteria") or []
         met_ids = {str(c.get("id")) for c in last_audit_criteria if c.get("met")}
-        for n in dag._nodes.values():
-            if n.status in ("FAILED", "BLOCKED") and not TaskDAG.requires_mutation(n):
-                if n.id in met_ids:
-                    dag.mark_done(
-                        n.id,
-                        output=n.output or n.reason or f"Restored task {n.id} closed by completeness audit.",
-                    )
-                    await emit(event="log", status="IN_PROGRESS", agent="completeness_auditor",
-                               text=f"Restored read-only task {n.id} closed: criterion verified met by audit.")
+        if dag is not None and hasattr(dag, "_nodes") and isinstance(dag._nodes, dict):
+            for n in dag._nodes.values():
+                if n.status in ("FAILED", "BLOCKED") and not TaskDAG.requires_mutation(n):
+                    if n.id in met_ids:
+                        dag.mark_done(
+                            n.id,
+                            output=n.output or n.reason or f"Restored task {n.id} closed by completeness audit.",
+                        )
+                        await emit(event="log", status="IN_PROGRESS", agent="completeness_auditor",
+                                   text=f"Restored read-only task {n.id} closed: criterion verified met by audit.")
         metrics = None
         if completeness is not None:
             metrics = {
@@ -3657,27 +3691,72 @@ Report what you FIND, not what you think might exist."""
             pass
         return False
 
+    @staticmethod
+    def _extract_review_dict(text: str) -> dict | None:
+        if not str(text or "").strip():
+            return None
+        clean = text.strip()
+        if "```json" in clean:
+            clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
+        elif clean.startswith("```"):
+            clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
+
+        decoder = json.JSONDecoder()
+        candidates = []
+        pos = 0
+        while pos < len(clean):
+            idx = clean.find("{", pos)
+            if idx == -1:
+                break
+            sub = clean[idx:]
+            try:
+                obj, _ = decoder.raw_decode(sub)
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+            except Exception:
+                end_brace = clean.rfind("}")
+                if end_brace > idx:
+                    repaired = re.sub(r",\s*([}\]])", r"\1", clean[idx:end_brace + 1])
+                    try:
+                        obj, _ = decoder.raw_decode(repaired)
+                        if isinstance(obj, dict):
+                            candidates.append(obj)
+                    except Exception:
+                        pass
+            pos = idx + 1
+
+        if not candidates and "{" in clean:
+            sliced = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
+            try:
+                obj = json.loads(sliced)
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+            except Exception:
+                try:
+                    obj = json.loads(re.sub(r",\s*([}\]])", r"\1", sliced))
+                    if isinstance(obj, dict):
+                        candidates.append(obj)
+                except Exception:
+                    pass
+
+        for c in candidates:
+            if "verdict" in c:
+                return c
+        return candidates[0] if candidates else None
+
     def _parse_manager_verdict(self, text: str) -> str:
         if not str(text or "").strip():
             return "BLOCKED"
         try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-
-            data = json.loads(clean)
-            val = str(data.get("verdict", "")).upper().strip()
-            if val in ("APPROVED", "ACCEPT"):
-                return "APPROVED"
-            if val in ("REVISE", "RETRY"):
-                return "REVISE"
-            if val in ("BLOCKED", "ESCALATE"):
-                return "BLOCKED"
+            data = self._extract_review_dict(text)
+            if data and isinstance(data, dict):
+                val = str(data.get("verdict", "")).upper().strip()
+                if val in ("APPROVED", "ACCEPT"):
+                    return "APPROVED"
+                if val in ("REVISE", "RETRY"):
+                    return "REVISE"
+                if val in ("BLOCKED", "ESCALATE"):
+                    return "BLOCKED"
         except Exception as e:
             logger.warning("JSON parse of manager verdict failed: %s. Falling back to substring match.", e)
         clean = text.strip().replace("*", "").upper()
@@ -3687,9 +3766,6 @@ Report what you FIND, not what you think might exist."""
             return "REVISE"
         if clean.startswith("BLOCKED") or clean.startswith("ESCALATE"):
             return "BLOCKED"
-        # Never convert an unrecognized or garbage Manager response into an
-        # approval. AgentRunner normally supplies a safe BLOCKED fallback, but
-        # this parser is also used by legacy/direct paths.
         return "BLOCKED"
 
     @staticmethod
@@ -3711,17 +3787,13 @@ Report what you FIND, not what you think might exist."""
         if not str(text or "").strip():
             return []
         try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            issues = json.loads(clean).get("issues")
-            return issues if isinstance(issues, list) else []
+            data = self._extract_review_dict(text)
+            if data and isinstance(data, dict):
+                issues = data.get("issues")
+                return issues if isinstance(issues, list) else []
         except Exception:
             return []
+        return []
 
     def _task_gate_verdict(
         self, task_review: str, evidence_passed: bool | None, task_id: str = "",

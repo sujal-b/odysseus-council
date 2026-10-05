@@ -49,6 +49,27 @@ def test_markdown_tasks_block_is_normalized():
     assert result.metadata["normalization_used"] is True
 
 
+def test_embedded_json_in_prose_is_normalized_and_accepted():
+    raw = "Here is the strategy plan:\n" + json.dumps([_task()]) + "\nHope this works!"
+    result = validate_agent_output("strategist", raw, strict=True)
+
+    assert result.success is True
+    assert [item["id"] for item in result.data["tasks"]] == ["T1"]
+    assert result.metadata["raw_shape"] == "embedded_json_array"
+    assert result.metadata["normalization_used"] is True
+
+
+def test_embedded_json_object_in_prose_is_normalized_and_accepted():
+    raw = "Strategy overview:\n" + json.dumps({"tasks": [_task()], "risks": ["network"]}) + "\nFollow these steps."
+    result = validate_agent_output("strategist", raw, strict=True)
+
+    assert result.success is True
+    assert [item["id"] for item in result.data["tasks"]] == ["T1"]
+    assert result.data["risks"] == ["network"]
+    assert result.metadata["raw_shape"] == "embedded_json_object"
+    assert result.metadata["normalization_used"] is True
+
+
 def test_empty_plan_remains_invalid_after_normalization():
     result = validate_agent_output("strategist", '{"tasks": [], "risks": []}', strict=True)
 

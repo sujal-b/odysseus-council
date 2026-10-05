@@ -6,15 +6,15 @@ def test_council_roles_use_configured_provider_defaults():
     path = Path(__file__).resolve().parents[1] / "council_of_agents/config/models.json"
     config = json.loads(path.read_text(encoding="utf-8"))
     roles = config["roles"]
-    nilovr = "https://api.nilovr.com/v1/chat/completions"
+    zen = "https://opencode.ai/zen/v1/chat/completions"
 
     expected = {
-        "chair": (nilovr, "hy3"),
-        "strategist": (nilovr, "hy3"),
-        "perspective_analyzer": (nilovr, "hy3"),
-        "manager": (nilovr, "hy3"),
-        "implementer": (nilovr, "hy3"),
-        "completeness_auditor": (nilovr, "hy3"),
+        "chair": (zen, "mimo-v2.6-flash-free"),
+        "strategist": (zen, "mimo-v2.6-flash-free"),
+        "perspective_analyzer": (zen, "mimo-v2.6-flash-free"),
+        "manager": (zen, "mimo-v2.6-flash-free"),
+        "implementer": (zen, "mimo-v2.6-flash-free"),
+        "completeness_auditor": (zen, "mimo-v2.6-flash-free"),
     }
     for role, (endpoint, model) in expected.items():
         assert roles[role]["endpoint_url"] == endpoint
@@ -27,7 +27,7 @@ def test_auxiliary_council_roles_stay_on_zen_defaults():
         .read_text(encoding="utf-8")
     )
     for role in ("debate_response", "chair_arbitration"):
-        assert config["roles"][role]["endpoint_url"].startswith("https://api.nilovr.com/")
+        assert config["roles"][role]["endpoint_url"].startswith("https://opencode.ai/zen/")
 
 
 def test_effective_overrides_inheritance():

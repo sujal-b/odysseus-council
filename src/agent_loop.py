@@ -1570,7 +1570,11 @@ def _append_tool_results(
         ]
         messages.append(assistant_msg)
         for j, tc in enumerate(native_tool_calls):
-            result_text = tool_result_texts[j] if j < len(tool_result_texts) else ""
+            if j < len(tool_result_texts):
+                result_text = tool_result_texts[j]
+            else:
+                tc_name = tc.get("name", "unknown")
+                result_text = f"Error: Tool call '{tc_name}' did not execute (conversion failure or limit reached)."
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.get("id", f"call_{round_num}_{j}"),
@@ -2310,6 +2314,14 @@ async def stream_agent_loop(
     # that *can't* call the tool from looping forever.
     _intent_nudge_count = 0
     _MAX_INTENT_NUDGES = 2
+    # Supervisor: how many times we've told the model its native tool call was
+    # dropped before execution. A native call whose arguments fail to convert
+    # (malformed, or truncated by the output token cap mid-JSON) leaves the
+    # round with zero executable blocks — and the model is never told, so it
+    # re-emits the same oversized call on every retry. Capped like the intent
+    # nudge so a model that can't form a valid call still terminates.
+    _dropped_call_count = 0
+    _MAX_DROPPED_CALL_NUDGES = 2
 
     # "I said I would, then didn't" detector. The pattern that breaks debug
     # loops on weak models (deepseek-v4-flash mid-2026): the model writes
@@ -2659,6 +2671,34 @@ async def stream_agent_loop(
         round_texts.append(cleaned_round)
 
         if not tool_blocks:
+            # ── Dropped native tool call ───────────────────────────────
+            # A native function call arrived but NONE of them converted to an
+            # executable block: the arguments were malformed or cut off mid-JSON
+            # (the usual cause is a large write_file hitting the output token
+            # cap before its string closes). Nothing ran this round, the model
+            # only sees an empty turn, and it re-emits the same oversized call
+            # forever. Tell it precisely what happened and let it retry with a
+            # smaller payload; bounded so an incapable model still terminates.
+            if native_tool_calls and not _force_answer and _dropped_call_count < _MAX_DROPPED_CALL_NUDGES:
+                _dropped_call_count += 1
+                _dropped_names = ", ".join(sorted({str(tc.get("name") or "?") for tc in native_tool_calls}))
+                logger.warning(f"[agent] dropped native tool call(s) on round {round_num}: {_dropped_names}; "
+                               f"asking the model to retry with a smaller payload")
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        f"Your tool call(s) this turn ({_dropped_names}) did NOT run: their arguments could "
+                        "not be converted into an executable call (malformed or truncated JSON — usually the "
+                        "response hit its output-token limit before the argument string closed — or a tool "
+                        "name that is not available). No tool executed this turn.\n\n"
+                        "Retry now with a substantially smaller payload. Do not resend the same call: split "
+                        "large content across several calls (create the file with a short skeleton first, "
+                        "then add sections with follow-up edit_file calls, or write the file in several "
+                        "smaller pieces) and keep each individual call's arguments compact."
+                    ),
+                })
+                yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+                continue
             # ── Completion verifier (mechanism 3a) ────────────────────
             # The model is finishing. If this was an effectful agentic turn,
             # have a fresh-context verifier independently check the work

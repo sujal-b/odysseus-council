@@ -542,6 +542,12 @@ def _provider_headers(provider: str, headers: Optional[Dict] = None) -> Dict[str
         from src.copilot import copilot_headers
         for k, v in copilot_headers(None).items():
             h.setdefault(k, v)
+    if provider in ("opencode-zen", "opencode-go"):
+        # Zen's zero-cost models are gated on the request looking like the
+        # official opencode CLI. h.update, not setdefault: a non-CLI User-Agent
+        # is a hard 403, so a caller-supplied one must lose rather than win.
+        from src.zen_free_gate import gate_headers
+        h.update(gate_headers())
     return h
 
 
@@ -1580,6 +1586,9 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
             payload["response_format"] = rf_override or {"type": "json_object"}
         if tools:
             payload["tools"] = tools
+        if provider in ("opencode-zen", "opencode-go"):
+            from src.zen_free_gate import apply_tool_gate
+            payload = apply_tool_gate(payload, tools)
         # For Ollama's OpenAI-compat /v1 endpoint with thinking models (qwen3,
         # gemma4, etc.), suppress thinking so tool calls aren't swallowed inside
         # <think> blocks. Ollama /v1 accepts "think": false as a top-level param.

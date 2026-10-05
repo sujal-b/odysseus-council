@@ -281,5 +281,74 @@ def test_perspective_findings_degrades_without_raising():
         assert findings["overall_score"] is None
 
 
+def test_perspective_markdown_block_is_normalized_and_accepted():
+    payload = {
+        "security": {"score": 0.9, "issues": []},
+        "performance": {"score": 0.85, "issues": []},
+        "maintainability": {"score": 0.8, "issues": []},
+        "overall_score": 0.85,
+        "synthesis": "Markdown-wrapped audit.",
+    }
+    raw = f"```json\n{json.dumps(payload)}\n```"
+    res = validate_agent_output("perspective_analyzer", raw, strict=True)
+    assert res.success is True
+    assert res.data["overall_score"] == 0.85
+    assert res.metadata["raw_shape"] == "markdown_json_block"
+    assert res.metadata["normalization_used"] is True
+
+
+def test_perspective_trailing_comma_is_normalized_and_accepted():
+    raw = (
+        '{\n'
+        '  "security": {"score": 0.9, "issues": [\n'
+        '    {"severity": "info", "disposition": "ADVISORY", "description": "desc", "task_id": "T1", "suggestion": "sug", "evidence": "evi",},\n'
+        '  ],},\n'
+        '  "performance": {"score": 0.85, "issues": [],},\n'
+        '  "maintainability": {"score": 0.8, "issues": [],},\n'
+        '  "overall_score": 0.85,\n'
+        '  "synthesis": "Trailing-comma audit.",\n'
+        '}'
+    )
+    res = validate_agent_output("perspective_analyzer", raw, strict=True)
+    assert res.success is True
+    assert res.data["overall_score"] == 0.85
+    assert res.metadata["raw_shape"] == "embedded_json_object"
+    assert res.metadata["normalization_used"] is True
+
+
+def test_perspective_embedded_json_in_prose_is_normalized_and_accepted():
+    payload = {
+        "security": {"score": 0.9, "issues": []},
+        "performance": {"score": 0.85, "issues": []},
+        "maintainability": {"score": 0.8, "issues": []},
+        "overall_score": 0.85,
+        "synthesis": "Embedded audit.",
+    }
+    raw = f"Audit summary:\n{json.dumps(payload)}\nPlease address these findings."
+    res = validate_agent_output("perspective_analyzer", raw, strict=True)
+    assert res.success is True
+    assert res.data["overall_score"] == 0.85
+    assert res.metadata["raw_shape"] == "embedded_json_object"
+    assert res.metadata["normalization_used"] is True
+
+
+def test_perspective_markdown_with_trailing_comma_is_normalized_and_accepted():
+    inner = (
+        '{\n'
+        '  "security": {"score": 0.9, "issues": [],},\n'
+        '  "performance": {"score": 0.85, "issues": [],},\n'
+        '  "maintainability": {"score": 0.8, "issues": [],},\n'
+        '  "overall_score": 0.85,\n'
+        '  "synthesis": "Markdown with trailing commas.",\n'
+        '}'
+    )
+    raw = f"Review notes:\n```json\n{inner}\n```"
+    res = validate_agent_output("perspective_analyzer", raw, strict=True)
+    assert res.success is True
+    assert res.data["overall_score"] == 0.85
+    assert res.metadata["raw_shape"] == "markdown_json_block"
+    assert res.metadata["normalization_used"] is True
+
+
 if __name__ == "__main__":
     pytest.main(["-v", str(Path(__file__))])

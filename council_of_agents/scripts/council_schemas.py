@@ -549,15 +549,50 @@ class PerspectiveResponseNormalizer:
         try:
             parsed = json.loads(text)
         except json.JSONDecodeError:
-            metadata["raw_shape"] = "unparseable"
-            return None, metadata
+            return cls._normalize_markdown(text, metadata)
 
         if not isinstance(parsed, dict):
             metadata["raw_shape"] = "non_dict"
             return None, metadata
 
         metadata["raw_shape"] = "json_dict"
+        return cls._canonicalize(parsed, metadata)
 
+    @classmethod
+    def _normalize_markdown(cls, text: str, metadata: dict) -> tuple[dict | None, dict]:
+        candidates = []
+        for match in re.finditer(r"```(?:perspective|json)?\s*([\s\S]*?)```", text, re.IGNORECASE):
+            candidates.append((match.group(1).strip(), "markdown_json_block"))
+        s_brace, e_brace = text.find("{"), text.rfind("}")
+        if s_brace != -1 and e_brace > s_brace:
+            candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
+
+        for candidate, shape_label in candidates:
+            parsed = None
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                try:
+                    parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", candidate))
+                except Exception:
+                    continue
+            if isinstance(parsed, dict):
+                cand_meta = dict(metadata)
+                cand_meta.update({
+                    "raw_shape": shape_label,
+                    "normalized_shape": "canonical_envelope",
+                    "normalization_used": True,
+                })
+                result, res_meta = cls._canonicalize(parsed, cand_meta)
+                if result is not None:
+                    metadata.update(res_meta)
+                    return result, metadata
+
+        metadata["raw_shape"] = "unparseable"
+        return None, metadata
+
+    @classmethod
+    def _canonicalize(cls, parsed: dict, metadata: dict) -> tuple[dict | None, dict]:
         has_root_score = "overall_score" in parsed
         has_root_synth = "synthesis" in parsed
 
@@ -903,13 +938,6 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
             if role == "strategist":
                 normalized, metadata = StrategistResponseNormalizer.normalize(raw)
                 if normalized is not None:
-                    if metadata.get("raw_shape") in {"embedded_json_object", "embedded_json_array"}:
-                        return ValidationResult(
-                            success=False,
-                            error=f"strict control contract rejects json wrapped in prose (raw_shape={metadata['raw_shape']})",
-                            metadata=metadata,
-                            raw_text=raw_text,
-                        )
                     parsed = schema.model_validate(normalized)
                     return ValidationResult(
                         success=True,

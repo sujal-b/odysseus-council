@@ -1322,6 +1322,27 @@ class TestTimeoutPolicy:
         strategist_cap = CouncilOrchestrator.AGENT_HARD_TIMEOUTS["strategist"]
         assert manager_cap >= strategist_cap
 
+    def test_no_control_role_left_at_bare_inactivity_cap(self):
+        """Regression: agent_runner.py enforces the hard cap unconditionally, so a
+        role omitted from AGENT_HARD_TIMEOUTS falls back to its inactivity window
+        and is killed mid-stream even while it is actively producing tokens.
+        A role is only safe from that if its wall-clock budget reaches the
+        slow-provider floor. This test is the machine-checkable form of the
+        comment on AGENT_HARD_TIMEOUTS, so a newly added role cannot silently
+        regress the way perspective_analyzer did."""
+        floor = CouncilOrchestrator.AGENT_HARD_TIMEOUTS["strategist"]
+        at_risk = []
+        for role in ("chair", "strategist", "manager", "perspective_analyzer",
+                     "completeness_auditor", "validator_task"):
+            cap = CouncilOrchestrator.AGENT_HARD_TIMEOUTS.get(
+                role, CouncilOrchestrator.AGENT_TIMEOUTS[role])
+            if cap < floor:
+                at_risk.append(f"{role}={cap}s")
+        assert not at_risk, (
+            "roles at the bare inactivity cap will be killed mid-stream while "
+            f"streaming (floor={floor}s): {', '.join(at_risk)}"
+        )
+
 
 @pytest.mark.asyncio
 async def test_agent_runner_passes_state_workspace_to_call_agent(tmp_path):

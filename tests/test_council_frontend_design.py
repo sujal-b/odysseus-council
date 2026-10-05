@@ -128,7 +128,7 @@ def test_perspective_card_container_and_telemetry_deck_invariants():
     assert ".ghost-editor-stream .ghost-perspective-card.is-mustfix" in CSS
 
     # Telemetry bay alignment with content column and responsive collapse
-    assert "margin-left: 104px" in CSS
+    assert ("margin-left: 104px" in CSS) or ("margin-left: var(--stream-indent)" in CSS)
     assert "@media (max-width: 720px)" in CSS
 
     # Metric cells group each perspective dimension and isolate disposition badges
