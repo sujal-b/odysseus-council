@@ -399,10 +399,24 @@ class StrategistResponseNormalizer:
             candidates.append((match.group(1).strip(), "markdown_tasks_block" if "tasks" in match.group(0)[:10].lower() else "markdown_json_block"))
         s_brace, e_brace = text.find("{"), text.rfind("}")
         if s_brace != -1 and e_brace > s_brace:
-            candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
+            prefix = text[:s_brace].strip()
+            suffix = text[e_brace + 1:].strip()
+            if (prefix and not ("\n" in text[:s_brace] or text[:s_brace].endswith("\n"))) or (
+                suffix and not ("\n" in text[e_brace + 1:] or text[e_brace + 1:].startswith("\n"))
+            ):
+                metadata["raw_shape"] = "json_wrapped_in_prose"
+            else:
+                candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
         s_brack, e_brack = text.find("["), text.rfind("]")
         if s_brack != -1 and e_brack > s_brack:
-            candidates.append((text[s_brack:e_brack + 1].strip(), "embedded_json_array"))
+            prefix = text[:s_brack].strip()
+            suffix = text[e_brack + 1:].strip()
+            if (prefix and not ("\n" in text[:s_brack] or text[:s_brack].endswith("\n"))) or (
+                suffix and not ("\n" in text[e_brack + 1:] or text[e_brack + 1:].startswith("\n"))
+            ):
+                metadata["raw_shape"] = "json_wrapped_in_prose"
+            else:
+                candidates.append((text[s_brack:e_brack + 1].strip(), "embedded_json_array"))
 
         for candidate, shape_label in candidates:
             parsed = None
@@ -439,7 +453,8 @@ class StrategistResponseNormalizer:
                     return cls._canonicalize(
                         {"tasks": tasks, "risks": parsed.get("risks", [])}, metadata
                     )
-        metadata["raw_shape"] = "unparseable"
+        if metadata.get("raw_shape") != "json_wrapped_in_prose":
+            metadata["raw_shape"] = "unparseable"
         return None, metadata
 
 
@@ -565,7 +580,14 @@ class PerspectiveResponseNormalizer:
             candidates.append((match.group(1).strip(), "markdown_json_block"))
         s_brace, e_brace = text.find("{"), text.rfind("}")
         if s_brace != -1 and e_brace > s_brace:
-            candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
+            prefix = text[:s_brace].strip()
+            suffix = text[e_brace + 1:].strip()
+            if (prefix and not ("\n" in text[:s_brace] or text[:s_brace].endswith("\n"))) or (
+                suffix and not ("\n" in text[e_brace + 1:] or text[e_brace + 1:].startswith("\n"))
+            ):
+                metadata["raw_shape"] = "json_wrapped_in_prose"
+            else:
+                candidates.append((text[s_brace:e_brace + 1].strip(), "embedded_json_object"))
 
         for candidate, shape_label in candidates:
             parsed = None
@@ -588,7 +610,8 @@ class PerspectiveResponseNormalizer:
                     metadata.update(res_meta)
                     return result, metadata
 
-        metadata["raw_shape"] = "unparseable"
+        if metadata.get("raw_shape") != "json_wrapped_in_prose":
+            metadata["raw_shape"] = "unparseable"
         return None, metadata
 
     @classmethod
@@ -946,7 +969,7 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
                         raw_text=raw_text,
                     )
                 if metadata.get("raw_shape") in {
-                    "empty", "scalar", "unparseable", "unknown", "non_task_dict",
+                    "empty", "scalar", "unparseable", "unknown", "non_task_dict", "json_wrapped_in_prose",
                 } or metadata.get("normalization_shape") == "rejected_ambiguous":
                     return ValidationResult(
                         success=False,
@@ -984,7 +1007,7 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
                         raw_text=raw_text,
                     )
                 if metadata.get("raw_shape") in {
-                    "empty", "scalar", "unparseable", "unknown", "non_dict",
+                    "empty", "scalar", "unparseable", "unknown", "non_dict", "json_wrapped_in_prose",
                 } or metadata.get("normalized_shape") == "rejected_ambiguous":
                     return ValidationResult(
                         success=False,
@@ -995,10 +1018,13 @@ def validate_agent_output(role: str, raw_text: str, *, strict: bool = False) -> 
                         metadata=metadata,
                         raw_text=raw_text,
                     )
+            clean = raw.strip()
+            if clean.startswith("```"):
+                clean = re.sub(r"^```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)\s*```$", r"\1", clean).strip()
             try:
-                parsed = json.loads(raw)
-            except Exception:
-                parsed = _extract_json(raw)
+                parsed = json.loads(clean)
+            except json.JSONDecodeError:
+                parsed = json.loads(re.sub(r",\s*([}\]])", r"\1", clean))
             if not isinstance(parsed, dict) or "_raw" in parsed:
                 raise ValueError("response must be one JSON object")
             parsed = schema.model_validate(parsed)

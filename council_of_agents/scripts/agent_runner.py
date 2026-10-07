@@ -249,6 +249,18 @@ class AgentRunner:
                     raw_text=raw,
                     validation_error=validation.error,
                 )
+            if validation.data:
+                if hasattr(self.orchestrator, "_validated_cache"):
+                    self.orchestrator._validated_cache[raw] = validation.data
+                    self.orchestrator._validated_cache[raw.strip()] = validation.data
+                else:
+                    self.orchestrator._validated_cache = {raw: validation.data, raw.strip(): validation.data}
+                if hasattr(self.orchestrator, "_latest_validated_outputs"):
+                    self.orchestrator._latest_validated_outputs[validation_role] = validation.data
+                else:
+                    self.orchestrator._latest_validated_outputs = {validation_role: validation.data}
+                if hasattr(self.state, "metadata") and isinstance(self.state.metadata, dict):
+                    self.state.metadata.setdefault("validated_agent_outputs", {})[validation_role] = validation.data
             if validation_role == "strategist":
                 policy_error = _strategist_plan_error(
                     (validation.data or {}).get("tasks"), getattr(self.state, "user_prompt", None)
@@ -482,6 +494,18 @@ class AgentRunner:
                             raw_text=result,
                             validation_error=v.error
                         )
+                    if v.data:
+                        if hasattr(self.orchestrator, "_validated_cache"):
+                            self.orchestrator._validated_cache[result] = v.data
+                            self.orchestrator._validated_cache[result.strip()] = v.data
+                        else:
+                            self.orchestrator._validated_cache = {result: v.data, result.strip(): v.data}
+                        if hasattr(self.orchestrator, "_latest_validated_outputs"):
+                            self.orchestrator._latest_validated_outputs[validation_role] = v.data
+                        else:
+                            self.orchestrator._latest_validated_outputs = {validation_role: v.data}
+                        if hasattr(self.state, "metadata") and isinstance(self.state.metadata, dict):
+                            self.state.metadata.setdefault("validated_agent_outputs", {})[validation_role] = v.data
                     if validation_role == "strategist":
                         from council_of_agents.scripts.task_dag import mutation_only_plan_error
                         semantic_error = mutation_only_plan_error(

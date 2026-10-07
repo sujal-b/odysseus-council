@@ -220,6 +220,8 @@ class CouncilOrchestrator:
         self._trace_context = None
         from council_of_agents.scripts.prompt_composer import PromptComposer
         self._composer = PromptComposer()
+        self._latest_validated_outputs = {}
+        self._validated_cache = {}
 
     async def run(
         self,
@@ -238,6 +240,8 @@ class CouncilOrchestrator:
                 }
             await event_queue.put(CouncilEvent(**kwargs))
 
+        self._latest_validated_outputs = {}
+        self._validated_cache = {}
         # A new run must never inherit an override from an earlier gate.
         # Non-approved Manager decisions can only be bypassed by the explicit
         # human Override action for this run.
@@ -3471,40 +3475,123 @@ Report what you FIND, not what you think might exist."""
             return f"{envelope}\n\n{user_prompt}"
         return user_prompt
 
+    def _extract_json_dict(
+        self,
+        text: Optional[str] = None,
+        target_keys: Optional[tuple[str, ...]] = None,
+    ) -> Optional[dict]:
+        """Extract a JSON object from model output without brittle string surgery."""
+        if isinstance(self, str) and text is None:
+            clean_text = self
+            instance = None
+        else:
+            clean_text = text or ""
+            instance = self if isinstance(self, CouncilOrchestrator) else None
+
+        if not str(clean_text).strip():
+            return None
+        clean = str(clean_text).strip()
+
+        # Check instance cache if available
+        if instance and hasattr(instance, "_validated_cache"):
+            cached = instance._validated_cache.get(clean) or instance._validated_cache.get(clean_text)
+            if isinstance(cached, dict):
+                return cached
+
+        # 1. Direct JSON parse
+        try:
+            data = json.loads(clean)
+            if isinstance(data, dict):
+                if not target_keys or any(k in data for k in target_keys):
+                    return data
+        except Exception:
+            pass
+
+        candidates = []
+
+        # 2. Markdown fenced blocks (all of them)
+        for m in re.finditer(r"```(?:[a-zA-Z0-9_-]+)?\s*([\s\S]*?)```", clean):
+            block = m.group(1).strip()
+            try:
+                data = json.loads(block)
+                if isinstance(data, dict):
+                    candidates.append(data)
+            except Exception:
+                try:
+                    repaired = re.sub(r",\s*([}\]])", r"\1", block)
+                    data = json.loads(repaired)
+                    if isinstance(data, dict):
+                        candidates.append(data)
+                except Exception:
+                    pass
+
+        # 3. Stream raw_decode across text
+        decoder = json.JSONDecoder()
+        pos = 0
+        while pos < len(clean):
+            idx = clean.find("{", pos)
+            if idx == -1:
+                break
+            try:
+                obj, end_idx = decoder.raw_decode(clean[idx:])
+                if isinstance(obj, dict):
+                    candidates.append(obj)
+                    pos = idx + max(1, end_idx)
+                    continue
+            except Exception:
+                end_b = clean.rfind("}")
+                if end_b > idx:
+                    repaired = re.sub(r",\s*([}\]])", r"\1", clean[idx:end_b + 1])
+                    try:
+                        obj, _ = decoder.raw_decode(repaired)
+                        if isinstance(obj, dict):
+                            candidates.append(obj)
+                    except Exception:
+                        pass
+            pos = idx + 1
+
+        if not candidates:
+            return None
+
+        # Filter and prioritize candidates
+        if target_keys:
+            for c in candidates:
+                if any(k in c for k in target_keys):
+                    return c
+
+        known_priority = (
+            "verdict", "complexity", "route", "action", "tasks",
+            "files_created", "files_modified", "issues", "status",
+            "criteria", "synthesis", "overall_score",
+        )
+        for c in candidates:
+            if any(k in c for k in known_priority):
+                return c
+
+        return candidates[0]
+
     def _clean_thought_text(self, role: str, text: str) -> str:
         if not text:
             return ""
         clean = StreamingJsonExtractor._clean_markup(text).strip()
         
         # 1. Parse JSON if applicable
-        try:
-            json_target = clean
-            if "```json" in json_target:
-                json_target = json_target.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif json_target.startswith("```"):
-                json_target = json_target.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in json_target:
-                json_target = "{" + json_target.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            
-            data = json.loads(json_target)
-            if isinstance(data, dict):
-                if role == "chair":
-                    return data.get("reason") or data.get("reasoning") or clean
-                elif role == "chair_arbitration":
-                    return data.get("reasoning") or data.get("reason") or clean
-                elif role == "manager":
-                    return data.get("summary") or data.get("reasoning") or clean
-                elif role == "implementer":
-                    return data.get("notes") or data.get("summary") or data.get("explanation") or clean
-                elif role == "strategist":
-                    strat_val = data.get("risks") or data.get("summary") or data.get("rationale")
-                    if strat_val:
-                        if isinstance(strat_val, list):
-                            return " · ".join(str(item) for item in strat_val)
-                        return str(strat_val)
-
-        except Exception:
-            pass
+        data = self._extract_json_dict(clean)
+        if isinstance(data, dict):
+            if role == "chair":
+                return data.get("reason") or data.get("reasoning") or clean
+            elif role == "chair_arbitration":
+                return data.get("reasoning") or data.get("reason") or clean
+            elif role == "manager":
+                return data.get("summary") or data.get("reasoning") or clean
+            elif role == "implementer":
+                return data.get("notes") or data.get("summary") or data.get("explanation") or clean
+            elif role == "strategist":
+                strat_val = data.get("risks") or data.get("summary") or data.get("rationale")
+                if strat_val:
+                    if isinstance(strat_val, list):
+                        return " · ".join(str(item) for item in strat_val)
+                    return str(strat_val)
 
         # 2. For Strategist, strip the tasks block and Risks header/section
         if role == "strategist":
@@ -3533,79 +3620,56 @@ Report what you FIND, not what you think might exist."""
         return text
 
     def _parse_complexity(self, text: str) -> str:
-        try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-                
-            data = json.loads(clean)
+        data = self._extract_json_dict(text, target_keys=("complexity",))
+        if isinstance(data, dict):
             val = str(data.get("complexity", "")).upper().strip()
             if val in ("SIMPLE", "MEDIUM", "COMPLEX"):
                 return val
-        except Exception as e:
-            logger.warning("JSON parse of complexity failed: %s. Falling back to substring match.", e)
-        
-        upper = text.upper()
+
+        logger.warning(
+            "JSON parse of complexity failed for %r. Falling back to substring match.",
+            (text or "")[:200],
+        )
+        upper = (text or "").upper()
         snippet = upper[:200]
         if "COMPLEX" in snippet: return "COMPLEX"
         if "MEDIUM" in snippet:  return "MEDIUM"
+        logger.warning(
+            "No complexity keyword found in %r. Defaulting to SIMPLE.",
+            (text or "")[:200],
+        )
         return "SIMPLE"
 
     def _parse_route(self, text: str) -> str:
         """Extract route from Chair JSON. Default: PIPELINE."""
-        try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            data = json.loads(clean)
+        data = self._extract_json_dict(text, target_keys=("route",))
+        if isinstance(data, dict):
             val = str(data.get("route", "")).upper().strip()
             if val in ("DIRECT", "PIPELINE"):
                 return val
-        except Exception:
-            pass
+        logger.warning(
+            "JSON parse of route failed for %r. Falling back to route detection or PIPELINE default.",
+            (text or "")[:200],
+        )
+        clean = (text or "").strip().upper()
+        if "DIRECT" in clean[:200] and "PIPELINE" not in clean[:200]:
+            return "DIRECT"
         return "PIPELINE"
 
     def _parse_action(self, text: str) -> str:
         """Extract action type from Chair JSON. Default: 'unknown'."""
-        try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            data = json.loads(clean)
+        data = self._extract_json_dict(text, target_keys=("action",))
+        if isinstance(data, dict):
             val = str(data.get("action", "")).lower().strip()
             if val in ("read", "write", "search", "command", "analyze", "unknown"):
                 return val
-        except Exception:
-            pass
         return "unknown"
 
     def _parse_target(self, text: str) -> str:
         """Extract target description from Chair JSON. Default: ''."""
-        try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            data = json.loads(clean)
+        data = self._extract_json_dict(text, target_keys=("target",))
+        if isinstance(data, dict):
             return str(data.get("target", "")).strip()
-        except Exception:
-            pass
         return ""
 
     def _validate_response_quality(self, impl_reply: str, user_prompt: str, tools_used: list) -> tuple[bool, str]:
@@ -3691,74 +3755,32 @@ Report what you FIND, not what you think might exist."""
             pass
         return False
 
-    @staticmethod
-    def _extract_review_dict(text: str) -> dict | None:
-        if not str(text or "").strip():
-            return None
-        clean = text.strip()
-        if "```json" in clean:
-            clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-        elif clean.startswith("```"):
-            clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-
-        decoder = json.JSONDecoder()
-        candidates = []
-        pos = 0
-        while pos < len(clean):
-            idx = clean.find("{", pos)
-            if idx == -1:
-                break
-            sub = clean[idx:]
-            try:
-                obj, _ = decoder.raw_decode(sub)
-                if isinstance(obj, dict):
-                    candidates.append(obj)
-            except Exception:
-                end_brace = clean.rfind("}")
-                if end_brace > idx:
-                    repaired = re.sub(r",\s*([}\]])", r"\1", clean[idx:end_brace + 1])
-                    try:
-                        obj, _ = decoder.raw_decode(repaired)
-                        if isinstance(obj, dict):
-                            candidates.append(obj)
-                    except Exception:
-                        pass
-            pos = idx + 1
-
-        if not candidates and "{" in clean:
-            sliced = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            try:
-                obj = json.loads(sliced)
-                if isinstance(obj, dict):
-                    candidates.append(obj)
-            except Exception:
-                try:
-                    obj = json.loads(re.sub(r",\s*([}\]])", r"\1", sliced))
-                    if isinstance(obj, dict):
-                        candidates.append(obj)
-                except Exception:
-                    pass
-
-        for c in candidates:
-            if "verdict" in c:
-                return c
-        return candidates[0] if candidates else None
+    def _extract_review_dict(self, text: Optional[str] = None) -> dict | None:
+        if isinstance(self, str) and text is None:
+            return CouncilOrchestrator._extract_json_dict(
+                self, target_keys=("verdict", "issues", "summary")
+            )
+        return self._extract_json_dict(
+            text, target_keys=("verdict", "issues", "summary")
+        )
 
     def _parse_manager_verdict(self, text: str) -> str:
         if not str(text or "").strip():
             return "BLOCKED"
-        try:
-            data = self._extract_review_dict(text)
-            if data and isinstance(data, dict):
-                val = str(data.get("verdict", "")).upper().strip()
-                if val in ("APPROVED", "ACCEPT"):
-                    return "APPROVED"
-                if val in ("REVISE", "RETRY"):
-                    return "REVISE"
-                if val in ("BLOCKED", "ESCALATE"):
-                    return "BLOCKED"
-        except Exception as e:
-            logger.warning("JSON parse of manager verdict failed: %s. Falling back to substring match.", e)
+        data = self._extract_review_dict(text)
+        if isinstance(data, dict):
+            val = str(data.get("verdict", "")).upper().strip()
+            if val in ("APPROVED", "ACCEPT"):
+                return "APPROVED"
+            if val in ("REVISE", "RETRY"):
+                return "REVISE"
+            if val in ("BLOCKED", "ESCALATE"):
+                return "BLOCKED"
+
+        logger.warning(
+            "JSON parse of manager verdict failed for %r. Falling back to keyword match.",
+            (text or "")[:200],
+        )
         clean = text.strip().replace("*", "").upper()
         if clean.startswith("APPROVED") or clean.startswith("ACCEPT"):
             return "APPROVED"
@@ -3766,6 +3788,11 @@ Report what you FIND, not what you think might exist."""
             return "REVISE"
         if clean.startswith("BLOCKED") or clean.startswith("ESCALATE"):
             return "BLOCKED"
+
+        logger.warning(
+            "No conclusive manager verdict in %r. Defaulting to BLOCKED (fail-closed).",
+            (text or "")[:200],
+        )
         return "BLOCKED"
 
     @staticmethod
@@ -3786,13 +3813,10 @@ Report what you FIND, not what you think might exist."""
         """Extract the issues array from a Manager task review JSON payload."""
         if not str(text or "").strip():
             return []
-        try:
-            data = self._extract_review_dict(text)
-            if data and isinstance(data, dict):
-                issues = data.get("issues")
-                return issues if isinstance(issues, list) else []
-        except Exception:
-            return []
+        data = self._extract_review_dict(text)
+        if isinstance(data, dict):
+            issues = data.get("issues")
+            return issues if isinstance(issues, list) else []
         return []
 
     def _task_gate_verdict(
@@ -3912,33 +3936,26 @@ Report what you FIND, not what you think might exist."""
 
     def _extract_code(self, text: str, workspace: Optional[str] = None):
         try:
-            clean = text.strip()
-            if "```json" in clean:
-                clean = clean.split("```json", 1)[1].rsplit("```", 1)[0].strip()
-            elif clean.startswith("```"):
-                clean = clean.split("```", 1)[1].rsplit("```", 1)[0].strip()
-            if "{" in clean:
-                clean = "{" + clean.split("{", 1)[1].rsplit("}", 1)[0] + "}"
-            
-            data = json.loads(clean)
-            files = data.get("files_created", []) + data.get("files_modified", [])
-            if files:
-                if not workspace:
-                    from src.constants import DATA_DIR
-                    workspace = os.path.abspath(os.path.join(DATA_DIR, "council_workspace"))
-                target_file = files[0]
-                target_path = os.path.abspath(os.path.join(workspace, target_file))
-                if os.path.exists(target_path) and os.path.isfile(target_path):
-                    try:
-                        workspace_abs = os.path.abspath(workspace)
+            data = self._extract_json_dict(text, target_keys=("files_created", "files_modified"))
+            if isinstance(data, dict):
+                files = data.get("files_created", []) + data.get("files_modified", [])
+                if files and isinstance(files, list):
+                    if not workspace:
+                        from src.constants import DATA_DIR
+                        workspace = os.path.abspath(os.path.join(DATA_DIR, "council_workspace"))
+                    target_file = files[0]
+                    target_path = os.path.abspath(os.path.join(workspace, target_file))
+                    if os.path.exists(target_path) and os.path.isfile(target_path):
                         try:
-                            rel = os.path.relpath(target_path, workspace_abs).replace("\\", "/")
-                        except ValueError:
-                            rel = target_file  # on Windows, relpath fails across drives
-                        with open(target_path, "r", encoding="utf-8") as f:
-                            return f.read(), rel
-                    except Exception:
-                        pass
+                            workspace_abs = os.path.abspath(workspace)
+                            try:
+                                rel = os.path.relpath(target_path, workspace_abs).replace("\\", "/")
+                            except ValueError:
+                                rel = target_file  # on Windows, relpath fails across drives
+                            with open(target_path, "r", encoding="utf-8") as f:
+                                return f.read(), rel
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -4247,10 +4264,9 @@ Report what you FIND, not what you think might exist."""
                 max_tokens=512,
             )
             if response:
-                import re
-                match = re.search(r'```json\s*\n(.*?)```', response, re.DOTALL)
-                if match:
-                    return json.loads(match.group(1))
+                data = self._extract_json_dict(response)
+                if isinstance(data, dict):
+                    return data
         except Exception as e:
             logger.warning("Self-reflection failed: %s", e)
         return None
