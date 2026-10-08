@@ -42055,6 +42055,12 @@ body.theme-frosted .modal {
   vertical-align: middle;
   line-height: 1.4;
 }
+.ctx-tab-badge--warning,
+.ctx-tab-badge--error {
+  background: var(--council-danger, #ef4444);
+  color: #fff;
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.4);
+}
 .ctx-tab-badge[hidden] { display: none; }
 
 /* Tab body */
@@ -42146,4 +42152,264 @@ body.theme-frosted .modal {
   flex: 38;
   min-width: 240px;
   width: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   CALM AUDIT LEDGER & LIVE TOOL DRAWER REDESIGN
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* ── Audit Ledger Toolbar ────────────────────────────────────────── */
+.council-log-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--council-surface, var(--panel));
+  border-bottom: 1px solid var(--council-line, var(--border));
+  flex-shrink: 0;
+}
+
+.log-search-container {
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.log-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--council-surface-raised, color-mix(in srgb, var(--fg) 4%, var(--panel)));
+  border: 1px solid var(--council-line, var(--border));
+  border-radius: 5px;
+  padding: 5px 9px;
+  color: var(--fg);
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 11px;
+  outline: none;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.log-search-input:focus {
+  border-color: var(--council-copper, #df8e45);
+  background: var(--council-surface-raised, color-mix(in srgb, var(--fg) 7%, var(--panel)));
+}
+
+.log-search-input::placeholder {
+  color: var(--council-subtle, var(--dim));
+  opacity: 0.7;
+}
+
+/* ── Calm Audit Ledger Monospace Telemetry Rows ──────────────────── */
+.audit-ledger-container {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  width: 100%;
+}
+
+.audit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  line-height: 28px;
+  padding: 2px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 45%, transparent);
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 11px;
+  color: var(--fg);
+  transition: background 0.12s ease;
+  box-sizing: border-box;
+}
+
+.audit-row:hover {
+  background: color-mix(in srgb, var(--fg) 3.5%, transparent);
+}
+
+.audit-row--error {
+  background: rgba(239, 68, 68, 0.07);
+  border-left: 2px solid var(--council-danger, #ef4444);
+}
+
+.audit-row--error:hover {
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.audit-col-time {
+  color: var(--council-subtle, var(--dim));
+  font-size: 10px;
+  flex-shrink: 0;
+  width: 52px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+
+.audit-col-agent {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  flex-shrink: 0;
+  width: 36px;
+  text-align: center;
+  padding: 1px 2px;
+  border-radius: 3px;
+  line-height: 1.3;
+}
+
+.audit-agent--chair { color: #df8e45; background: rgba(223, 142, 69, 0.13); }
+.audit-agent--strategist, .audit-agent--strat { color: #50a0df; background: rgba(80, 160, 223, 0.13); }
+.audit-agent--implementer, .audit-agent--impl { color: #4eb870; background: rgba(78, 184, 112, 0.13); }
+.audit-agent--manager, .audit-agent--mgr { color: #e0b845; background: rgba(224, 184, 69, 0.13); }
+.audit-agent--system, .audit-agent--sys { color: #a67cff; background: rgba(166, 124, 255, 0.13); }
+
+.audit-col-action {
+  font-size: 10px;
+  font-weight: 600;
+  flex-shrink: 0;
+  width: 54px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.audit-action--cmd { color: var(--fg); opacity: 0.9; }
+.audit-action--phase { color: var(--council-subtle, var(--dim)); text-transform: uppercase; font-size: 9px; opacity: 0.85; }
+
+.audit-col-target {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.audit-target-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-size: 11px;
+  min-width: 0;
+}
+
+.audit-error-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.audit-btn-peek,
+.audit-btn-copy {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--council-danger, #ef4444);
+  font-family: inherit;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 5px;
+  cursor: pointer;
+  line-height: 1.3;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.audit-btn-copy {
+  color: var(--council-subtle, var(--dim));
+}
+
+.audit-btn-peek:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: var(--council-danger, #ef4444);
+}
+
+.audit-btn-copy:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+  border-color: var(--fg);
+}
+
+.audit-col-status {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  width: 32px;
+  text-align: right;
+}
+
+.audit-status--ok, .audit-status--done { color: var(--council-success, #4eb870); }
+.audit-status--fail, .audit-status--error { color: var(--council-danger, #ef4444); font-weight: 800; }
+.audit-status--run { color: #50a0df; animation: audit-blink 1.5s infinite; }
+.audit-status--warn, .audit-status--block { color: var(--council-warning, #e0b845); }
+
+@keyframes audit-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+.audit-peek-drawer {
+  background: color-mix(in srgb, var(--panel) 90%, #000);
+  border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--council-danger, #ef4444);
+  padding: 6px 12px;
+  animation: logCardIn 0.15s ease both;
+}
+
+.audit-peek-content {
+  margin: 0;
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 10px;
+  line-height: 1.4;
+  color: #fca5a5;
+  max-height: 160px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── Live Tool Drawer Accordion in Execution Stream ──────────────── */
+.ghost-tool-card.open {
+  border-color: var(--council-line, var(--border));
+}
+
+.ghost-tool-card.open .ghost-tool-body {
+  max-height: 400px;
+  overflow-y: auto;
+  border-top: 1px solid var(--border);
+  padding: 6px 10px;
+  opacity: 1;
+}
+
+.ghost-tool-card.open .ghost-tool-chevron {
+  transform: rotate(90deg);
+}
+
+.ghost-tool-card.is-running {
+  border-color: color-mix(in srgb, var(--council-copper, #df8e45) 45%, transparent);
+}
+
+.ghost-tool-card.is-running .row.ghost-tool-header {
+  background: color-mix(in srgb, var(--council-copper, #df8e45) 6%, transparent);
+}
+
+.tool-duration-badge {
+  font-family: var(--code-font, monospace);
+  font-size: 10px;
+  color: var(--muted, var(--council-subtle));
+  margin-left: 6px;
+  font-weight: 500;
+  opacity: 0.8;
+}
+
+.ghost-tool-running-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--code-font, monospace);
+  font-size: 11px;
+  color: var(--dim);
+  padding: 4px 0;
 }

@@ -52,6 +52,99 @@ function _getFileVersion(fileVersions, path) {
   return null;
 }
 
+function _copyToClipboard(text) {
+  if (!text) return Promise.resolve(false);
+  if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
+    return navigator.clipboard.writeText(text).then(() => true).catch(() => _fallbackCopy(text));
+  }
+  return Promise.resolve(_fallbackCopy(text));
+}
+
+function _fallbackCopy(text) {
+  if (typeof document === 'undefined') return false;
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    ta.style.pointerEvents = 'none';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const success = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return Boolean(success);
+  } catch (err) {
+    return false;
+  }
+}
+
+function _shortPath(p) {
+  if (!p) return '';
+  const parts = String(p).replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || '';
+}
+
+function _parseArgs(cmd) {
+  if (!cmd || typeof cmd !== 'string') return {};
+  const trimmed = cmd.trim();
+  if (!trimmed.startsWith('{')) return {};
+  try {
+    const p = JSON.parse(trimmed);
+    return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {};
+  } catch(e) {
+    return {};
+  }
+}
+
+function _extractToolTarget(tool, args = {}, cmd = '') {
+  let a = args && typeof args === 'object' ? args : {};
+  if ((!a || Object.keys(a).length === 0) && typeof cmd === 'string' && cmd.trim().startsWith('{')) {
+    try {
+      const parsed = JSON.parse(cmd.trim());
+      if (parsed && typeof parsed === 'object') a = parsed;
+    } catch {}
+  }
+  const t = String(tool || '').toLowerCase();
+  if (t === 'glob') {
+    const pat = a.pattern || a.glob || a.path || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+    return pat ? String(pat) : '';
+  }
+  if (t === 'grep') {
+    const q = a.query || a.pattern || a.search || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+    const p = a.path ? ` in ${_shortPath(a.path)}` : '';
+    return q ? `"${q}"${p}` : '';
+  }
+  if (t === 'ls' || t === 'list_dir') {
+    return a.path || a.dir || '.';
+  }
+  if (t === 'read_file' || t === 'view_file' || t === 'edit_file' || t === 'write_file' || t === 'write_to_file') {
+    const p = a.path || a.file || a.TargetFile || (typeof cmd === 'string' && !cmd.startsWith('{') ? cmd.trim() : '');
+    return _shortPath(p);
+  }
+  if (t === 'bash' || t === 'python' || t === 'run_command') {
+    const c = a.command || a.cmd || a.CommandLine || cmd || '';
+    return typeof c === 'string' ? c.split('\n')[0].slice(0, 50) : '';
+  }
+  const generic = a.path || a.file || a.name || a.query || a.pattern || '';
+  if (typeof generic === 'string' && generic && !generic.startsWith('{')) {
+    return _shortPath(generic);
+  }
+  return '';
+}
+
+function _shortToolName(tool) {
+  const t = String(tool || '').toLowerCase();
+  if (t === 'write_file' || t === 'write_to_file') return 'write';
+  if (t === 'read_file' || t === 'view_file') return 'read';
+  if (t === 'edit_file' || t === 'replace_file_content') return 'edit';
+  if (t === 'patch_file') return 'patch';
+  if (t === 'run_command') return 'bash';
+  if (t === 'list_dir') return 'ls';
+  if (t.endsWith('_file')) return t.replace(/_file$/, '');
+  return t;
+}
+
 /* ─── State ─────────────────────────────────────────────────────── */
 class CouncilState {
   constructor() {
@@ -867,6 +960,13 @@ class CouncilUI {
     // is deliberately excluded because it changes while a burst is running.
     this._openBurstKeys = new Set();
     this._burstStatus = new Map();
+    this._manuallyOpenedTools = new Set();
+    this._manuallyClosedTools = new Set();
+    this._manuallyClosedBursts = new Set();
+    this._peekDrawers = new Set();
+    this._logSearchQuery = '';
+    this._currentPhaseCount = 0;
+    this._lastViewedPhaseCount = 0;
     // Handle for the pending scroll-to-bottom rAF. Cancelled and replaced
     // on every render so only one rAF is ever queued at a time, preventing
     // accumulation at high event rates.
@@ -938,6 +1038,13 @@ class CouncilUI {
     // Clear per-session open burst state so the new run starts fully collapsed.
     this._openBurstKeys.clear();
     this._burstStatus.clear();
+    this._manuallyOpenedTools.clear();
+    this._manuallyClosedTools.clear();
+    this._manuallyClosedBursts.clear();
+    this._peekDrawers.clear();
+    this._logSearchQuery = '';
+    this._currentPhaseCount = 0;
+    this._lastViewedPhaseCount = 0;
     if (this._renderRaf) { cancelAnimationFrame(this._renderRaf); this._renderRaf = null; }
     this._queuedState = null;
     this._queuedEventType = null;
@@ -989,6 +1096,33 @@ class CouncilUI {
     this._state.selfReflections = [];
     this._state.actualTokens = 0;
     this._logFilter = 'ALL';
+    this._openBurstKeys.clear();
+    this._burstStatus.clear();
+    this._manuallyOpenedTools.clear();
+    this._manuallyClosedTools.clear();
+    this._manuallyClosedBursts.clear();
+    this._peekDrawers.clear();
+    this._logSearchQuery = '';
+    this._currentPhaseCount = 0;
+    this._lastViewedPhaseCount = 0;
+    const logBadge = document.getElementById('ctx-log-badge');
+    if (logBadge) {
+      logBadge.hidden = true;
+      logBadge.textContent = '';
+      logBadge.classList.remove('ctx-tab-badge--warning', 'ctx-tab-badge--error');
+    }
+    const summaryEl = document.getElementById('council-log-summary');
+    if (summaryEl) {
+      summaryEl.textContent = '0 events · 0 errors';
+    }
+    const searchInput = document.getElementById('council-log-search');
+    if (searchInput) {
+      searchInput.value = '';
+    }
+    const searchInputInline = document.getElementById('council-log-search-inline');
+    if (searchInputInline) {
+      searchInputInline.value = '';
+    }
     // Reset animation-tracking cursors so next run starts fresh
     this._lastRenderedCount = 0;
     this._lastLogFilter = 'ALL';
@@ -1036,9 +1170,11 @@ class CouncilUI {
 
   // ponytail: pre-compute totalChars in state.update() to make this O(1)
   _estimatedTokens(state) {
+    if (!state) return 0;
     if (state.actualTokens > 0) return state.actualTokens;
     let chars = 0;
-    state.log.forEach(event => {
+    const log = Array.isArray(state.log) ? state.log : [];
+    log.forEach(event => {
       if (typeof event?.text === 'string') chars += event.text.length;
       if (typeof event?.code === 'string') chars += event.code.length;
     });
@@ -1506,15 +1642,17 @@ class CouncilUI {
 
   /* Ghost Editor: stream text, toggle cursor blink */
   _renderGhostEditor(state, eventType) {
-    const diffMemo = new Map();
-    const el = document.getElementById('council-ghost-editor');
-    const ledger = document.getElementById('council-ghost-stream-ledger');
-    if (!el) return;
-    if (!ledger) {
-      el.textContent = state.thoughts;
-      el.scrollTop = el.scrollHeight;
-      return;
-    }
+    if (!state) return;
+    try {
+      const diffMemo = new Map();
+      const el = document.getElementById('council-ghost-editor');
+      const ledger = document.getElementById('council-ghost-stream-ledger');
+      if (!el) return;
+      if (!ledger) {
+        el.textContent = state.thoughts;
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
 
     // Toggle idle state
     const running = state.status === 'IN_PROGRESS' || state.status === 'BLOCKED';
@@ -1613,7 +1751,8 @@ class CouncilUI {
       try { const p = JSON.parse(trimmed); return (p && typeof p === 'object' && !Array.isArray(p)) ? p : {}; } catch(e) { return {}; }
     };
 
-    state.log.forEach((e, eventIndex) => {
+    const rawLog = Array.isArray(state?.log) ? state.log : [];
+    rawLog.forEach((e, eventIndex) => {
       if (!e) return;
       const agent = e.agent || 'system';
 
@@ -1639,7 +1778,7 @@ class CouncilUI {
         if (agent === 'strategist') {
           outcome = 'Plan updated';
         } else if (agent === 'manager') {
-          const review = this._parseManagerReview(e, state.log);
+          const review = this._parseManagerReview(e, rawLog);
           outcome = `Review ${String(review.verdict || 'received').toLowerCase()}`;
         }
         const dur = (() => {
@@ -1648,7 +1787,7 @@ class CouncilUI {
           const curTime = Date.parse(e.timestamp || e.ts);
           if (Number.isFinite(curTime)) {
             for (let prevIdx = eventIndex - 1; prevIdx >= 0; prevIdx--) {
-              const pe = state.log[prevIdx];
+              const pe = rawLog[prevIdx];
               const pt = Date.parse(pe?.timestamp || pe?.ts);
               if (Number.isFinite(pt) && curTime >= pt) {
                 const diff = curTime - pt;
@@ -1693,7 +1832,7 @@ class CouncilUI {
         }
       }
       else if (e.event === 'review_required') {
-        const review = this._parseManagerReview(e, state.log);
+        const review = this._parseManagerReview(e, rawLog);
         blocks.push({
           type: 'manager_output',
           verdict: review.verdict,
@@ -1707,6 +1846,7 @@ class CouncilUI {
         // to parsing the command string for backward compat with old log replays.
         const args = (e.extra?.args && typeof e.extra.args === 'object' && !Array.isArray(e.extra.args))
           ? e.extra.args : _parseArgs(cmd);
+        const startTime = e.ts ? new Date(e.ts).getTime() : Date.now();
         const toolBlock = {
           type: 'tool_call',
           tool: typeof e.extra?.tool === 'string' ? e.extra.tool : '',
@@ -1715,7 +1855,9 @@ class CouncilUI {
           status: 'RUNNING',
           taskId: typeof e.extra?.task_id === 'string' ? e.extra.task_id : '',
           sourceIndex: eventIndex,
-          agent: agent
+          agent: agent,
+          startTime: startTime,
+          durationMs: null
         };
         blocks.push(toolBlock);
         runningToolCallsByScope.set(_toolScope(agent, toolBlock.taskId, toolBlock.tool), toolBlock);
@@ -1728,6 +1870,11 @@ class CouncilUI {
         if (lastTool && lastTool.status === 'RUNNING') {
           lastTool.status = e.exit_code === 0 || e.exit_code === null ? 'SUCCESS' : 'FAILED';
           lastTool.output = typeof e.extra?.output === 'string' ? e.extra.output : '';
+          const endTime = e.ts ? new Date(e.ts).getTime() : Date.now();
+          if (lastTool.startTime && endTime >= lastTool.startTime) {
+            lastTool.durationMs = endTime - lastTool.startTime;
+          }
+          if (e.extra?.duration_ms) lastTool.durationMs = e.extra.duration_ms;
           runningToolCallsByScope.delete(scope);
         } else {
           const cmd = typeof e.extra?.command === 'string' ? e.extra.command : '';
@@ -1742,7 +1889,8 @@ class CouncilUI {
             output: typeof e.extra?.output === 'string' ? e.extra.output : '',
             taskId: taskId,
             sourceIndex: eventIndex,
-            agent: agent
+            agent: agent,
+            durationMs: e.extra?.duration_ms || null
           });
         }
       }
@@ -1791,21 +1939,33 @@ class CouncilUI {
             _burstScope(blocks[bj]) === scope
           ) bj++;
           const run = blocks.slice(bi, bj);
-          if (run.length >= 2) {
-            const isRunning  = live && run.some(r => r.status === 'RUNNING');
-            const hasFailure = run.some(r => r.status === 'FAILED');
+          // If the last item in run is currently RUNNING, separate it out so the
+          // live active tool accordion drawer is expanded and visible!
+          let completedRun = run;
+          let runningItem = null;
+          if (live && run.length > 0 && run[run.length - 1].status === 'RUNNING') {
+            completedRun = run.slice(0, -1);
+            runningItem = run[run.length - 1];
+          }
+
+          if (completedRun.length >= 2) {
+            const hasFailure = completedRun.some(r => r.status === 'FAILED');
             processedBlocks.push({
               type: 'burst_group',
-              items: run,
-              running: isRunning,
+              items: completedRun,
+              running: false,
               hasFailure,
-              checkpoint: _burstCheckpoint(run),
-              taskId: run[0].taskId || '',
-              agent: run[0].agent || 'implementer',
-              sourceIndex: run[0].sourceIndex
+              checkpoint: _burstCheckpoint(completedRun),
+              taskId: completedRun[0].taskId || '',
+              agent: completedRun[0].agent || 'implementer',
+              sourceIndex: completedRun[0].sourceIndex
             });
-          } else {
-            processedBlocks.push(...run);
+          } else if (completedRun.length === 1) {
+            processedBlocks.push(completedRun[0]);
+          }
+
+          if (runningItem) {
+            processedBlocks.push(runningItem);
           }
           bi = bj;
         } else {
@@ -2077,14 +2237,55 @@ class CouncilUI {
       };
     };
 
+    // Helper: format duration in human readable form (e.g. 420ms, 1.2s)
+    const _fmtDuration = (ms) => {
+      const n = Number(ms);
+      if (ms === null || ms === undefined || isNaN(n) || n < 0) return '';
+      if (n < 1000) return `${Math.round(n)}ms`;
+      return `${(n / 1000).toFixed(1)}s`;
+    };
+
     // Helper: render tool call card matching cockpit ledger row
     const _renderToolCard = (b, stepNum, memo) => {
-      const args = b.args || {};
+      try {
+        const args = b.args || {};
+      const isRunning = (b.status === 'RUNNING' || b.status === 'IN_PROGRESS');
       const statusCls = b.status === 'SUCCESS' ? 'st--done' : b.status === 'FAILED' ? 'st--failed' : 'st--running';
       const target = _extractToolTarget(b.tool, args, b.command);
       const summary = _toolSummary(b.tool, args, b.command);
       const displayLabel = target || summary;
-      const body = _toolBody(b.tool, args, b.command, b.output);
+      let body = _toolBody(b.tool, args, b.command, b.output);
+
+      const toolKey = [
+        'tool',
+        encodeURIComponent(b.agent || 'impl'),
+        encodeURIComponent(b.taskId || ''),
+        encodeURIComponent(b.tool || ''),
+        String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
+      ].join(':');
+
+      let isOpen;
+      if (this._manuallyOpenedTools.has(toolKey)) {
+        isOpen = true;
+      } else if (this._manuallyClosedTools.has(toolKey)) {
+        isOpen = false;
+      } else {
+        isOpen = isRunning; // Live accordion: expands when running, auto-collapses on finish!
+      }
+
+      const durText = _fmtDuration(b.durationMs);
+      const durHtml = durText ? `<span class="tool-duration-badge" title="Execution duration">— ${_esc(durText)}</span>` : '';
+
+      // If running and body lacks live output, inject running activity indicator
+      if (isRunning && !b.output) {
+        body = `
+          <div class="ghost-tool-section-label">live activity</div>
+          <div class="ghost-tool-running-indicator">
+            <span class="active-spinner" aria-hidden="true"></span>
+            <span class="ghost-tool-running-cmd">${_esc(b.command || displayLabel)}</span>
+          </div>
+        ` + (body || '');
+      }
 
       let diffHtml = '';
       if (b.tool === 'write_file' || b.tool === 'edit_file') {
@@ -2101,7 +2302,7 @@ class CouncilUI {
       const role = _resolveRole(b.agent || 'impl');
 
       return `
-        <div class="ghost-tool-card" style="border:none;margin:0;">
+        <div class="ghost-tool-card ${isOpen ? 'open' : ''} ${isRunning ? 'is-running' : ''}" data-tool-key="${_esc(toolKey)}" style="border:none;margin:0;">
           <div class="row ghost-tool-header" tabindex="0">
             <span class="id">${stepNum}</span>
             <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
@@ -2110,11 +2311,26 @@ class CouncilUI {
               <span class="tool-tag tool-tag--${_esc(b.tool)}" title="${_esc(b.tool)}">${_esc(_shortToolName(b.tool))}</span>
               <span class="tx" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>
               ${diffHtml}
-              ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
+              ${durHtml}
+              ${body ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isOpen ? '▼' : '▶'}</span>` : ''}
             </div>
           </div>
           ${body ? '<div class="ghost-tool-body">' + body + '</div>' : ''}
         </div>`;
+      } catch (toolCardErr) {
+        console.warn('[Council] _renderToolCard fallback error:', toolCardErr);
+        return `
+          <div class="ghost-tool-card" style="border:none;margin:0;">
+            <div class="row ghost-tool-header">
+              <span class="id">${stepNum}</span>
+              <span class="st st--done">✓</span>
+              <span class="ag ag--impl">IMPL</span>
+              <div class="ct">
+                <span class="tx">${_esc(b.command || b.tool || 'tool')}</span>
+              </div>
+            </div>
+          </div>`;
+      }
     };
 
     let rowIndex = 1;
@@ -2308,7 +2524,7 @@ class CouncilUI {
           }
         }
         this._burstStatus.set(_burstKey, b.running);
-        const _isOpen   = _openBursts.has(_burstKey);
+        const _isOpen   = _openBursts.has(_burstKey) || (b.running && !this._manuallyClosedBursts?.has(_burstKey));
         const _total = b.items.length;
         const role = _resolveRole(b.agent || 'impl');
         const statusCls = b.running ? 'st--running' : b.hasFailure ? 'st--failed' : 'st--done';
@@ -2316,19 +2532,35 @@ class CouncilUI {
         const _telemetry = formatBurstTelemetry(b.items, b.running);
         const _mutationCls = _telemetry.isMutation ? ' is-mutation' : '';
 
-        const _itemsHtml = b.items.map(item => {
+        const _itemsHtml = b.items.map((item, itemIdx) => {
           const _target = _extractToolTarget(item.tool, item.args || {}, item.command);
           const _is = _toolSummary(item.tool, item.args || {}, item.command);
           const _itemStatusCls = item.status === 'SUCCESS' ? 'st--done' : item.status === 'FAILED' ? 'st--failed' : 'st--running';
           const _isi = _statusIcon(item.status);
           const _display = _target ? `${_target}` : _is;
-          return `<div class="row row--burst-item" tabindex="0">
-            <span class="id id--sub" style="color:var(--muted);opacity:0.35;font-size:9px;font-family:var(--font-mono, monospace);">··</span>
-            <span class="st ${_itemStatusCls}">${_isi}</span>
-            <span class="tool-tag tool-tag--${_esc(item.tool)}" title="${_esc(item.tool)}">${_esc(_shortToolName(item.tool))}</span>
-            <div class="ct">
-              <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
+          const _itemDur = _fmtDuration(item.durationMs);
+          const _itemDurHtml = _itemDur ? `<span class="tool-duration-badge">— ${_esc(_itemDur)}</span>` : '';
+          const itemKey = [
+            'tool',
+            encodeURIComponent(b.agent || 'impl'),
+            encodeURIComponent(b.taskId || ''),
+            encodeURIComponent(item.tool || ''),
+            String(Number.isFinite(item.sourceIndex) ? item.sourceIndex : itemIdx)
+          ].join(':');
+          const isItemOpen = this._manuallyOpenedTools.has(itemKey);
+          let itemBody = _toolBody(item.tool, item.args || {}, item.command, item.output);
+          return `<div class="ghost-tool-card ${isItemOpen ? 'open' : ''}" data-tool-key="${_esc(itemKey)}" style="border:none;margin:0;">
+            <div class="row row--burst-item ghost-tool-header" tabindex="0" style="cursor:pointer;">
+              <span class="id id--sub" style="color:var(--muted);opacity:0.35;font-size:9px;font-family:var(--font-mono, monospace);">··</span>
+              <span class="st ${_itemStatusCls}">${_isi}</span>
+              <span class="tool-tag tool-tag--${_esc(item.tool)}" title="${_esc(item.tool)}">${_esc(_shortToolName(item.tool))}</span>
+              <div class="ct">
+                <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
+                ${_itemDurHtml}
+                ${itemBody ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isItemOpen ? '▼' : '▶'}</span>` : ''}
+              </div>
             </div>
+            ${itemBody ? '<div class="ghost-tool-body">' + itemBody + '</div>' : ''}
           </div>`;
         }).join('');
 
@@ -2444,6 +2676,13 @@ class CouncilUI {
       this._telemetry.updateUI();
     }
     this._updateAutoFollowIndicator();
+    } catch (streamErr) {
+      console.warn('[Council] Execution stream render error — auto-recovery active:', streamErr);
+      const ledger = document.getElementById('council-ghost-stream-ledger');
+      if (ledger) {
+        ledger.innerHTML = `<div class="row" style="color:var(--dim);font-family:var(--code-font,monospace);font-size:11px;padding:12px;">Execution stream active · ${Array.isArray(state?.log) ? state.log.length : 0} events recorded</div>`;
+      }
+    }
   }
 
   /* Panel 2 Identity (Decision 3): Execution stream permanently owns the body */
@@ -2922,9 +3161,9 @@ class CouncilUI {
           // ERROR STATE
           let errorMessage = 'An unknown error occurred during execution.';
           if (Array.isArray(state.log)) {
-            const errEv = [...state.log].reverse().find(e => e && (e.event === 'error' || e.type === 'error' || e.status === 'FAILED' || e.text?.toLowerCase().includes('failed') || e.text?.toLowerCase().includes('error')));
+            const errEv = [...state.log].reverse().find(e => e && (e.event === 'error' || e.type === 'error' || e.status === 'FAILED' || (typeof e.text === 'string' && (e.text.toLowerCase().includes('failed') || e.text.toLowerCase().includes('error')))));
             if (errEv && errEv.text) {
-              errorMessage = errEv.text;
+              errorMessage = typeof errEv.text === 'string' ? errEv.text : JSON.stringify(errEv.text);
             }
           }
           el.innerHTML = `
@@ -3094,424 +3333,483 @@ class CouncilUI {
   }
 
   /* Captain's Log: Chair Brief card + timeline entries */
+  /* Captain's Log: The Calm Audit Ledger */
   _renderCaptainsLog(state) {
     const el = document.getElementById('council-captains-log');
     if (!el) return;
-    const keepPinnedToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 
-    // 1. Update status dot color and class
-    const dotEl = null; // council-log-status-dot removed in Stream-First redesign
-    // Update Log tab badge with event count
-    const logBadge = document.getElementById('ctx-log-badge');
-    const activeTab = document.querySelector('.council-ctx-tab.active');
-    const logTabActive = activeTab?.dataset?.tab === 'log';
-    if (logBadge) {
-      const count = state.log ? state.log.length : 0;
-      if (count > 0 && !logTabActive) {
-        logBadge.textContent = count > 99 ? '99+' : String(count);
-        logBadge.hidden = false;
-      } else {
-        logBadge.hidden = true;
-      }
-    }
+    try {
+      const keepPinnedToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
 
-    // 2. Update session ID display
-    const sidEl = document.getElementById('council-log-session-id');
-    if (sidEl) {
-      const fullId = state.sessionId || 'PENDING';
-      const shortId = fullId.length > 12 ? `${fullId.slice(0, 8)}…` : fullId;
-      sidEl.textContent = `ID: ${shortId}`;
-      sidEl.title = `Session ID: ${fullId} (click to copy)`;
-      sidEl.style.cursor = 'pointer';
-      if (!sidEl.dataset.hasCopyListener) {
-        sidEl.dataset.hasCopyListener = 'true';
-        sidEl.addEventListener('click', () => {
-          if (state.sessionId) {
-            navigator.clipboard?.writeText(state.sessionId);
-            const orig = sidEl.textContent;
-            sidEl.textContent = 'COPIED!';
-            setTimeout(() => { sidEl.textContent = orig; }, 1200);
-          }
-        });
-      }
-    }
+      // Preserve focus in inline search input across re-renders if active
+      const activeEl = document.activeElement;
+      const isInlineSearchFocused = Boolean(activeEl && activeEl.id === 'council-log-search-inline');
+      const inlineSelStart = isInlineSearchFocused ? activeEl.selectionStart : null;
 
-    // 3. Update footer button text and state
-    const revertBtn = document.getElementById('council-revert-btn');
-    if (revertBtn) {
-      if (state.status === 'IN_PROGRESS' || state.status === 'BLOCKED') {
-        revertBtn.textContent = 'Restart run';
-        revertBtn.disabled = false;
-      } else if (state.status === 'COMPLETE') {
-        revertBtn.textContent = 'Restart from last brief';
-        revertBtn.disabled = false;
-      } else {
-        revertBtn.textContent = 'Restart from brief';
-        revertBtn.disabled = true;
-      }
-    }
-
-    // 4. Update footer token display
-    const tokens = this._estimatedTokens(state);
-    const tokensEl = document.getElementById('council-log-tokens');
-    if (tokensEl) {
-      let suffix = '';
-      if (state.contextBudget > 0) {
-        const budgetPercent = Math.min(100, Math.round((tokens / state.contextBudget) * 100));
-        suffix = ` / ${state.contextBudget.toLocaleString()} (${budgetPercent}%)`;
-      }
-      if (state.compactCount > 0) {
-        suffix += ` · ${state.compactCount} compacts`;
-      }
-      tokensEl.textContent = tokens.toLocaleString() + ' tokens' + suffix;
-    }
-
-    let html = '';
-
-    // Directive Context Box (Chair Brief)
-    if (state.chairBrief) {
-      const text = _esc(state.chairBrief.text || '');
-      html += `
-        <div class="log-directive-box">
-          <p class="log-directive-text">
-            <span class="log-directive-label">DIRECTIVE:</span> ${text}
-          </p>
-        </div>`;
-    }
-
-    // Filter selector bar — segmented pill control
-    const filter = this._logFilter || 'ALL';
-    html += `
-      <div class="log-filters-pill-group">
-        <div class="log-filters-pill-track">
-          <button class="log-filter-pill ${filter === 'ALL'         ? 'active' : ''}" data-filter="ALL">ALL</button>
-          <button class="log-filter-pill ${filter === 'STRATEGIST'  ? 'active' : ''}" data-filter="STRATEGIST">PLAN</button>
-          <button class="log-filter-pill ${filter === 'IMPLEMENTER' ? 'active' : ''}" data-filter="IMPLEMENTER">BUILD</button>
-          <button class="log-filter-pill ${filter === 'MANAGER'     ? 'active' : ''}" data-filter="MANAGER">REVIEW</button>
-        </div>
-      </div>`;
-
-    // Cache task attempts by taskId to avoid quadratic getTaskAttempts calls in the loop
-    const attemptsByTask = {};
-    state.log.forEach(e => {
-      if (!e) return;
-      if (e.event === 'task_status_update' && e.extra?.task_id) {
-        const taskId = e.extra.task_id;
-        if (!attemptsByTask[taskId]) {
-          attemptsByTask[taskId] = [];
-        }
-        const status = e.extra?.task_status;
-        if (status === 'FAILED') {
-          attemptsByTask[taskId].push({ status: 'REJECTED', note: 'Compiler/Error' });
-        } else if (status === 'DONE') {
-          attemptsByTask[taskId].push({ status: 'APPROVED', note: '' });
-        }
-      }
-    });
-
-    // Process and group timeline entries
-    const grouped = [];
-    let currentEntry = null;
-
-    state.log.forEach(e => {
-      if (!e) return;
-      if (e.event === 'thought_delta' || e.event === 'tool_progress') return;
-      if (e.agent === 'chair' && e.event === 'status_changed') return;
-
-      const agent = typeof e.agent === 'string' ? e.agent : 'system';
-      const time = typeof e.ts === 'string' ? e.ts.slice(11, 19) : new Date().toTimeString().slice(0, 8);
-      const taskId = e.extra && typeof e.extra.task_id === 'string' ? e.extra.task_id : undefined;
-      const previousEvent = currentEntry?.rawEvents?.[currentEntry.rawEvents.length - 1];
-      const repeatedFailure = e.event === 'error' && previousEvent?.event === 'error'
-        && compactFailureReason(e.text, 'execution issue') === compactFailureReason(previousEvent.text, 'execution issue');
-      
-      const isNewPhase = !currentEntry || 
-                         currentEntry.agent !== agent || 
-                         (taskId && currentEntry.taskId !== taskId) ||
-                         e.event === 'complete' || 
-                         (e.event === 'error' && !repeatedFailure);
-
-      if (isNewPhase) {
-        if (currentEntry) {
-          grouped.push(currentEntry);
-        }
-        currentEntry = {
-          id: 'grp-' + Math.random().toString(36).substr(2, 9),
-          time: time,
-          agent: agent,
-          title: '',
-          subtitle: '',
-          taskId: taskId,
-          files: [],
-          attempts: [],
-          rawEvents: [e]
-        };
-      } else {
-        currentEntry.rawEvents.push(e);
-      }
-
-      // Populate files from this event
-      const ops = parseFileOperations(e);
-      if (ops) {
-        ops.forEach(op => {
-          if (!currentEntry.files.some(existing => sameFileOperation(existing, op))) {
-            currentEntry.files.push(op);
-          }
+      // Build telemetry entries for the Calm Audit Ledger
+      const filter = this._logFilter || 'ALL';
+      const toolbar = document.getElementById('council-log-toolbar');
+      if (toolbar) {
+        toolbar.querySelectorAll('.log-filter-pill').forEach(btn => {
+          btn.classList.toggle('active', btn.dataset.filter === filter);
         });
       }
 
-      // If it's a task status update, accumulate attempts
-      if (e.event === 'task_status_update' && taskId) {
-        currentEntry.attempts = attemptsByTask[taskId] || [];
-      }
-    });
+      const entries = [];
+      const openToolEntries = new Map();
+      let phaseCount = 0;
+      let currentEntry = null;
 
-    if (currentEntry) {
-      grouped.push(currentEntry);
-    }
+      const rawLog = Array.isArray(state?.log) ? state.log : [];
+      rawLog.forEach((e, idx) => {
+        if (!e) return;
+        if (e.event === 'thought_delta' || e.event === 'tool_progress' || e.event === 'heartbeat' || e.event === 'metrics' || e.event === 'token_count') return;
+        if (e.agent === 'chair' && e.event === 'status_changed') return;
 
-    // Title / Subtitle resolution
-    grouped.forEach(grp => {
-      const first = grp.rawEvents[0];
-      const last = grp.rawEvents[grp.rawEvents.length - 1];
+        const agent = typeof e.agent === 'string' ? e.agent : 'system';
+        const time = typeof e.ts === 'string' ? e.ts.slice(11, 19) : new Date().toTimeString().slice(0, 8);
+        const taskId = e.extra?.task_id || '';
 
-      // Exclude low-level tool events from setting high-level timeline subtitles
-      const nonToolEvs = grp.rawEvents.filter(ev => !['tool_start', 'tool_output', 'tool_progress'].includes(ev.event));
-      const firstNonTool = nonToolEvs.length ? nonToolEvs[0] : null;
-      const lastNonTool = nonToolEvs.length ? nonToolEvs[nonToolEvs.length - 1] : null;
-
-      if (grp.agent === 'chair') {
-        grp.title = state.route === 'DIRECT' ? 'Direct Assessment' : 'Pipeline Instantiated';
-        grp.subtitle = compactAgentActivity('chair');
-      } else if (grp.agent === 'strategist') {
-        grp.title = 'PLAN · Dependency routing';
-        const planEvent = [...grp.rawEvents].reverse().find(ev => ev.extra?.dag?.nodes);
-        const planNodes = planEvent?.extra?.dag?.nodes || [];
-        const compactPlan = planNodes.map(n => ({
-          i: n.id,
-          t: n.summary || compactTaskLabel(n.description, n.id),
-          dp: n.depends_on || []
-        }));
-        const planCount = compactPlan.length;
-        const planWaves = executionWaveCount(compactPlan);
-        grp.subtitle = planCount
-          ? `${planCount} task${planCount === 1 ? '' : 's'} planned · ${planWaves} execution wave${planWaves === 1 ? '' : 's'}`
-          : 'Constructing execution plan';
-      } else if (grp.agent === 'implementer') {
-        if (grp.taskId) {
-          const statusEv = [...grp.rawEvents].reverse().find(ev => ev.event === 'task_status_update') || lastNonTool;
-          const node = statusEv?.extra?.dag?.nodes?.find(n => String(n.id) === String(grp.taskId));
-          const label = statusEv?.extra?.task_label || node?.summary || compactTaskLabel(node?.description, grp.taskId);
-          const taskState = String(statusEv?.extra?.task_status || statusEv?.status || '').toUpperCase();
-          grp.title = `BUILD · ${grp.taskId} ${label}`;
-          if (taskState === 'DONE') {
-            const fileCount = grp.files.length || (statusEv?.file_path ? 1 : 0);
-            grp.subtitle = `Approved · ${fileCount || 1} file${fileCount === 1 ? '' : 's'} updated`;
-          } else if (taskState === 'FAILED' || statusEv?.status === 'FAILED') {
-            grp.subtitle = `Rejected · ${compactFailureReason(statusEv?.text, 'execution issue')}`;
+        if (e.event === 'tool_start') {
+          const toolName = typeof e.extra?.tool === 'string' ? e.extra.tool : 'tool';
+          const cmd = typeof e.extra?.command === 'string' ? e.extra.command : '';
+          const args = (e.extra?.args && typeof e.extra.args === 'object' && !Array.isArray(e.extra.args))
+            ? e.extra.args : _parseArgs(cmd);
+          const target = _extractToolTarget(toolName, args, cmd) || cmd.slice(0, 50);
+          const scope = `${agent}|${taskId}|${toolName}`;
+          const entry = {
+            id: 'aud-' + idx,
+            ts: time,
+            agent: agent,
+            taskId: taskId ? String(taskId) : '',
+            action: _shortToolName(toolName),
+            target: target,
+            status: 'RUN',
+            isCommand: true,
+            isError: false,
+            command: cmd,
+            stderr: '',
+            files: []
+          };
+          entries.push(entry);
+          openToolEntries.set(scope, entry);
+          currentEntry = entry;
+        } else if (e.event === 'tool_output') {
+          const toolName = typeof e.extra?.tool === 'string' ? e.extra.tool : 'tool';
+          const scope = `${agent}|${taskId}|${toolName}`;
+          const existing = openToolEntries.get(scope);
+          const exitCode = (e.exit_code !== undefined && e.exit_code !== null) ? e.exit_code : e.extra?.exit_code;
+          const isFail = (exitCode !== undefined && exitCode !== null && Number(exitCode) !== 0) || Boolean(e.extra?.error) || e.status === 'FAILED';
+          let outText = '';
+          if (typeof e.extra?.output === 'string') {
+            outText = e.extra.output;
+          } else if (typeof e.text === 'string') {
+            outText = e.text;
+          } else if (e.text && typeof e.text === 'object') {
+            try { outText = JSON.stringify(e.text, null, 2); } catch (_) { outText = String(e.text); }
+          } else if (e.text != null) {
+            outText = String(e.text);
+          }
+          if (existing) {
+            existing.status = isFail ? 'FAIL' : 'OK';
+            existing.isError = isFail;
+            existing.stderr = outText;
+            openToolEntries.delete(scope);
+            currentEntry = existing;
           } else {
-            grp.subtitle = `Running · ${label}`;
+            const cmd = typeof e.extra?.command === 'string' ? e.extra.command : '';
+            const args = (e.extra?.args && typeof e.extra.args === 'object' && !Array.isArray(e.extra.args))
+              ? e.extra.args : _parseArgs(cmd);
+            const target = _extractToolTarget(toolName, args, cmd) || outText.slice(0, 50);
+            const entry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: agent,
+              taskId: taskId ? String(taskId) : '',
+              action: _shortToolName(toolName),
+              target: target,
+              status: isFail ? 'FAIL' : 'OK',
+              isCommand: true,
+              isError: isFail,
+              command: cmd,
+              stderr: outText,
+              files: []
+            };
+            entries.push(entry);
+            currentEntry = entry;
           }
         } else {
-          grp.title = 'BUILD · Code updates';
-          grp.subtitle = 'Writing implementation changes';
+          phaseCount++;
+          if (e.event === 'plan_created' || (e.agent === 'strategist' && e.extra?.dag)) {
+            const nodes = e.extra?.dag?.nodes || [];
+            const waves = executionWaveCount(nodes);
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'strategist',
+              action: 'PLAN',
+              target: nodes.length ? `${nodes.length} tasks scheduled (${waves} waves)` : 'Execution plan generated',
+              status: 'OK',
+              isCommand: false,
+              isError: false,
+              files: []
+            };
+            entries.push(currentEntry);
+          } else if (e.event === 'task_status_update') {
+            const tStatus = String(e.extra?.task_status || e.status || '').toUpperCase();
+            const isFail = tStatus === 'FAILED' || tStatus === 'ERROR';
+            const isDone = tStatus === 'DONE';
+            const label = e.extra?.task_label || (taskId ? `Task ${taskId}` : 'Task update');
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'implementer',
+              taskId: taskId ? String(taskId) : '',
+              action: taskId ? String(taskId) : 'TASK',
+              target: label + (isDone ? ' (Approved)' : isFail ? ` (${compactFailureReason(e.text, 'Execution failed')})` : ''),
+              status: isDone ? 'OK' : isFail ? 'FAIL' : 'RUN',
+              isCommand: false,
+              isError: isFail,
+              stderr: isFail ? (e.text || '') : '',
+              files: []
+            };
+            entries.push(currentEntry);
+          } else if (e.event === 'review_required' || e.agent === 'manager') {
+            const isFail = e.event === 'error' || e.status === 'FAILED' || e.extra?.review?.verdict === 'REJECT';
+            const isRevise = e.extra?.review?.verdict === 'REVISE';
+            const summary = e.extra?.review?.summary || compactFailureReason(e.text, 'Manager approval check');
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'manager',
+              action: 'REVIEW',
+              target: summary,
+              status: isFail ? 'FAIL' : isRevise ? 'WARN' : 'OK',
+              isCommand: false,
+              isError: isFail,
+              stderr: isFail ? (e.text || '') : '',
+              files: []
+            };
+            entries.push(currentEntry);
+          } else if (e.event === 'complete') {
+            const isDone = (e.status === 'COMPLETE' || state.status === 'COMPLETE');
+            const isFail = !isDone && (e.status === 'FAILED' || state.status === 'FAILED');
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'system',
+              action: 'DONE',
+              target: isDone ? 'Execution complete & verified' : 'Execution stopped',
+              status: isDone ? 'OK' : 'FAIL',
+              isCommand: false,
+              isError: isFail,
+              files: []
+            };
+            entries.push(currentEntry);
+          } else if (e.event === 'error') {
+            let errText = '';
+            if (typeof e.text === 'string') {
+              errText = e.text;
+            } else if (e.text && typeof e.text === 'object') {
+              try { errText = JSON.stringify(e.text, null, 2); } catch (_) { errText = String(e.text); }
+            } else if (e.text != null) {
+              errText = String(e.text);
+            }
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: agent,
+              action: 'ERROR',
+              target: compactFailureReason(errText, 'Execution issue'),
+              status: 'FAIL',
+              isCommand: false,
+              isError: true,
+              stderr: errText,
+              files: []
+            };
+            entries.push(currentEntry);
+          } else if (e.event === 'code_update') {
+            const fp = e.file_path || e.extra?.file_path || 'file';
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'implementer',
+              action: 'WRITE',
+              target: _shortPath(fp),
+              status: 'OK',
+              isCommand: false,
+              isError: false,
+              files: [{ op: 'WRITE', path: fp }]
+            };
+            entries.push(currentEntry);
+          } else if (e.agent === 'chair') {
+            currentEntry = {
+              id: 'aud-' + idx,
+              ts: time,
+              agent: 'chair',
+              action: 'ASSESS',
+              target: state.route === 'DIRECT' ? 'Direct Assessment' : 'Pipeline Routing',
+              status: 'OK',
+              isCommand: false,
+              isError: false,
+              files: []
+            };
+            entries.push(currentEntry);
+          }
         }
-      } else if (grp.agent === 'manager') {
-        const errorEvent = grp.rawEvents.find(ev => ev.event === 'error' || ev.status === 'FAILED');
-        const errorCount = grp.rawEvents.filter(ev => ev.event === 'error').length;
-        const attemptSuffix = errorCount > 1 ? ` · ${errorCount} attempts` : '';
-        const permissionEvent = grp.rawEvents.find(ev => ev.event === 'permission_request');
-        const recoveryEvent = grp.rawEvents.find(ev => ev.event === 'context_recovery');
-        if (errorEvent) {
-          grp.title = errorEvent.extra?.error_kind === 'context_overflow'
-            ? 'Context Recovery Failed'
-            : 'Manager Failed';
-          grp.subtitle = `Blocked · ${compactFailureReason(errorEvent.text, 'review failed')}${attemptSuffix}`;
-        } else if (permissionEvent) {
-          grp.title = 'Permission Required';
-          grp.subtitle = 'Waiting · permission required';
-        } else if (recoveryEvent) {
-          grp.title = 'Context Recovery';
-          grp.subtitle = 'Recovering · larger context review';
+
+        // Populate file operations from this event
+        const ops = parseFileOperations(e);
+        if (ops && currentEntry) {
+          ops.forEach(op => {
+            if (!currentEntry.files.some(existing => sameFileOperation(existing, op))) {
+              currentEntry.files.push(op);
+            }
+          });
+        }
+      });
+
+      this._currentPhaseCount = phaseCount;
+
+      // Calculate accurate error count and total events
+      const errorCount = entries.filter(item => item.isError).length + ((state.status === 'FAILED' && !entries.some(item => item.isError)) ? 1 : 0);
+      const totalEvents = Array.isArray(state?.log) ? state.log.length : 0;
+
+      // Synchronize header inside the Log panel with accurate summary
+      const summaryEl = document.getElementById('council-log-summary');
+      if (summaryEl) {
+        summaryEl.textContent = `${totalEvents} events · ${errorCount} error${errorCount === 1 ? '' : 's'}`;
+      }
+
+      // 1. Attention-Required Badge Model on Log tab
+      const logBadge = document.getElementById('ctx-log-badge');
+      const activeTab = document.querySelector('.council-ctx-tab.active');
+      const logTabActive = activeTab?.dataset?.tab === 'log';
+      if (logTabActive) {
+        this._lastViewedPhaseCount = this._currentPhaseCount || 0;
+      }
+      if (logBadge) {
+        if (logTabActive) {
+          logBadge.hidden = true;
+          logBadge.classList.remove('ctx-tab-badge--warning', 'ctx-tab-badge--error');
+        } else if (errorCount > 0) {
+          logBadge.textContent = `! ${errorCount}`;
+          logBadge.classList.add('ctx-tab-badge--warning');
+          logBadge.hidden = false;
         } else {
-          grp.title = 'Approval Gate Blocked';
-          grp.subtitle = 'Waiting · manager approval required';
+          logBadge.classList.remove('ctx-tab-badge--warning', 'ctx-tab-badge--error');
+          const unread = Math.max(0, (this._currentPhaseCount || 0) - (this._lastViewedPhaseCount || 0));
+          if (unread > 0) {
+            logBadge.textContent = unread > 99 ? '99+' : String(unread);
+            logBadge.hidden = false;
+          } else {
+            logBadge.hidden = true;
+          }
         }
+      }
+
+      // 2. Update session ID display with clipboard fallback
+      const sidEl = document.getElementById('council-log-session-id');
+      if (sidEl) {
+        const fullId = state.sessionId || 'PENDING';
+        const shortId = fullId.length > 12 ? `${fullId.slice(0, 8)}…` : fullId;
+        sidEl.textContent = `ID: ${shortId}`;
+        sidEl.title = `Session ID: ${fullId} (click to copy)`;
+        sidEl.style.cursor = 'pointer';
+        if (!sidEl.dataset.hasCopyListener) {
+          sidEl.dataset.hasCopyListener = 'true';
+          sidEl.addEventListener('click', () => {
+            if (state.sessionId) {
+              _copyToClipboard(state.sessionId).then(() => {
+                const orig = sidEl.textContent;
+                sidEl.textContent = 'COPIED!';
+                setTimeout(() => { if (sidEl.isConnected) sidEl.textContent = orig; }, 1200);
+              });
+            }
+          });
+        }
+      }
+
+      // 3. Update footer button text and state
+      const revertBtn = document.getElementById('council-revert-btn');
+      if (revertBtn) {
+        if (state.status === 'IN_PROGRESS' || state.status === 'BLOCKED') {
+          revertBtn.textContent = 'Restart run';
+          revertBtn.disabled = false;
+        } else if (state.status === 'COMPLETE') {
+          revertBtn.textContent = 'Restart from last brief';
+          revertBtn.disabled = false;
+        } else {
+          revertBtn.textContent = 'Restart from brief';
+          revertBtn.disabled = true;
+        }
+      }
+
+      // 4. Update footer token display
+      const tokens = this._estimatedTokens(state);
+      const tokensEl = document.getElementById('council-log-tokens');
+      if (tokensEl) {
+        let suffix = '';
+        if (state.contextBudget > 0) {
+          const budgetPercent = Math.min(100, Math.round((tokens / state.contextBudget) * 100));
+          suffix = ` / ${state.contextBudget.toLocaleString()} (${budgetPercent}%)`;
+        }
+        if (state.compactCount > 0) {
+          suffix += ` · ${state.compactCount} compacts`;
+        }
+        tokensEl.textContent = tokens.toLocaleString() + ' tokens' + suffix;
+      }
+
+      // Filter by facet
+      let filtered = entries;
+      if (filter === 'ERRORS') {
+        filtered = filtered.filter(item => item.isError);
+      } else if (filter === 'COMMANDS') {
+        filtered = filtered.filter(item => item.isCommand);
+      }
+
+      // Filter by search query
+      const query = (this._logSearchQuery || '').trim().toLowerCase();
+      if (query) {
+        filtered = filtered.filter(item => {
+          return (item.ts && String(item.ts).toLowerCase().includes(query)) ||
+                 (item.agent && String(item.agent).toLowerCase().includes(query)) ||
+                 (item.taskId && String(item.taskId).toLowerCase().includes(query)) ||
+                 (item.action && String(item.action).toLowerCase().includes(query)) ||
+                 (item.target && String(item.target).toLowerCase().includes(query)) ||
+                 (item.command && String(item.command).toLowerCase().includes(query)) ||
+                 (item.stderr && String(item.stderr).toLowerCase().includes(query));
+        });
+      }
+
+      let html = '';
+
+      // If toolbar is not present in external DOM, render an inline fallback toolbar
+      if (!document.getElementById('council-log-toolbar')) {
+        html += `
+          <div class="council-log-toolbar">
+            <div class="log-filters-pill-group">
+              <div class="log-filters-pill-track">
+                <button type="button" class="log-filter-pill ${filter === 'ALL' ? 'active' : ''}" data-filter="ALL">ALL</button>
+                <button type="button" class="log-filter-pill ${filter === 'ERRORS' ? 'active' : ''}" data-filter="ERRORS">ERRORS</button>
+                <button type="button" class="log-filter-pill ${filter === 'COMMANDS' ? 'active' : ''}" data-filter="COMMANDS">COMMANDS</button>
+              </div>
+            </div>
+            <div class="log-search-container">
+              <input type="text" class="log-search-input" id="council-log-search-inline" placeholder="Filter ledger entries..." value="${_esc(this._logSearchQuery || '')}" />
+            </div>
+          </div>`;
+      }
+
+      if (filtered.length) {
+        html += '<div class="audit-ledger-container" role="table" aria-label="Audit ledger">';
+        filtered.forEach(entry => {
+          let fileChipsHtml = '';
+          if (entry.files && entry.files.length) {
+            fileChipsHtml = entry.files.map(f => `
+              <button type="button" class="log-file-chip log-file-chip--${String(f.op || 'read').toLowerCase()}" data-path="${_esc(f.path)}" title="${_esc(f.path)}">
+                <span class="log-chip-op">${_esc(f.op || 'FILE')}</span>
+                <span class="log-chip-name">${_esc(_shortPath(f.path))}</span>
+              </button>
+            `).join('');
+          }
+
+          const isPeekOpen = this._peekDrawers?.has(entry.id);
+          const agentKey = String(entry.agent || 'system').toLowerCase();
+
+          html += `
+            <div class="audit-row ${entry.isError ? 'audit-row--error' : ''}" data-entry-id="${_esc(entry.id)}" ${entry.taskId ? `data-task-id="${_esc(entry.taskId)}"` : ''} role="row">
+              <span class="audit-col-time" role="cell">${_esc(entry.ts)}</span>
+              <span class="audit-col-agent audit-agent--${_esc(agentKey)}" role="cell" title="${_esc(entry.agent)}">${_esc(agentKey.slice(0, 4).toUpperCase())}</span>
+              <span class="audit-col-action ${entry.isCommand ? 'audit-action--cmd' : 'audit-action--phase'}" role="cell" title="${_esc(entry.action)}">${_esc(entry.action)}</span>
+              <div class="audit-col-target" role="cell">
+                <span class="audit-target-text" title="${_esc(entry.target)}">${_esc(entry.target)}</span>
+                ${fileChipsHtml}
+                ${entry.isError ? `
+                  <div class="audit-error-actions">
+                    ${entry.stderr ? `<button type="button" class="audit-btn-peek" data-peek-id="${_esc(entry.id)}">${isPeekOpen ? '[Hide Stderr]' : '[Peek Stderr]'}</button>` : ''}
+                    ${entry.command ? `<button type="button" class="audit-btn-copy" data-copy-text="${_esc(entry.command)}">[Copy Command]</button>` : (entry.stderr ? `<button type="button" class="audit-btn-copy" data-copy-text="${_esc(entry.stderr)}">[Copy Error]</button>` : '')}
+                  </div>
+                ` : ''}
+              </div>
+              <span class="audit-col-status audit-status--${_esc(entry.status.toLowerCase())}" role="cell">${_esc(entry.status)}</span>
+            </div>
+            ${entry.isError && entry.stderr ? `
+              <div class="audit-peek-drawer" id="peek-${_esc(entry.id)}" ${isPeekOpen ? '' : 'hidden'}>
+                <pre class="audit-peek-content">${_esc(entry.stderr)}</pre>
+              </div>
+            ` : ''}`;
+        });
+        html += '</div>';
       } else {
-        const checkEvent = lastNonTool || last;
-        const errorCount = grp.rawEvents.filter(ev => ev.event === 'error').length;
-        const attemptSuffix = errorCount > 1 ? ` · ${errorCount} attempts` : '';
-        if (checkEvent.event === 'complete') {
-          const prefix = state.route === 'DIRECT' ? 'Direct' : 'Pipeline';
-          grp.title = checkEvent.status === 'COMPLETE' ? `${prefix} Complete` : `${prefix} Failed`;
-          grp.subtitle = checkEvent.status === 'COMPLETE' ? 'Done · verified result available' : 'Blocked · execution stopped';
-        } else if (checkEvent.event === 'error') {
-          const prefix = state.route === 'DIRECT' ? 'Direct' : 'Pipeline';
-          grp.title = `${prefix} Intercept Error`;
-          grp.subtitle = `Blocked · ${compactFailureReason(checkEvent.text, 'execution issue')}${attemptSuffix}`;
-        } else {
-          grp.title = 'SYSTEM · Council update';
-          grp.subtitle = '';
+        html += '<div style="color:var(--council-subtle, var(--dim));font-size:11px;font-family:var(--code-font, monospace);text-align:center;margin:40px 0;opacity:0.7;">— No matching ledger entries —</div>';
+      }
+
+      // Skills & Reflections section
+      const hasSkills = state.successSkills && state.successSkills.length > 0;
+      const hasReflections = state.selfReflections && state.selfReflections.length > 0;
+      if (hasSkills || hasReflections) {
+        html += '<div class="log-skills-section">';
+        if (hasSkills) {
+          html += '<div class="log-skills-header">GENERATED SKILLS</div>';
+          state.successSkills.forEach((skill, i) => {
+            html += `
+              <div class="log-skill-item">
+                <span class="log-skill-name">${_esc(skill.name || 'Skill')}</span>
+                <button type="button" class="log-skill-view-btn" data-skill-idx="${i}">View</button>
+              </div>`;
+          });
+        }
+        if (hasReflections) {
+          html += '<div class="log-skills-header" style="margin-top:16px">SELF-REFLECTIONS</div>';
+          state.selfReflections.forEach((ref, i) => {
+            let lesson = ref.text;
+            try {
+              const parsed = JSON.parse(ref.text);
+              lesson = parsed.lesson || lesson;
+            } catch(e) {}
+            html += `
+              <div class="log-skill-item">
+                <span class="log-skill-name">${_esc(String(lesson).slice(0, 120))}</span>
+                <button type="button" class="log-reflection-view-btn" data-reflection-idx="${i}">View</button>
+              </div>`;
+          });
+        }
+        html += '</div>';
+      }
+
+      el.innerHTML = html;
+
+      // Restore inline search input focus and cursor if it was active
+      if (isInlineSearchFocused) {
+        const restored = document.getElementById('council-log-search-inline');
+        if (restored) {
+          restored.focus();
+          if (inlineSelStart !== null) {
+            try { restored.setSelectionRange(inlineSelStart, inlineSelStart); } catch(e) {}
+          }
         }
       }
-    });
 
-    // Apply Filter
-    const filteredEntries = filter === 'ALL' 
-      ? grouped 
-      : grouped.filter(g => String(g.agent || 'system').toUpperCase() === filter);
-
-    // Animation cursor: only cards BEYOND the previously rendered count are new.
-    // When the user switches filter tabs, reset the cursor so the newly visible
-    // set animates in once (intentional and expected for a tab switch).
-    if (this._lastLogFilter !== filter) {
-      this._lastLogFilter = filter;
-      this._lastRenderedCount = 0;
-    }
-    const animStartIdx = this._lastRenderedCount || 0;
-    this._lastRenderedCount = filteredEntries.length;
-
-    if (filteredEntries.length) {
-      html += '<div class="log-timeline-container">';
-      try {
-        filteredEntries.forEach((g, idx) => {
-          const isLast = idx === filteredEntries.length - 1;
-          const agentKey = String(g.agent || 'system').toLowerCase();
-          const agentUpper = agentKey.toUpperCase();
-          // Only truly new cards (beyond previous render count) get the entry animation.
-          // Existing cards get --existing which has animation:none — prevents all cards
-          // from re-animating on every SSE event during an active run.
-          const cardClass = idx >= animStartIdx ? 'log-timeline-card' : 'log-timeline-card log-timeline-card--existing';
-
-          // Role icon initials map
-          const iconMap = { chair: 'CH', strategist: 'ST', implementer: 'IM', manager: 'MG', system: 'SY' };
-          const initials = iconMap[agentKey] || agentUpper.slice(0, 2);
-
-          // File chips HTML
-          let filesHtml = '';
-          if (g.files && g.files.length) {
-            const chipClass = op => {
-              if (op === 'WRITE') return 'log-file-chip log-file-chip--write';
-              if (op === 'NEW')   return 'log-file-chip log-file-chip--new';
-              return 'log-file-chip log-file-chip--read';
-            };
-            const basename = p => {
-              const s = String(p || '');
-              const last = s.replace(/\\/g, '/').split('/').pop();
-              return last || s;
-            };
-            filesHtml = `
-              <div class="log-chips-container">
-                ${g.files.map(file => `
-                  <button class="${chipClass(file.op)}" data-path="${_esc(file.path)}" title="${_esc(file.path)}">
-                    <span class="log-chip-op">${_esc(file.op)}</span>
-                    <span class="log-chip-name">${_esc(basename(file.path))}</span>
-                  </button>`).join('')}
-              </div>`;
-          }
-
-          // Attempts HTML (unchanged logic, new structure)
-          let attemptsHtml = '';
-          if (g.attempts && g.attempts.length) {
-            attemptsHtml = `
-              <div class="log-attempts-container">
-                ${g.attempts.map((att, attIdx) => {
-                  const statusColor = att.status === 'APPROVED' ? 'var(--council-success)' : 'var(--council-danger)';
-                  return `
-                    <div class="log-attempt-item">
-                      <span class="log-attempt-prefix">Attempt ${attIdx + 1} —</span>
-                      <span class="log-attempt-status" style="color:${statusColor}">
-                        ${_esc(att.status)} ${att.status === 'APPROVED' ? '✓' : ''}
-                      </span>
-                      ${att.note ? `<span class="log-attempt-note">by ${_esc(att.note)}</span>` : ''}
-                    </div>`;
-                }).join('')}
-              </div>`;
-          }
-
-          html += `
-            <div class="log-timeline-row--v2">
-              <div class="log-timeline-track--v2">
-                <div class="log-role-icon" data-agent="${_esc(agentKey)}">${_esc(initials)}</div>
-                ${!isLast ? '<div class="log-timeline-line--v2"></div>' : ''}
-              </div>
-              <div class="${cardClass}" data-agent="${_esc(agentKey)}">
-                <div class="log-entry-meta">
-                  <span class="log-entry-time">${_esc(g.time)}</span>
-                  <span class="log-entry-agent-v2">
-                    <span class="log-entry-agent-dot"></span>${agentUpper}
-                  </span>
-                </div>
-                <div class="log-entry-title">${_esc(g.title)}</div>
-                ${g.subtitle ? `<div class="log-entry-subtitle">${_esc(g.subtitle)}</div>` : ''}
-                ${attemptsHtml}
-                ${filesHtml}
-              </div>
-            </div>`;
+      // Wire skills/reflection view buttons after DOM insertion
+      el.querySelectorAll('.log-skill-view-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const idx = parseInt(e.target.dataset.skillIdx);
+          this._openSkillInDocument(idx);
         });
-      } catch (renderErr) {
-        // Fallback: plain-text render so sidebar never goes blank
-        console.warn('[Council] _renderCaptainsLog v2 error — falling back to plain render:', renderErr);
-        filteredEntries.forEach(g => {
-          const agentUpper = String(g.agent || 'system').toUpperCase();
-          html += `<div class="log-timeline-row"><div class="log-timeline-track"><div class="log-timeline-dot"></div></div><div class="log-timeline-content"><div class="log-entry-meta"><span class="log-entry-time">${_esc(g.time)}</span><span class="log-entry-agent">${agentUpper}</span></div><div class="log-entry-title">${_esc(g.title)}</div>${g.subtitle ? `<div class="log-entry-subtitle">${_esc(g.subtitle)}</div>` : ''}</div></div>`;
-        });
-      }
-      html += '</div>';
-    } else {
-      html += '<div style="color:var(--log-text-muted);font-size:11px;text-align:center;margin-top:40px">— No events in this category —</div>';
-    }
-
-    // Skills & Reflections section
-    const hasSkills = state.successSkills && state.successSkills.length > 0;
-    const hasReflections = state.selfReflections && state.selfReflections.length > 0;
-    if (hasSkills || hasReflections) {
-      html += '<div class="log-skills-section">';
-      if (hasSkills) {
-        html += '<div class="log-skills-header">GENERATED SKILLS</div>';
-        state.successSkills.forEach((skill, i) => {
-          html += `
-            <div class="log-skill-item">
-              <span class="log-skill-name">${_esc(skill.name || 'Skill')}</span>
-              <button class="log-skill-view-btn" data-skill-idx="${i}">View</button>
-            </div>`;
-        });
-      }
-      if (hasReflections) {
-        html += '<div class="log-skills-header" style="margin-top:16px">SELF-REFLECTIONS</div>';
-        state.selfReflections.forEach((ref, i) => {
-          let lesson = ref.text;
-          try {
-            const parsed = JSON.parse(ref.text);
-            lesson = parsed.lesson || lesson;
-          } catch(e) {}
-          html += `
-            <div class="log-skill-item">
-              <span class="log-skill-name">${_esc(String(lesson).slice(0, 120))}</span>
-              <button class="log-reflection-view-btn" data-reflection-idx="${i}">View</button>
-            </div>`;
-        });
-      }
-      html += '</div>';
-    }
-
-    el.innerHTML = html;
-
-    // Wire skills/reflection view buttons after DOM insertion
-    el.querySelectorAll('.log-skill-view-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.skillIdx);
-        this._openSkillInDocument(idx);
       });
-    });
-    el.querySelectorAll('.log-reflection-view-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const idx = parseInt(e.target.dataset.reflectionIdx);
-        this._openReflectionInDocument(idx);
+      el.querySelectorAll('.log-reflection-view-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const idx = parseInt(e.target.dataset.reflectionIdx);
+          this._openReflectionInDocument(idx);
+        });
       });
-    });
 
-    if (keepPinnedToBottom) el.scrollTop = el.scrollHeight;
+      if (keepPinnedToBottom) el.scrollTop = el.scrollHeight;
+    } catch (ledgerErr) {
+      console.warn('[Council] Calm Audit Ledger render error — auto-recovery active:', ledgerErr);
+      el.innerHTML = '<div style="color:var(--fail,#ef4444);font-size:11px;font-family:var(--code-font,monospace);padding:12px;">Audit ledger encountered an issue. Events recorded: ' + (state.log ? state.log.length : 0) + '</div>';
+    }
   }
 
   /* Open skill/reflection content in the right-side document panel */
@@ -3568,7 +3866,7 @@ class CouncilUI {
         ? 'Override Manager'
         : 'Override';
     }
-    const planEvent = state.log.find(e => e.event === 'review_required');
+    const planEvent = Array.isArray(state?.log) ? state.log.find(e => e?.event === 'review_required') : null;
     const planText = planEvent?.extra?.plan || '';
     if (body) {
       body.textContent = planText ? 'Plan preview: ' + planText.replace(/[\r\n]+/g, ' ').slice(0, 150) + '...' : '';
@@ -3892,7 +4190,23 @@ class CouncilUI {
       const toolHeader = e.target.closest('.ghost-tool-header');
       if (toolHeader) {
         const card = toolHeader.closest('.ghost-tool-card');
-        if (card) card.classList.toggle('open');
+        if (card) {
+          const key = card.getAttribute('data-tool-key') || '';
+          const isOpen = card.classList.contains('open');
+          const nowOpen = !isOpen;
+          card.classList.toggle('open', nowOpen);
+          const chevron = card.querySelector('.ghost-tool-chevron');
+          if (chevron) chevron.textContent = nowOpen ? '▼' : '▶';
+          if (key) {
+            if (nowOpen) {
+              this._manuallyOpenedTools.add(key);
+              this._manuallyClosedTools.delete(key);
+            } else {
+              this._manuallyClosedTools.add(key);
+              this._manuallyOpenedTools.delete(key);
+            }
+          }
+        }
       }
 
       // Expand/collapse Burst group (.ghost-burst-header)
@@ -3901,15 +4215,22 @@ class CouncilUI {
         const group = burstHeader.closest('.ghost-burst-group');
         if (group) {
           const key    = group.getAttribute('data-burst-key') || '';
-          const isOpen = group.getAttribute('data-burst-open') === '1';
+          const isOpen = group.classList.contains('burst-open') || group.getAttribute('data-burst-open') === '1';
           const nowOpen = !isOpen;
           group.setAttribute('data-burst-open', nowOpen ? '1' : '0');
           group.classList.toggle('burst-open', nowOpen);
+          const chevron = group.querySelector('.ghost-burst-chevron');
+          if (chevron) chevron.textContent = nowOpen ? '▼' : '▶';
           // Mirror state into the instance Set so the next innerHTML
           // re-render can restore the open state without a DOM query.
           if (key) {
-            if (nowOpen) this._openBurstKeys.add(key);
-            else         this._openBurstKeys.delete(key);
+            if (nowOpen) {
+              this._openBurstKeys.add(key);
+              this._manuallyClosedBursts.delete(key);
+            } else {
+              this._openBurstKeys.delete(key);
+              this._manuallyClosedBursts.add(key);
+            }
           }
         }
       }
@@ -3984,27 +4305,93 @@ class CouncilUI {
         session.respond('cancel');
       } else if (state.status === 'COMPLETE') {
         const textarea = document.getElementById('message');
-        if (textarea && state.log.length) {
+        if (textarea && Array.isArray(state?.log) && state.log.length) {
           const brief = state.chairBrief?.text || '';
           if (brief) textarea.value = brief;
         }
       }
     });
 
-    // Wire log filters (pill) + file chip clipboard — single delegated listener, no double-bind
+    // Wire log toolbar (pill filters + search filter)
+    const logToolbar = document.getElementById('council-log-toolbar');
+    if (logToolbar && !logToolbar._wired) {
+      logToolbar._wired = true;
+      logToolbar.addEventListener('click', e => {
+        const pill = e.target.closest('.log-filter-pill');
+        if (pill) {
+          this._logFilter = pill.dataset.filter || 'ALL';
+          logToolbar.querySelectorAll('.log-filter-pill').forEach(b => {
+            b.classList.toggle('active', b === pill);
+          });
+          this._renderCaptainsLog(this._state);
+        }
+      });
+      const searchInput = document.getElementById('council-log-search');
+      if (searchInput) {
+        searchInput.addEventListener('input', e => {
+          this._logSearchQuery = e.target.value.toLowerCase();
+          this._renderCaptainsLog(this._state);
+        });
+      }
+    }
+
+    // Wire log click listener: peek stderr, copy command, file chip, filter pills
     document.getElementById('council-captains-log')?.addEventListener('click', e => {
+      // Inline search / filter fallback inside log body
+      const searchInputInline = e.target.closest('#council-log-search-inline');
+      if (searchInputInline && !searchInputInline._wired) {
+        searchInputInline._wired = true;
+        searchInputInline.addEventListener('input', ev => {
+          this._logSearchQuery = ev.target.value.toLowerCase();
+          this._renderCaptainsLog(this._state);
+        });
+      }
+
+      // Peek Stderr toggle
+      const peekBtn = e.target.closest('.audit-btn-peek');
+      if (peekBtn) {
+        const id = peekBtn.dataset.peekId;
+        if (id) {
+          if (this._peekDrawers.has(id)) {
+            this._peekDrawers.delete(id);
+          } else {
+            this._peekDrawers.add(id);
+          }
+          const drawer = document.getElementById('peek-' + id);
+          if (drawer) {
+            drawer.hidden = !this._peekDrawers.has(id);
+          }
+          peekBtn.textContent = this._peekDrawers.has(id) ? '[Hide Stderr]' : '[Peek Stderr]';
+        }
+        return;
+      }
+
+      // Copy command / error
+      const copyBtn = e.target.closest('.audit-btn-copy');
+      if (copyBtn) {
+        const text = copyBtn.dataset.copyText;
+        if (text) {
+          _copyToClipboard(text).then(() => {
+            const orig = copyBtn.textContent;
+            copyBtn.textContent = '[Copied!]';
+            setTimeout(() => { if (copyBtn.isConnected) copyBtn.textContent = orig; }, 1200);
+          });
+        }
+        return;
+      }
+
       // Pill tab filter
       const pill = e.target.closest('.log-filter-pill');
       if (pill) {
         this._logFilter = pill.dataset.filter || 'ALL';
-        this.render(this._state);
+        this._renderCaptainsLog(this._state);
         return;
       }
       // Legacy filter btn (kept for backward safety during any cached page load)
       const legacyBtn = e.target.closest('.log-filter-btn');
       if (legacyBtn) {
         this._logFilter = legacyBtn.dataset.filter || 'ALL';
-        this.render(this._state);
+        this._renderCaptainsLog(this._state);
         return;
       }
       // File chip — copy full path to clipboard AND switch to Files panel
@@ -4012,17 +4399,10 @@ class CouncilUI {
       if (chip) {
         const path = chip.dataset.path;
         if (path) {
-          if (navigator.clipboard) {
-            // Read path before async — the chip node may be orphaned by the next
-            // innerHTML re-render before the .then() callback fires.
-            const pathSnapshot = path;
-            navigator.clipboard.writeText(pathSnapshot).catch(() => {/* insecure context — silent */});
-            // Visual feedback: brief opacity pulse on the chip itself (if still mounted)
-            // Uses requestAnimationFrame to stay in the current paint frame.
-            const target = chip;
-            target.style.opacity = '0.5';
-            setTimeout(() => { if (target.isConnected) target.style.opacity = ''; }, 600);
-          }
+          _copyToClipboard(path);
+          const target = chip;
+          target.style.opacity = '0.5';
+          setTimeout(() => { if (target.isConnected) target.style.opacity = ''; }, 600);
           this.selectFile(path);
         }
       }
@@ -4096,8 +4476,12 @@ class CouncilUI {
     if (body) body.hidden = false;
     // Clear badge on Log tab when switching to it
     if (tabId === 'log') {
+      this._lastViewedPhaseCount = this._currentPhaseCount || 0;
       const badge = document.getElementById('ctx-log-badge');
-      if (badge) badge.hidden = true;
+      if (badge) {
+        badge.hidden = true;
+        badge.classList.remove('ctx-tab-badge--warning', 'ctx-tab-badge--error');
+      }
     }
     // When switching to Debug tab, render DAG if available
     if (tabId === 'debug' && this._state.dag) {

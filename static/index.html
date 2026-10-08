@@ -1173,6 +1173,22 @@
 
         <!-- Log tab body (hidden by default) -->
         <div class="council-ctx-body" id="ctx-body-log" hidden>
+          <div class="council-pane-header" id="council-log-header">
+            <span class="council-pane-title">Audit Ledger</span>
+            <span class="council-pane-status" id="council-log-summary">0 events · 0 errors</span>
+          </div>
+          <div class="council-log-toolbar" id="council-log-toolbar">
+            <div class="log-filters-pill-group">
+              <div class="log-filters-pill-track">
+                <button type="button" class="log-filter-pill active" data-filter="ALL">ALL</button>
+                <button type="button" class="log-filter-pill" data-filter="ERRORS">ERRORS</button>
+                <button type="button" class="log-filter-pill" data-filter="COMMANDS">COMMANDS</button>
+              </div>
+            </div>
+            <div class="log-search-container">
+              <input type="text" class="log-search-input" id="council-log-search" placeholder="Filter ledger entries..." autocomplete="off" spellcheck="false" />
+            </div>
+          </div>
           <div class="council-log-body scroll-container" id="council-captains-log" role="log" aria-label="Run events log"></div>
           <div class="council-log-footer">
             <div class="log-footer-stats">
