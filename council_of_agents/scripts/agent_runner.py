@@ -52,7 +52,7 @@ _REPAIR_CONTRACTS = {
     "chair": '{"complexity":"SIMPLE|MEDIUM|COMPLEX","route":"DIRECT|PIPELINE","action":"read|write|search|command|analyze|unknown","target":"...","reason":"..."}',
     "strategist": '{"tasks":[{"id":"T1","description":"...","depends_on":[],"acceptance":"...","write_scope":["src/"]}],"risks":[]}',
     "manager": '{"verdict":"APPROVED|REVISE|BLOCKED","confidence":0.0,"summary":"...","issues":[]}',
-    "perspective_analyzer": '{"security":{"score":0.0,"issues":[]},"performance":{"score":0.0,"issues":[]},"maintainability":{"score":0.0,"issues":[]},"overall_score":0.0,"synthesis":"..."}',
+    "perspective_analyzer": '{"security":{"score":1.0,"issues":[{"severity":"warning","disposition":"ADVISORY|MUST_FIX|BLOCK","description":"...","task_id":"T1|ALL","suggestion":"...","evidence":"..."}]},"performance":{"score":1.0,"issues":[]},"maintainability":{"score":1.0,"issues":[]},"overall_score":1.0,"synthesis":"..."}',
     "completeness_auditor": '{"completeness":0.0,"done":false,"criteria":[]}',
 }
 
@@ -148,6 +148,28 @@ def _manager_blocked_fallback(error: str, raw_text: str) -> str:
             "suggestion": "Retry Manager review with a corrected structured response.",
             "evidence": "Raw model output withheld.",
         }],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def _perspective_blocked_fallback(error: str, raw_text: str) -> str:
+    """Return a valid Perspective envelope that routes fail-closed to the review gate."""
+    payload = {
+        "security": {
+            "score": 0.0,
+            "issues": [{
+                "severity": "critical",
+                "disposition": "BLOCK",
+                "description": str(error or "Perspective response schema validation failed")[:1000],
+                "task_id": "ALL",
+                "suggestion": "Review plan manually at Manager gate using the override control.",
+                "evidence": "Raw model output withheld.",
+            }],
+        },
+        "performance": {"score": 0.0, "issues": []},
+        "maintainability": {"score": 0.0, "issues": []},
+        "overall_score": 0.0,
+        "synthesis": f"Perspective analysis schema recovery: {str(error or 'schema validation failed')[:200]}",
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -618,7 +640,7 @@ class AgentRunner:
                     "recovery_used": recovery_used,
                     "recovery_error": recovery_error[:1000],
                     "recovery_decision": self._recovery_decision,
-                    "safe_fallback": "MANAGER_BLOCKED" if validation_role == "manager" else "",
+                    "safe_fallback": "MANAGER_BLOCKED" if validation_role == "manager" else ("PERSPECTIVE_BLOCKED" if validation_role == "perspective_analyzer" else ""),
                     "validation_error": str(e.validation_error or "")[:1000],
                 }
             if validation_role == "manager":
@@ -633,6 +655,23 @@ class AgentRunner:
                             "failure_kind": "SCHEMA_VALIDATION",
                             "retryable": False,
                             "safe_fallback": "MANAGER_BLOCKED",
+                            "attempts": attempt_number,
+                            "recovery_attempted": bool(self._recovery and not semantic_rejection),
+                        },
+                    )
+                return fallback
+            if validation_role == "perspective_analyzer":
+                fallback = _perspective_blocked_fallback(e.validation_error, e.raw_text)
+                if self.emit:
+                    await self.emit(
+                        event="log",
+                        status="IN_PROGRESS",
+                        text="Perspective response could not be validated; routing fail-closed to Manager review.",
+                        agent=role,
+                        extra={
+                            "failure_kind": "SCHEMA_VALIDATION",
+                            "retryable": False,
+                            "safe_fallback": "PERSPECTIVE_BLOCKED",
                             "attempts": attempt_number,
                             "recovery_attempted": bool(self._recovery and not semantic_rejection),
                         },

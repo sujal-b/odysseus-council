@@ -350,5 +350,47 @@ def test_perspective_markdown_with_trailing_comma_is_normalized_and_accepted():
     assert res.metadata["normalization_used"] is True
 
 
+def test_perspective_issue_aliases_normalized_cleanly():
+    """Verify common model aliases (issue->description, location->task_id, id->evidence) normalize without extra_forbidden."""
+    payload = {
+        "security": {
+            "score": 0.8,
+            "issues": [
+                {
+                    "id": "SEC-1",
+                    "location": "T3 (b)/(e) garden render... + localStorage restore",
+                    "issue": "The plan renders plants without sanitation.",
+                }
+            ],
+        },
+        "performance": {"score": 0.9, "issues": []},
+        "maintainability": {"score": 0.9, "issues": []},
+        "overall_score": 0.85,
+        "synthesis": "Generally sound.",
+    }
+    res = validate_agent_output("perspective_analyzer", json.dumps(payload), strict=True)
+    assert res.success is True, f"Failed to validate normalized payload: {res.error}"
+    issue = res.data["security"]["issues"][0]
+    assert issue["description"] == "The plan renders plants without sanitation."
+    assert issue["task_id"] == "T3"
+    assert "id" not in issue
+    assert "location" not in issue
+
+
+def test_perspective_blocked_fallback_valid_schema_and_blocks():
+    """Verify _perspective_blocked_fallback produces valid schema that fail-closed blocks at approval gate."""
+    from council_of_agents.scripts.agent_runner import _perspective_blocked_fallback, _REPAIR_CONTRACTS
+
+    fallback_json = _perspective_blocked_fallback("syntax error", "raw output")
+    res = validate_agent_output("perspective_analyzer", fallback_json, strict=True)
+    assert res.success is True, f"Fallback produced invalid schema: {res.error}"
+    assert CouncilOrchestrator._classify_perspective_evidence(fallback_json) == "block"
+
+    # Also verify repair contract contains issue fields
+    assert "description" in _REPAIR_CONTRACTS["perspective_analyzer"]
+    assert "task_id" in _REPAIR_CONTRACTS["perspective_analyzer"]
+
+
 if __name__ == "__main__":
     pytest.main(["-v", str(Path(__file__))])
+

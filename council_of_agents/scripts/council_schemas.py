@@ -696,6 +696,35 @@ class PerspectiveResponseNormalizer:
                 if "overall_score" in sec_val or "synthesis" in sec_val:
                     metadata["normalized_shape"] = "rejected_ambiguous"
                     return None, metadata
+                if isinstance(sec_val.get("issues"), list):
+                    for issue in sec_val["issues"]:
+                        if isinstance(issue, dict):
+                            # Normalize description aliases
+                            if not issue.get("description"):
+                                for alt_k in ("issue", "summary", "title", "detail"):
+                                    if issue.get(alt_k):
+                                        issue["description"] = str(issue.pop(alt_k))
+                                        metadata["normalization_used"] = True
+                                        break
+                            # Normalize task_id from location if task_id missing or invalid
+                            current_tid = str(issue.get("task_id") or "").strip()
+                            valid_tid, _ = validate_issue_task_id_shape(current_tid) if current_tid else (False, "")
+                            if not valid_tid and "location" in issue:
+                                loc = str(issue.pop("location") or "")
+                                m = re.search(r"\b(ALL|T\d+[a-z]?|task[_-]\w+)\b", loc, re.IGNORECASE)
+                                if m:
+                                    issue["task_id"] = m.group(1).upper()
+                                else:
+                                    issue["task_id"] = "ALL"
+                                if not issue.get("evidence"):
+                                    issue["evidence"] = loc
+                                metadata["normalization_used"] = True
+                            # Remove transient finding ID numbers (SEC-1, PERF-2, etc.)
+                            if "id" in issue:
+                                id_val = str(issue.pop("id") or "")
+                                if not issue.get("evidence"):
+                                    issue["evidence"] = id_val
+                                metadata["normalization_used"] = True
 
         return parsed, metadata
 
