@@ -2,6 +2,56 @@
 // Targets the DOM structure introduced in index.html (diamond compass layout).
 import markdownModule from '../markdown.js';
 
+function _normalizeFilePath(p) {
+  if (!p || typeof p !== 'string') return '';
+  let s = p.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+  if (s.includes('council_workspace/')) {
+    s = s.split('council_workspace/').pop();
+  }
+  if (s.startsWith('/')) s = s.slice(1);
+  return s;
+}
+
+function _resolveCanonicalFile(targetPath, fileKeys) {
+  if (!targetPath || !fileKeys) return targetPath || '';
+  const keys = Array.isArray(fileKeys) ? fileKeys : Object.keys(fileKeys);
+  if (!keys.length) return targetPath;
+  if (keys.includes(targetPath)) return targetPath;
+  const normTarget = _normalizeFilePath(targetPath);
+  if (keys.includes(normTarget)) return normTarget;
+
+  for (const k of keys) {
+    if (_normalizeFilePath(k) === normTarget) return k;
+  }
+  for (const k of keys) {
+    const kNorm = _normalizeFilePath(k);
+    if (kNorm.endsWith('/' + normTarget) || normTarget.endsWith('/' + kNorm)) {
+      return k;
+    }
+  }
+  return normTarget || targetPath;
+}
+
+function _getGeneratedFile(generatedFiles, path) {
+  if (!generatedFiles || !path) return undefined;
+  if (generatedFiles[path] !== undefined) return generatedFiles[path];
+  const canonical = _resolveCanonicalFile(path, generatedFiles);
+  if (generatedFiles[canonical] !== undefined) return generatedFiles[canonical];
+  const norm = _normalizeFilePath(path);
+  if (generatedFiles[norm] !== undefined) return generatedFiles[norm];
+  return undefined;
+}
+
+function _getFileVersion(fileVersions, path) {
+  if (!fileVersions || !path) return null;
+  if (fileVersions[path]) return fileVersions[path];
+  const canonical = _resolveCanonicalFile(path, fileVersions);
+  if (fileVersions[canonical]) return fileVersions[canonical];
+  const norm = _normalizeFilePath(path);
+  if (fileVersions[norm]) return fileVersions[norm];
+  return null;
+}
+
 /* ─── State ─────────────────────────────────────────────────────── */
 class CouncilState {
   constructor() {
@@ -16,6 +66,7 @@ class CouncilState {
     this.lastFile      = '';
     this.generatedFiles = {};
     this.selectedFile  = '';
+    this._userSelectedFile = null;
     this.log           = [];          // raw events for Captain's Log
     this.chairBrief    = null;        // first chair message
     this.pendingReview = false;
@@ -131,19 +182,33 @@ class CouncilState {
       this.thoughts += data.text + '\n';
 
     // Code panel
-    if (data.event === 'code_update' || (data.event === 'task_status_update' && data.code)) {
+    if (data.event === 'code_update' || (data.event === 'task_status_update' && data.code !== undefined)) {
       this.lastCode = typeof data.code === 'string' ? data.code : '';
       this.lastFile = typeof data.file_path === 'string' ? data.file_path : '';
       if (this.lastFile) {
-        if (!this.fileVersions[this.lastFile]) {
-          const original = data.original_code || data.extra?.original_code || (this.generatedFiles[this.lastFile] !== undefined ? this.generatedFiles[this.lastFile] : '');
-          this.fileVersions[this.lastFile] = { original, current: this.lastCode };
+        const normPath = _normalizeFilePath(this.lastFile);
+        const incomingOriginal = data.original_code || data.extra?.original_code;
+        if (!this.fileVersions[normPath]) {
+          const original = incomingOriginal !== undefined ? incomingOriginal : (_getGeneratedFile(this.generatedFiles, normPath) !== undefined ? _getGeneratedFile(this.generatedFiles, normPath) : null);
+          this.fileVersions[normPath] = { original, current: this.lastCode };
         } else {
-          this.fileVersions[this.lastFile].original = this.fileVersions[this.lastFile].current;
-          this.fileVersions[this.lastFile].current = this.lastCode;
+          if (incomingOriginal !== undefined && !this.fileVersions[normPath].original) {
+            this.fileVersions[normPath].original = incomingOriginal;
+          } else if (this.fileVersions[normPath].original === null && this.fileVersions[normPath].current && this.fileVersions[normPath].current !== this.lastCode) {
+            this.fileVersions[normPath].original = this.fileVersions[normPath].current;
+          }
+          this.fileVersions[normPath].current = this.lastCode;
+          delete this.fileVersions[normPath]._cachedDiff;
+          delete this.fileVersions[normPath]._cachedStats;
         }
-        this.generatedFiles[this.lastFile] = this.lastCode;
-        this.selectedFile = this.lastFile;
+        this.generatedFiles[normPath] = this.lastCode;
+        if (this.lastFile !== normPath) {
+          this.generatedFiles[this.lastFile] = this.lastCode;
+          this.fileVersions[this.lastFile] = this.fileVersions[normPath];
+        }
+        if (!this._userSelectedFile || this._userSelectedFile === normPath || this._userSelectedFile === this.lastFile) {
+          this.selectedFile = normPath;
+        }
       }
     }
 
@@ -530,6 +595,8 @@ class CouncilSession {
       this._state.lastFile = '';
       this._state.generatedFiles = {};
       this._state.selectedFile = '';
+      this._state._userSelectedFile = null;
+      this._state.fileVersions = {};
       this._state.log = [];
       this._state.chairBrief = null;
       this._state.complexity = data.complexity || null;
@@ -666,12 +733,33 @@ class CouncilSession {
           }
 
           // Restore last code block
-          if (item.event === 'code_update' || (item.event === 'task_status_update' && item.code)) {
+          if (item.event === 'code_update' || (item.event === 'task_status_update' && item.code !== undefined)) {
             this._state.lastCode = typeof item.code === 'string' ? item.code : '';
             this._state.lastFile = typeof item.file_path === 'string' ? item.file_path : '';
             if (this._state.lastFile) {
-              this._state.generatedFiles[this._state.lastFile] = this._state.lastCode;
-              this._state.selectedFile = this._state.lastFile;
+              const normPath = _normalizeFilePath(this._state.lastFile);
+              const incomingOriginal = item.original_code || item.extra?.original_code;
+              if (!this._state.fileVersions[normPath]) {
+                const original = incomingOriginal !== undefined ? incomingOriginal : (_getGeneratedFile(this._state.generatedFiles, normPath) !== undefined ? _getGeneratedFile(this._state.generatedFiles, normPath) : null);
+                this._state.fileVersions[normPath] = { original, current: this._state.lastCode };
+              } else {
+                if (incomingOriginal !== undefined && !this._state.fileVersions[normPath].original) {
+                  this._state.fileVersions[normPath].original = incomingOriginal;
+                } else if (this._state.fileVersions[normPath].original === null && this._state.fileVersions[normPath].current && this._state.fileVersions[normPath].current !== this._state.lastCode) {
+                  this._state.fileVersions[normPath].original = this._state.fileVersions[normPath].current;
+                }
+                this._state.fileVersions[normPath].current = this._state.lastCode;
+                delete this._state.fileVersions[normPath]._cachedDiff;
+                delete this._state.fileVersions[normPath]._cachedStats;
+              }
+              this._state.generatedFiles[normPath] = this._state.lastCode;
+              if (this._state.lastFile !== normPath) {
+                this._state.generatedFiles[this._state.lastFile] = this._state.lastCode;
+                this._state.fileVersions[this._state.lastFile] = this._state.fileVersions[normPath];
+              }
+              if (!this._state._userSelectedFile) {
+                this._state.selectedFile = normPath;
+              }
             }
           }
           if (item.event === 'thought_delta' || item.event === 'tool_progress') return;
@@ -857,9 +945,22 @@ class CouncilUI {
     this._telemetry?.reset();
     this._autoFollow = true;
     this._activeThoughtExpanded = false;
+    this._hasAutoSwitchedToFiles = false;
+    this._lastRenderedFile = null;
     this._state.fileVersions = {};
+    this._state._userSelectedFile = null;
     if (this._dagOverlayOpen) {
       this._toggleDagOverlay(false);
+    }
+    const codeEl = document.getElementById('council-code-panel');
+    if (codeEl) {
+      delete codeEl._lastRenderKey;
+      if (codeEl._expandedFiles) codeEl._expandedFiles.clear();
+    }
+    const headerEl = document.getElementById('council-code-header-container');
+    if (headerEl) {
+      headerEl._lastFileSig = null;
+      headerEl._lastMode = null;
     }
     this._state.sessionId = null;
     this._state.thoughts = '';
@@ -1119,9 +1220,15 @@ class CouncilUI {
 
     // 1. Check state.fileVersions for real version history with flexible path resolution
     const fileVer = state.fileVersions
-      ? (state.fileVersions[name] ||
+      ? (_getFileVersion(state.fileVersions, name) ||
+         state.fileVersions[name] ||
          Object.entries(state.fileVersions).find(([k]) => k.endsWith(name) || name.endsWith(k))?.[1])
       : null;
+
+    if (fileVer && fileVer._cachedStats) {
+      if (diffMemo) diffMemo.set(name, fileVer._cachedStats);
+      return fileVer._cachedStats;
+    }
 
     if (fileVer && fileVer.current != null) {
       const orig = fileVer.original != null ? String(fileVer.original) : '';
@@ -1135,6 +1242,7 @@ class CouncilUI {
       } else {
         stats = { lines: currLines.length, added: currLines.length, removed: 0 };
       }
+      fileVer._cachedStats = stats;
     } else {
       // 2. Check code_update events in state.log
       const log = Array.isArray(state.log) ? state.log : [];
@@ -2142,7 +2250,7 @@ class CouncilUI {
                 <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
                 <div class="ct">
                   <span class="bd">${_esc((f.action || 'updated').toUpperCase())}</span>
-                  <span class="tx" title="${_esc(f.name)}">${_esc(f.name)}</span>
+                  <span class="tx tx--file-link" data-filepath="${_esc(f.name)}" title="${_esc(f.name)} (click to view in Files)">${_esc(f.name)}</span>
                   ${diffSpan}
                 </div>
               </div>`;
@@ -2656,19 +2764,28 @@ class CouncilUI {
     const btn = document.getElementById('council-promote-btn');
     const headerContainer = document.getElementById('council-code-header-container');
 
-    const files = Object.keys(state.generatedFiles || {});
+    const rawFiles = Object.keys(state.generatedFiles || {});
+    const fileSet = new Set();
+    const sortedFiles = [];
+    rawFiles.forEach(f => {
+      const norm = _normalizeFilePath(f);
+      if (norm && !fileSet.has(norm)) {
+        fileSet.add(norm);
+        sortedFiles.push(norm);
+      }
+    });
+    sortedFiles.sort();
 
     // Determine selected file
-    const sortedFiles = [...files].sort();
-    let selectedFile = state.selectedFile || state.lastFile;
+    let selectedFile = state.selectedFile || state._userSelectedFile || state.lastFile;
+    if (selectedFile) selectedFile = _normalizeFilePath(selectedFile);
     if (sortedFiles.length > 0) {
-      if (!selectedFile || state.generatedFiles[selectedFile] === undefined) {
-        selectedFile = sortedFiles[0];
-      }
+      const canonical = _resolveCanonicalFile(selectedFile, sortedFiles);
+      selectedFile = sortedFiles.includes(canonical) ? canonical : sortedFiles[0];
       state.selectedFile = selectedFile;
-      state.lastFile = selectedFile;
-      if (state.generatedFiles[selectedFile] !== undefined) {
-        state.lastCode = state.generatedFiles[selectedFile];
+      const fileCode = _getGeneratedFile(state.generatedFiles, selectedFile);
+      if (fileCode !== undefined) {
+        state.lastCode = fileCode;
       }
     }
 
@@ -2680,64 +2797,103 @@ class CouncilUI {
     const savedLinenosScrollTop = (linenosEl && isSameFile) ? linenosEl.scrollTop : 0;
 
     if (el) {
-      if (files.length > 0) {
+      if (sortedFiles.length > 0) {
         // SUCCESS / POPULATED STATE
-        // Auto-switch to Files tab on first output
-        const filesTab = document.querySelector('.council-ctx-tab[data-tab="files"]');
-        if (filesTab && !filesTab.classList.contains('active')) this._activateCtxTab('files');
+        // Auto-switch to Files tab on first output only (preserve user tab choice if browsing Log/Debug)
+        if (!this._hasAutoSwitchedToFiles) {
+          this._hasAutoSwitchedToFiles = true;
+          const filesTab = document.querySelector('.council-ctx-tab[data-tab="files"]');
+          if (filesTab && !filesTab.classList.contains('active')) this._activateCtxTab('files');
+        }
         if (linenosEl) linenosEl.style.display = 'none';
-        el.style.padding = '';
         
-        const safeCode = (selectedFile && state.generatedFiles[selectedFile] !== undefined)
-          ? state.generatedFiles[selectedFile]
+        const safeCode = (selectedFile && _getGeneratedFile(state.generatedFiles, selectedFile) !== undefined)
+          ? _getGeneratedFile(state.generatedFiles, selectedFile)
           : (typeof state.lastCode === 'string' ? state.lastCode : '');
 
-        const fileVer = state.fileVersions ? state.fileVersions[selectedFile] : null;
+        const fileVer = state.fileVersions ? _getFileVersion(state.fileVersions, selectedFile) : null;
         const hasDiff = Boolean(
           fileVer &&
-          fileVer.original !== undefined &&
+          typeof fileVer.original === 'string' &&
+          fileVer.original.length > 0 &&
           fileVer.original !== fileVer.current &&
           typeof fileVer.current === 'string'
         );
 
-        el.classList.remove('has-state-container');
-        el.style.padding = '';
-        if (linenosEl) linenosEl.style.display = 'none';
+        const MAX_INITIAL_LINES = 1500;
+        if (!el._expandedFiles) el._expandedFiles = new Set();
+        const isExpanded = el._expandedFiles.has(selectedFile);
 
-        if (hasDiff) {
-          const diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
-          let codeHtml = '';
-          diffLines.forEach(item => {
-            const lineNum = item.lineNum != null ? item.lineNum : (item.type === 'add' ? '+' : (item.type === 'del' ? '-' : ''));
-            const textContent = (item.text !== '') ? _esc(item.text) : '<br>';
-            if (item.type === 'add') {
-              codeHtml += `<div class="diff-line diff-line-add"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`;
-            } else if (item.type === 'del') {
-              codeHtml += `<div class="diff-line diff-line-del"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`;
-            } else {
-              codeHtml += `<div class="diff-line diff-line-equal"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`;
+        const renderKey = `${selectedFile}::${isExpanded}::${hasDiff ? (fileVer.original.length + ':' + fileVer.current.length + ':' + fileVer.current) : (safeCode.length + ':' + safeCode)}`;
+        const contentChanged = (el._lastRenderKey !== renderKey);
+
+        if (contentChanged) {
+          el._lastRenderKey = renderKey;
+          el.classList.remove('has-state-container');
+          el.style.padding = '';
+          if (linenosEl) linenosEl.style.display = 'none';
+
+          if (hasDiff) {
+            let diffLines = fileVer._cachedDiff;
+            if (!Array.isArray(diffLines)) {
+              diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
+              fileVer._cachedDiff = diffLines;
             }
-          });
-          el.innerHTML = codeHtml;
-          if (linenosEl) linenosEl.style.display = 'none';
-        } else {
-          const lines = (typeof safeCode === 'string') ? safeCode.split('\n') : [];
-          if (lines.length === 0 && safeCode === '') {
-            lines.push('');
+            const renderCount = isExpanded ? diffLines.length : Math.min(diffLines.length, MAX_INITIAL_LINES);
+            const chunks = [];
+            for (let idx = 0; idx < renderCount; idx++) {
+              const item = diffLines[idx];
+              const lineNum = item.lineNum != null ? item.lineNum : (item.type === 'add' ? '+' : (item.type === 'del' ? '-' : ''));
+              const textContent = (item.text !== '') ? _esc(item.text) : '<br>';
+              if (item.type === 'add') {
+                chunks.push(`<div class="diff-line diff-line-add"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`);
+              } else if (item.type === 'del') {
+                chunks.push(`<div class="diff-line diff-line-del"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`);
+              } else {
+                chunks.push(`<div class="diff-line diff-line-equal"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`);
+              }
+            }
+            if (diffLines.length > renderCount) {
+              chunks.push(`<div class="code-panel-truncated"><span>Showing first ${renderCount.toLocaleString()} of ${diffLines.length.toLocaleString()} lines</span><button type="button" class="council-expand-lines-btn" data-filepath="${_esc(selectedFile)}">Show all ${diffLines.length.toLocaleString()} lines</button></div>`);
+            }
+            el.innerHTML = chunks.join('');
+          } else {
+            const lines = (typeof safeCode === 'string') ? safeCode.split('\n') : [];
+            if (lines.length === 0 && safeCode === '') {
+              lines.push('');
+            }
+            const renderCount = isExpanded ? lines.length : Math.min(lines.length, MAX_INITIAL_LINES);
+            const chunks = [];
+            for (let i = 0; i < renderCount; i++) {
+              const line = lines[i];
+              const textContent = (line !== '') ? _esc(line) : '<br>';
+              chunks.push(`<div class="code-row"><span class="code-row-num">${i + 1}</span><span class="code-row-text">${textContent}</span></div>`);
+            }
+            if (lines.length > renderCount) {
+              chunks.push(`<div class="code-panel-truncated"><span>Showing first ${renderCount.toLocaleString()} of ${lines.length.toLocaleString()} lines</span><button type="button" class="council-expand-lines-btn" data-filepath="${_esc(selectedFile)}">Show all ${lines.length.toLocaleString()} lines</button></div>`);
+            }
+            el.innerHTML = chunks.join('');
           }
-          let codeHtml = '';
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const textContent = (line !== '') ? _esc(line) : '<br>';
-            codeHtml += `<div class="code-row"><span class="code-row-num">${i + 1}</span><span class="code-row-text">${textContent}</span></div>`;
-          }
-          el.innerHTML = codeHtml;
-          if (linenosEl) linenosEl.style.display = 'none';
+
+          // Restore scroll positions to prevent jumping
+          el.scrollTop = savedCodeScrollTop;
+          if (linenosEl) linenosEl.scrollTop = savedLinenosScrollTop;
         }
 
-        // Restore scroll positions to prevent jumping
-        el.scrollTop = savedCodeScrollTop;
-        if (linenosEl) linenosEl.scrollTop = savedLinenosScrollTop;
+        if (!el._expandWired) {
+          el._expandWired = true;
+          el.addEventListener('click', e => {
+            const expBtn = e.target.closest('.council-expand-lines-btn');
+            if (!expBtn) return;
+            const fp = expBtn.getAttribute('data-filepath');
+            if (fp) {
+              if (!el._expandedFiles) el._expandedFiles = new Set();
+              el._expandedFiles.add(fp);
+              delete el._lastRenderKey;
+              this._renderCodePanel(this._state);
+            }
+          });
+        }
 
         if (linenosEl && !el._linenosWired) {
           el._linenosWired = true;
@@ -2757,6 +2913,7 @@ class CouncilUI {
         }
       } else {
         // NO FILES - DETECT OTHER STATE MACHINE STATES
+        delete el._lastRenderKey;
         if (linenosEl) linenosEl.style.display = 'none';
         el.classList.add('has-state-container');
         el.style.padding = '0'; // Let the state container take full layout
@@ -2819,9 +2976,8 @@ class CouncilUI {
     }
 
     if (headerContainer) {
-      if (files.length > 0) {
+      if (sortedFiles.length > 0) {
         // Sort files to keep consistent tab ordering (alphabetical)
-        const sortedFiles = [...files].sort();
         const fileSig = sortedFiles.join('::');
         const isSelectMode = sortedFiles.length > 3;
 
@@ -2872,26 +3028,34 @@ class CouncilUI {
             const tab = e.target.closest('.council-code-tab');
             if (!tab) return;
             const path = tab.getAttribute('data-filepath');
+            const norm = _normalizeFilePath(path);
             const st = this._state;
-            st.selectedFile = path;
-            st.lastFile = path;
-            if (st.generatedFiles && st.generatedFiles[path] !== undefined) {
-              st.lastCode = st.generatedFiles[path];
+            if (st.selectedFile === norm && this._lastRenderedFile === norm) return;
+            st._userSelectedFile = norm;
+            st.selectedFile = norm;
+            st.lastFile = norm;
+            const code = _getGeneratedFile(st.generatedFiles, norm);
+            if (code !== undefined) {
+              st.lastCode = code;
             }
-            this.render(st);
+            this._renderCodePanel(st);
           });
 
           headerContainer.addEventListener('change', e => {
             const select = e.target.closest('.council-file-select');
             if (!select) return;
             const path = select.value;
+            const norm = _normalizeFilePath(path);
             const st = this._state;
-            st.selectedFile = path;
-            st.lastFile = path;
-            if (st.generatedFiles && st.generatedFiles[path] !== undefined) {
-              st.lastCode = st.generatedFiles[path];
+            if (st.selectedFile === norm && this._lastRenderedFile === norm) return;
+            st._userSelectedFile = norm;
+            st.selectedFile = norm;
+            st.lastFile = norm;
+            const code = _getGeneratedFile(st.generatedFiles, norm);
+            if (code !== undefined) {
+              st.lastCode = code;
             }
-            this.render(st);
+            this._renderCodePanel(st);
           });
 
           headerContainer.addEventListener('wheel', e => {
@@ -2922,8 +3086,8 @@ class CouncilUI {
     }
 
     if (btn) {
-      const code = (selectedFile && state.generatedFiles && state.generatedFiles[selectedFile] !== undefined)
-        ? state.generatedFiles[selectedFile]
+      const code = (selectedFile && _getGeneratedFile(state.generatedFiles, selectedFile) !== undefined)
+        ? _getGeneratedFile(state.generatedFiles, selectedFile)
         : state.lastCode;
       btn.hidden = (code === undefined || code === null);
     }
@@ -3762,6 +3926,14 @@ class CouncilUI {
             : `- Hide extra tasks ▴`;
         }
       }
+
+      // Click file link in Implementer step
+      const fileLink = e.target.closest('.tx--file-link');
+      if (fileLink) {
+        const fp = fileLink.getAttribute('data-filepath');
+        if (fp) this.selectFile(fp);
+        return;
+      }
     });
 
     // Review bar actions
@@ -3835,20 +4007,23 @@ class CouncilUI {
         this.render(this._state);
         return;
       }
-      // File chip — copy full path to clipboard
+      // File chip — copy full path to clipboard AND switch to Files panel
       const chip = e.target.closest('.log-file-chip');
       if (chip) {
         const path = chip.dataset.path;
-        if (path && navigator.clipboard) {
-          // Read path before async — the chip node may be orphaned by the next
-          // innerHTML re-render before the .then() callback fires.
-          const pathSnapshot = path;
-          navigator.clipboard.writeText(pathSnapshot).catch(() => {/* insecure context — silent */});
-          // Visual feedback: brief opacity pulse on the chip itself (if still mounted)
-          // Uses requestAnimationFrame to stay in the current paint frame.
-          const target = chip;
-          target.style.opacity = '0.5';
-          setTimeout(() => { if (target.isConnected) target.style.opacity = ''; }, 600);
+        if (path) {
+          if (navigator.clipboard) {
+            // Read path before async — the chip node may be orphaned by the next
+            // innerHTML re-render before the .then() callback fires.
+            const pathSnapshot = path;
+            navigator.clipboard.writeText(pathSnapshot).catch(() => {/* insecure context — silent */});
+            // Visual feedback: brief opacity pulse on the chip itself (if still mounted)
+            // Uses requestAnimationFrame to stay in the current paint frame.
+            const target = chip;
+            target.style.opacity = '0.5';
+            setTimeout(() => { if (target.isConnected) target.style.opacity = ''; }, 600);
+          }
+          this.selectFile(path);
         }
       }
     });
@@ -3929,6 +4104,26 @@ class CouncilUI {
       const container = document.getElementById('council-dag-view-debug');
       if (container) this._renderDAGSVG(container, this._state.dag, true);
     }
+  }
+
+  selectFile(filepath) {
+    if (!filepath) return;
+    const norm = _normalizeFilePath(filepath);
+    const genFiles = this._state.generatedFiles || {};
+    const canonical = _resolveCanonicalFile(norm, Object.keys(genFiles));
+    const target = (canonical && _getGeneratedFile(genFiles, canonical) !== undefined)
+      ? _normalizeFilePath(canonical)
+      : norm;
+
+    this._state._userSelectedFile = target;
+    this._state.selectedFile = target;
+    this._state.lastFile = target;
+    const code = _getGeneratedFile(genFiles, target);
+    if (code !== undefined) {
+      this._state.lastCode = code;
+    }
+    this._activateCtxTab('files');
+    this._renderCodePanel(this._state);
   }
 
   _updateAutoFollowIndicator() {
@@ -4264,7 +4459,10 @@ function sanitizeLogEntry(data, logText) {
 }
 
 function _esc(str) {
-  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  if (str == null) return '';
+  const s = String(str);
+  if (!/[&<>"']/.test(s)) return s;
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
 function _cleanNoiseAndTags(text) {
@@ -4824,9 +5022,29 @@ function _agentCount(complexity) {
   return { SIMPLE: 2, MEDIUM: 3, COMPLEX: 4 }[complexity] || 3;
 }
 
+const _diffCache = new Map();
+function _diffHash(s) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h = Math.imul(h ^ s.charCodeAt(i), 16777619) >>> 0;
+  }
+  return h;
+}
+
 function computeLineDiff(originalText, currentText) {
-  const a = originalText ? String(originalText).split('\n') : [];
-  const b = currentText ? String(currentText).split('\n') : [];
+  const origStr = originalText != null ? String(originalText) : '';
+  const currStr = currentText != null ? String(currentText) : '';
+  if (!origStr && !currStr) return [];
+  const cacheKey = `${origStr.length}_${_diffHash(origStr)}:${currStr.length}_${_diffHash(currStr)}`;
+  if (_diffCache.has(cacheKey)) {
+    const cached = _diffCache.get(cacheKey);
+    _diffCache.delete(cacheKey);
+    _diffCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const a = origStr ? origStr.split('\n') : [];
+  const b = currStr ? currStr.split('\n') : [];
 
   // Trim common prefix
   let start = 0;
@@ -4875,17 +5093,18 @@ function computeLineDiff(originalText, currentText) {
     const midDiff = [];
     while (i > 0 || j > 0) {
       if (i > 0 && j > 0 && aMid[i - 1] === bMid[j - 1]) {
-        midDiff.unshift({ type: 'same', text: aMid[i - 1] });
+        midDiff.push({ type: 'same', text: aMid[i - 1] });
         i--;
         j--;
       } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-        midDiff.unshift({ type: 'add', text: bMid[j - 1] });
+        midDiff.push({ type: 'add', text: bMid[j - 1] });
         j--;
       } else if (i > 0 && (j === 0 || dp[i][j - 1] < dp[i - 1][j])) {
-        midDiff.unshift({ type: 'del', text: aMid[i - 1] });
+        midDiff.push({ type: 'del', text: aMid[i - 1] });
         i--;
       }
     }
+    midDiff.reverse();
     let curLine = start + 1;
     midDiff.forEach(d => {
       if (d.type === 'del') {
@@ -4905,6 +5124,11 @@ function computeLineDiff(originalText, currentText) {
     result.push({ type: 'same', text: a[i], lineNum: curLine++ });
   }
 
+  if (_diffCache.size >= 50) {
+    const oldestKey = _diffCache.keys().next().value;
+    _diffCache.delete(oldestKey);
+  }
+  _diffCache.set(cacheKey, result);
   return result;
 }
 
@@ -5087,6 +5311,44 @@ function _injectRemediationStyles() {
       line-height: 20px;
       font-weight: 700;
       text-align: center;
+    }
+    .code-panel-truncated {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 14px;
+      margin: 12px 6px;
+      background: color-mix(in srgb, var(--panel, #120e0b) 90%, var(--bg, #090705));
+      border: 1px dashed var(--border, #2a221b);
+      border-radius: 6px;
+      color: var(--muted, #736b63);
+      font-size: 11px;
+    }
+    .council-expand-lines-btn {
+      background: var(--panel, #120e0b);
+      border: 1px solid var(--border, #2a221b);
+      border-radius: 4px;
+      color: var(--fg, #e2dcd5);
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      white-space: nowrap;
+    }
+    .council-expand-lines-btn:hover {
+      background: color-mix(in srgb, var(--panel, #120e0b) 80%, var(--fg, #e2dcd5));
+      border-color: var(--compass-accent, #df8e45);
+    }
+    .tx--file-link {
+      cursor: pointer;
+      text-decoration: underline;
+      text-decoration-color: transparent;
+      transition: text-decoration-color 0.15s ease, color 0.15s ease;
+    }
+    .tx--file-link:hover {
+      text-decoration-color: var(--compass-accent, #df8e45);
+      color: var(--fg, #e2dcd5);
     }
   `;
   document.head.appendChild(style);
@@ -5308,6 +5570,15 @@ export function init() {
       state.lastFile   = '';
       state.generatedFiles = {};
       state.selectedFile = '';
+      state._userSelectedFile = null;
+      state.fileVersions = {};
+      ui._hasAutoSwitchedToFiles = false;
+      ui._lastRenderedFile = null;
+      const codeEl = document.getElementById('council-code-panel');
+      if (codeEl) {
+        delete codeEl._lastRenderKey;
+        if (codeEl._expandedFiles) codeEl._expandedFiles.clear();
+      }
       state.log        = [];
       state.chairBrief = null;
       state.complexity = null;

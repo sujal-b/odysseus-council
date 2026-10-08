@@ -40247,6 +40247,45 @@ body.theme-frosted .modal {
   font-size: inherit;
 }
 
+.code-panel-truncated {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  margin: 12px 6px;
+  background: color-mix(in srgb, var(--panel, #120e0b) 90%, var(--bg, #090705));
+  border: 1px dashed var(--border, #2a221b);
+  border-radius: 6px;
+  color: var(--muted, #736b63);
+  font-size: 11px;
+}
+.council-expand-lines-btn {
+  background: var(--panel, #120e0b);
+  border: 1px solid var(--border, #2a221b);
+  border-radius: 4px;
+  color: var(--fg, #e2dcd5);
+  font-size: 11px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.council-expand-lines-btn:hover {
+  background: color-mix(in srgb, var(--panel, #120e0b) 80%, var(--fg, #e2dcd5));
+  border-color: var(--compass-accent, #df8e45);
+}
+.tx--file-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  transition: text-decoration-color 0.15s ease, color 0.15s ease;
+}
+.tx--file-link:hover {
+  text-decoration-color: var(--compass-accent, #df8e45);
+  color: var(--fg, #e2dcd5);
+}
+
 /* ─── Implementer State Machine Container & Shells ─── */
 .implementer-state-container {
   display: flex;
