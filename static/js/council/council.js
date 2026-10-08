@@ -2658,17 +2658,26 @@ class CouncilUI {
 
     const files = Object.keys(state.generatedFiles || {});
 
-    // Snapshot scroll positions before DOM updates to prevent viewport jumping
-    const savedCodeScrollTop = el ? el.scrollTop : 0;
-    const savedLinenosScrollTop = linenosEl ? linenosEl.scrollTop : 0;
-
     // Determine selected file
+    const sortedFiles = [...files].sort();
     let selectedFile = state.selectedFile || state.lastFile;
-    if (files.length > 0) {
-      if (!selectedFile || !state.generatedFiles[selectedFile]) {
-        selectedFile = files[0];
+    if (sortedFiles.length > 0) {
+      if (!selectedFile || state.generatedFiles[selectedFile] === undefined) {
+        selectedFile = sortedFiles[0];
+      }
+      state.selectedFile = selectedFile;
+      state.lastFile = selectedFile;
+      if (state.generatedFiles[selectedFile] !== undefined) {
+        state.lastCode = state.generatedFiles[selectedFile];
       }
     }
+
+    // Snapshot scroll positions: preserve during live streaming updates to the same file,
+    // but reset to 0 when switching to a different file.
+    const isSameFile = (this._lastRenderedFile === selectedFile);
+    this._lastRenderedFile = selectedFile;
+    const savedCodeScrollTop = (el && isSameFile) ? el.scrollTop : 0;
+    const savedLinenosScrollTop = (linenosEl && isSameFile) ? linenosEl.scrollTop : 0;
 
     if (el) {
       if (files.length > 0) {
@@ -2676,8 +2685,8 @@ class CouncilUI {
         // Auto-switch to Files tab on first output
         const filesTab = document.querySelector('.council-ctx-tab[data-tab="files"]');
         if (filesTab && !filesTab.classList.contains('active')) this._activateCtxTab('files');
-        if (linenosEl) linenosEl.style.display = 'block';
-        el.style.padding = '16px';
+        if (linenosEl) linenosEl.style.display = 'none';
+        el.style.padding = '';
         
         const safeCode = (selectedFile && state.generatedFiles[selectedFile] !== undefined)
           ? state.generatedFiles[selectedFile]
@@ -2693,37 +2702,37 @@ class CouncilUI {
 
         el.classList.remove('has-state-container');
         el.style.padding = '';
-        if (linenosEl) linenosEl.style.display = '';
+        if (linenosEl) linenosEl.style.display = 'none';
 
         if (hasDiff) {
           const diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
           let codeHtml = '';
-          let linenosHtml = '';
           diffLines.forEach(item => {
+            const lineNum = item.lineNum != null ? item.lineNum : (item.type === 'add' ? '+' : (item.type === 'del' ? '-' : ''));
+            const textContent = (item.text !== '') ? _esc(item.text) : '<br>';
             if (item.type === 'add') {
-              codeHtml += `<div class="diff-line diff-line-add"><span class="diff-gutter" style="color:var(--impl,#4eb870);user-select:none;margin-right:6px;font-weight:700;">+</span>${_esc(item.text)}</div>`;
-              linenosHtml += `<div class="diff-line-add" style="color:var(--impl,#4eb870);">${item.lineNum != null ? item.lineNum : '+'}</div>`;
+              codeHtml += `<div class="diff-line diff-line-add"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`;
             } else if (item.type === 'del') {
-              codeHtml += `<div class="diff-line diff-line-del"><span class="diff-gutter" style="color:var(--fail,#e05858);user-select:none;margin-right:6px;font-weight:700;">-</span>${_esc(item.text)}</div>`;
-              linenosHtml += `<div class="diff-line-del" style="color:var(--fail,#e05858);">-</div>`;
+              codeHtml += `<div class="diff-line diff-line-del"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`;
             } else {
-              codeHtml += `<div class="diff-line diff-line-equal"><span class="diff-gutter" style="opacity:0.3;user-select:none;margin-right:6px;"> </span>${_esc(item.text)}</div>`;
-              linenosHtml += `<div>${item.lineNum != null ? item.lineNum : ''}</div>`;
+              codeHtml += `<div class="diff-line diff-line-equal"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`;
             }
           });
           el.innerHTML = codeHtml;
-          if (linenosEl) linenosEl.innerHTML = linenosHtml;
+          if (linenosEl) linenosEl.style.display = 'none';
         } else {
-          el.textContent = safeCode;
-          if (linenosEl) {
-            const lines = safeCode ? safeCode.split('\n') : [];
-            const lineCount = Math.max(lines.length, 1);
-            let linenosHtml = '';
-            for (let i = 1; i <= lineCount; i++) {
-              linenosHtml += `<div>${i}</div>`;
-            }
-            linenosEl.innerHTML = linenosHtml;
+          const lines = (typeof safeCode === 'string') ? safeCode.split('\n') : [];
+          if (lines.length === 0 && safeCode === '') {
+            lines.push('');
           }
+          let codeHtml = '';
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const textContent = (line !== '') ? _esc(line) : '<br>';
+            codeHtml += `<div class="code-row"><span class="code-row-num">${i + 1}</span><span class="code-row-text">${textContent}</span></div>`;
+          }
+          el.innerHTML = codeHtml;
+          if (linenosEl) linenosEl.style.display = 'none';
         }
 
         // Restore scroll positions to prevent jumping
@@ -2735,6 +2744,16 @@ class CouncilUI {
           el.addEventListener('scroll', () => {
             linenosEl.scrollTop = el.scrollTop;
           });
+        }
+        if (linenosEl && !linenosEl._wheelWired) {
+          linenosEl._wheelWired = true;
+          linenosEl.addEventListener('wheel', e => {
+            if (el) {
+              const delta = e.deltaMode === 1 ? e.deltaY * 20 : (e.deltaMode === 2 ? e.deltaY * el.clientHeight : e.deltaY);
+              el.scrollTop += delta;
+              e.preventDefault();
+            }
+          }, { passive: false });
         }
       } else {
         // NO FILES - DETECT OTHER STATE MACHINE STATES
@@ -2801,33 +2820,94 @@ class CouncilUI {
 
     if (headerContainer) {
       if (files.length > 0) {
-        // Build tabbed interface!
-        let tabsHtml = '<div class="council-code-tabs">';
-        
         // Sort files to keep consistent tab ordering (alphabetical)
         const sortedFiles = [...files].sort();
-        
-        sortedFiles.forEach(filepath => {
-          const filename = filepath.split(/[/\\]/).pop(); // case-sensitive Filename.ext
-          const isActive = (filepath === selectedFile);
-          tabsHtml += `<button type="button" class="council-code-tab${isActive ? ' active' : ''}" data-filepath="${_esc(filepath)}" title="${_esc(filepath)}">${_esc(filename)}</button>`;
-        });
-        tabsHtml += '</div>';
-        
-        headerContainer.innerHTML = tabsHtml;
-        
-        // Add event listeners to tabs
-        headerContainer.addEventListener('click', e => {
-          const tab = e.target.closest('.council-code-tab');
-          if (!tab) return;
-          const path = tab.getAttribute('data-filepath');
-          state.selectedFile = path;
-          state.lastFile = path;
-          state.lastCode = state.generatedFiles[path] || '';
-          this.render(state);
-        });
+        const fileSig = sortedFiles.join('::');
+        const isSelectMode = sortedFiles.length > 3;
+
+        if (headerContainer._lastFileSig !== fileSig || headerContainer._lastMode !== isSelectMode) {
+          headerContainer._lastFileSig = fileSig;
+          headerContainer._lastMode = isSelectMode;
+
+          if (isSelectMode) {
+            let selectHtml = '<select class="council-file-select" title="Select output file">';
+            sortedFiles.forEach((filepath, idx) => {
+              const filename = filepath.split(/[/\\]/).pop();
+              const isSelected = (filepath === selectedFile) ? ' selected' : '';
+              selectHtml += `<option value="${_esc(filepath)}"${isSelected} title="${_esc(filepath)}">[${idx + 1}/${sortedFiles.length}] ${_esc(filename)}</option>`;
+            });
+            selectHtml += '</select>';
+            headerContainer.innerHTML = selectHtml;
+          } else {
+            let tabsHtml = '<div class="council-code-tabs">';
+            sortedFiles.forEach(filepath => {
+              const filename = filepath.split(/[/\\]/).pop();
+              const isActive = (filepath === selectedFile);
+              tabsHtml += `<button type="button" class="council-code-tab${isActive ? ' active' : ''}" data-filepath="${_esc(filepath)}" title="${_esc(filepath)}">${_esc(filename)}</button>`;
+            });
+            tabsHtml += '</div>';
+            headerContainer.innerHTML = tabsHtml;
+          }
+        } else {
+          // Fast path: signature hasn't changed. Update selection without re-creating DOM
+          if (isSelectMode) {
+            const selectEl = headerContainer.querySelector('.council-file-select');
+            if (selectEl && selectEl.value !== selectedFile) {
+              selectEl.value = selectedFile;
+            }
+          } else {
+            const tabs = headerContainer.querySelectorAll('.council-code-tab');
+            tabs.forEach(tab => {
+              const path = tab.getAttribute('data-filepath');
+              tab.classList.toggle('active', path === selectedFile);
+            });
+          }
+        }
+
+        // Idempotent event delegation on headerContainer
+        if (!headerContainer._tabsWired) {
+          headerContainer._tabsWired = true;
+
+          headerContainer.addEventListener('click', e => {
+            const tab = e.target.closest('.council-code-tab');
+            if (!tab) return;
+            const path = tab.getAttribute('data-filepath');
+            const st = this._state;
+            st.selectedFile = path;
+            st.lastFile = path;
+            if (st.generatedFiles && st.generatedFiles[path] !== undefined) {
+              st.lastCode = st.generatedFiles[path];
+            }
+            this.render(st);
+          });
+
+          headerContainer.addEventListener('change', e => {
+            const select = e.target.closest('.council-file-select');
+            if (!select) return;
+            const path = select.value;
+            const st = this._state;
+            st.selectedFile = path;
+            st.lastFile = path;
+            if (st.generatedFiles && st.generatedFiles[path] !== undefined) {
+              st.lastCode = st.generatedFiles[path];
+            }
+            this.render(st);
+          });
+
+          headerContainer.addEventListener('wheel', e => {
+            const tabs = headerContainer.querySelector('.council-code-tabs');
+            if (!tabs) return;
+            if (e.deltaY !== 0) {
+              e.preventDefault();
+              const delta = e.deltaMode === 1 ? e.deltaY * 20 : (e.deltaMode === 2 ? e.deltaY * tabs.clientWidth : e.deltaY);
+              tabs.scrollLeft += delta;
+            }
+          }, { passive: false });
+        }
       } else {
         // No generated files yet, show original title logic
+        headerContainer._lastFileSig = null;
+        headerContainer._lastMode = null;
         let titleText = 'Changes';
         if (state.status === 'FAILED') {
           titleText = 'Execution Failed';
@@ -2842,10 +2922,10 @@ class CouncilUI {
     }
 
     if (btn) {
-      const code = (selectedFile && state.generatedFiles[selectedFile] !== undefined)
+      const code = (selectedFile && state.generatedFiles && state.generatedFiles[selectedFile] !== undefined)
         ? state.generatedFiles[selectedFile]
         : state.lastCode;
-      btn.hidden = !code;
+      btn.hidden = (code === undefined || code === null);
     }
   }
 
@@ -3776,7 +3856,7 @@ class CouncilUI {
     // Promote to Canvas
     document.getElementById('council-promote-btn')?.addEventListener('click', async () => {
       const state = this._state;
-      if (!state.lastCode) return;
+      if (state.lastCode === undefined || state.lastCode === null) return;
       try {
         const res = await fetch('/api/document', {
           method:  'POST',
@@ -4941,29 +5021,72 @@ function _injectRemediationStyles() {
       margin-left: 8px;
       transition: all 0.15s ease;
     }
+    .council-code-pane .code-panel {
+      padding: 8px 8px 8px 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      white-space: normal;
+    }
+    .council-code-pane .code-row,
+    .council-code-pane .diff-line,
     .diff-line {
       display: flex;
       align-items: flex-start;
-      line-height: 1.5;
-      font-family: var(--font-mono, monospace);
-      white-space: pre;
+      min-height: 20px;
+      line-height: 20px;
+      font-family: var(--code-font, 'Fira Code', monospace);
+      font-size: 12px;
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .council-code-pane .code-row-num,
+    .council-code-pane .diff-lineno,
+    .diff-lineno {
+      width: 38px;
+      min-width: 38px;
+      flex-shrink: 0;
+      color: var(--council-subtle, var(--dim));
+      text-align: right;
+      padding-right: 10px;
+      user-select: none;
+      font-variant-numeric: tabular-nums;
+      line-height: 20px;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    .council-code-pane .code-row-text,
+    .council-code-pane .diff-content,
+    .diff-content {
+      flex: 1 1 0;
+      min-width: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 20px;
+      color: var(--fg);
+      font-family: inherit;
+      font-size: inherit;
     }
     .diff-line.diff-line-add {
       background: rgba(78, 184, 112, 0.12);
       border-left: 3px solid var(--impl, #4eb870);
-      padding-left: 4px;
     }
     .diff-line.diff-line-del {
       background: rgba(224, 88, 88, 0.12);
       border-left: 3px solid var(--fail, #e05858);
-      padding-left: 4px;
       text-decoration: line-through;
       opacity: 0.75;
     }
     .diff-gutter {
       display: inline-block;
-      width: 14px;
+      width: 12px;
+      min-width: 12px;
       flex-shrink: 0;
+      margin-right: 4px;
+      user-select: none;
+      line-height: 20px;
+      font-weight: 700;
+      text-align: center;
     }
   `;
   document.head.appendChild(style);
@@ -4975,10 +5098,18 @@ function initResizers() {
     const workspace = document.querySelector('.council-workspace');
     const ctxPane = document.querySelector('.council-ctx-pane');
 
+    const clampWidth = (width) => {
+      const rect = workspace ? workspace.getBoundingClientRect() : null;
+      const maxW = (rect && rect.width) ? Math.max(240, rect.width - 320) : 1200;
+      return Math.max(240, Math.min(maxW, width));
+    };
+
     const applyCtxWidth = (width) => {
       if (!ctxPane) return;
-      ctxPane.style.flex = `0 0 ${width}px`;
-      ctxPane.style.width = `${width}px`;
+      const clamped = clampWidth(width);
+      ctxPane.style.flex = `0 0 ${clamped}px`;
+      ctxPane.style.width = `${clamped}px`;
+      return clamped;
     };
 
     // Restore saved ctx width if present
@@ -4995,21 +5126,32 @@ function initResizers() {
         if (!rect.width) return;
         const rightWidth = Math.max(240, Math.min(rect.width - 320, rect.right - moveEvent.clientX));
         const rounded = Math.round(rightWidth);
-        applyCtxWidth(rounded);
-        try { localStorage.setItem('council_ctx_pane_width', rounded); } catch {}
+        const applied = applyCtxWidth(rounded);
+        try { localStorage.setItem('council_ctx_pane_width', applied); } catch {}
       });
 
       resizerStreamCtx.addEventListener('keydown', (e) => {
         const rect = workspace.getBoundingClientRect();
+        const maxW = (rect && rect.width) ? Math.max(240, rect.width - 320) : 1200;
         const currentWidth = ctxPane.getBoundingClientRect().width || 380;
         let nextWidth = currentWidth;
-        if (e.key === 'ArrowLeft') nextWidth = Math.min(rect.width - 320, currentWidth + 20);
+        if (e.key === 'ArrowLeft') nextWidth = Math.min(maxW, currentWidth + 20);
         else if (e.key === 'ArrowRight') nextWidth = Math.max(240, currentWidth - 20);
         else return;
         e.preventDefault();
         const rounded = Math.round(nextWidth);
-        applyCtxWidth(rounded);
-        try { localStorage.setItem('council_ctx_pane_width', rounded); } catch {}
+        const applied = applyCtxWidth(rounded);
+        try { localStorage.setItem('council_ctx_pane_width', applied); } catch {}
+      });
+
+      window.addEventListener('resize', () => {
+        if (!ctxPane || !workspace) return;
+        const saved = Number(localStorage.getItem('council_ctx_pane_width'));
+        const currentWidth = ctxPane.getBoundingClientRect().width;
+        const targetWidth = saved > 0 ? saved : currentWidth;
+        if (targetWidth) {
+          applyCtxWidth(targetWidth);
+        }
       });
     }
   } catch (err) {

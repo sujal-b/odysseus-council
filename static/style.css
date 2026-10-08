@@ -39028,6 +39028,7 @@ body.theme-frosted .modal {
   background: var(--hl-bg, var(--bg));
   overflow: auto;
   min-height: 0;
+  min-width: 0;
 }
 .code-panel-linenos {
   padding: 16px 8px 16px 16px;
@@ -40007,22 +40008,48 @@ body.theme-frosted .modal {
   justify-content: space-between;
   height: 44px;
   padding: 0 14px;
+  gap: 8px;
 }
 
 .council-code-pane .code-panel-container {
   background: var(--panel);
+  min-width: 0;
+}
+
+.council-code-pane .code-panel,
+.council-code-pane .code-panel-linenos {
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 12px;
+  line-height: 20px;
+  box-sizing: border-box;
 }
 
 .council-code-pane .code-panel-linenos {
   background: color-mix(in srgb, var(--bg) 60%, var(--panel));
   border-right: 1px solid var(--border);
   color: var(--council-subtle, var(--dim));
+  padding: 8px 6px;
+  min-width: 32px;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.council-code-pane .code-panel-linenos > div {
+  height: 20px;
+  line-height: 20px;
 }
 
 .council-code-pane .code-panel {
   color: var(--fg);
   background: transparent;
-  font-family: var(--code-font, 'Fira Code', monospace);
+  padding: 8px 8px 8px 0;
+  flex: 1 1 0;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: normal;
 }
 
 .council-code-pane .council-pane-title {
@@ -40043,7 +40070,9 @@ body.theme-frosted .modal {
   letter-spacing: .08em;
   text-transform: uppercase;
   border-radius: 4px;
-  padding: 3px 10px;
+  padding: 3px 8px;
+  flex-shrink: 0;
+  white-space: nowrap;
   cursor: pointer;
   transition: background .15s, border-color .15s, box-shadow .15s;
 }
@@ -40070,16 +40099,33 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--fg) 35%, transparent);
 }
 
+.council-code-pane .code-panel::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.council-code-pane .code-panel::-webkit-scrollbar-track {
+  background: var(--panel);
+}
+.council-code-pane .code-panel::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--fg) 20%, transparent);
+  border: 2px solid var(--panel);
+  border-radius: 4px;
+}
+.council-code-pane .code-panel::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--fg) 35%, transparent);
+}
+
 /* Tabs styles */
 .council-code-tabs {
+  min-width: 0;
+  flex: 1;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   gap: 4px;
   height: 100%;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
-  margin-right: 12px;
 }
 .council-code-tabs::-webkit-scrollbar {
   display: none;
@@ -40088,6 +40134,11 @@ body.theme-frosted .modal {
 .council-code-tab {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
+  white-space: nowrap;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   height: 28px;
   padding: 0 12px;
   background: color-mix(in srgb, var(--panel) 80%, var(--bg));
@@ -40098,7 +40149,6 @@ body.theme-frosted .modal {
   font-family: var(--code-font, 'Fira Code', monospace);
   font-size: 11px;
   cursor: pointer;
-  white-space: nowrap;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   user-select: none;
 }
@@ -40125,6 +40175,76 @@ body.theme-frosted .modal {
   right: 0;
   height: 2px;
   background: var(--color-implementer, #4eb870);
+}
+
+.council-file-select {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  background: color-mix(in srgb, var(--panel) 85%, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 11px;
+  padding: 0 6px;
+  outline: none;
+  cursor: pointer;
+}
+
+.council-code-pane .code-row,
+.council-code-pane .diff-line,
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  min-height: 20px;
+  line-height: 20px;
+  font-family: var(--code-font, 'Fira Code', monospace);
+  font-size: 12px;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.council-code-pane .code-row-num,
+.council-code-pane .diff-lineno,
+.diff-lineno {
+  width: 38px;
+  min-width: 38px;
+  flex-shrink: 0;
+  color: var(--council-subtle, var(--dim));
+  text-align: right;
+  padding-right: 10px;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  line-height: 20px;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.council-code-pane .diff-gutter,
+.diff-gutter {
+  display: inline-block;
+  width: 12px;
+  min-width: 12px;
+  flex-shrink: 0;
+  margin-right: 4px;
+  user-select: none;
+  line-height: 20px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.council-code-pane .code-row-text,
+.council-code-pane .diff-content {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 20px;
+  color: var(--fg);
+  font-family: inherit;
+  font-size: inherit;
 }
 
 /* ─── Implementer State Machine Container & Shells ─── */
@@ -40659,8 +40779,10 @@ body.theme-frosted .modal {
 .council-code-pane .code-panel {
   flex: 1 1 0;
   margin: 0;
-  padding: 12px 14px;
-  overflow: auto;
+  padding: 8px 8px 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  white-space: normal;
   min-width: 0;
   min-height: 0;
   border: none !important;
@@ -41900,6 +42022,7 @@ body.theme-frosted .modal {
 .council-ctx-body {
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
