@@ -2634,26 +2634,136 @@ class CouncilUI {
       if (!_seenBurstKeys.has(key)) _openBursts.delete(key);
     }
 
-    // Append completeness indicator if available
-    if (state.completeness !== null) {
-      const pct = Math.round(state.completeness);
-      let critHtml = '';
-      if (Array.isArray(state.completenessCriteria) && state.completenessCriteria.length > 0) {
-        critHtml = '<div style="font-size:9px;color:var(--dim);margin-top:4px;margin-left:12px">';
-        state.completenessCriteria.forEach(c => {
-          const met = c.met ? '✓' : '○';
-          const metColor = c.met ? 'var(--pass)' : 'var(--warn)';
-          critHtml += `<div style="color:${metColor};margin:2px 0"><span>${met}</span> ${_esc(c.name || '')}</div>`;
-        });
-        critHtml += '</div>';
+    // Append completeness & acceptance audit card if available (Apple Design)
+    const hasCompleteness = state.completeness !== null || (Array.isArray(state.completenessCriteria) && state.completenessCriteria.length > 0);
+    if (hasCompleteness) {
+      const criteria = Array.isArray(state.completenessCriteria) ? state.completenessCriteria : [];
+      const totalCrits = criteria.length;
+      const metCrits = criteria.filter(c => c && (c.met === true || String(c.status || '').toLowerCase() === 'verified')).length;
+
+      let pct = 0;
+      if (totalCrits > 0) {
+        pct = Math.round((metCrits / totalCrits) * 100);
+      } else if (Number.isFinite(Number(state.completeness))) {
+        const raw = Number(state.completeness);
+        pct = Math.round(raw <= 1 && raw > 0 ? raw * 100 : raw);
       }
+      pct = Math.max(0, Math.min(100, pct));
+
+      let headline = '';
+      if (pct === 100) {
+        headline = totalCrits > 0 ? `All ${totalCrits} criteria verified complete` : 'All acceptance criteria satisfied';
+      } else if (totalCrits > 0) {
+        headline = `${metCrits} of ${totalCrits} criteria satisfied`;
+      } else {
+        headline = `Specification coverage ${pct}%`;
+      }
+
+      let critListHtml = '';
+      if (totalCrits > 0) {
+        critListHtml = '<div class="ghost-criteria-list">';
+        criteria.forEach(c => {
+          if (!c) return;
+          const isMet = Boolean(c.met === true || String(c.status || '').toLowerCase() === 'verified');
+          const gapType = String(c.gap_type || (isMet ? 'verified' : 'unsatisfied')).toLowerCase();
+
+          const dagNode = Array.isArray(state.dag?.nodes)
+            ? state.dag.nodes.find(n => String(n.id) === String(c.id))
+            : null;
+
+          const rawTitle = c.name
+            || c.title
+            || c.description
+            || (dagNode ? (dagNode.description || dagNode.acceptance) : '')
+            || c.criterion
+            || (c.detail && c.detail.length < 80 ? c.detail : '')
+            || (c.id ? `Task ${c.id}` : 'Acceptance criterion');
+
+          const primaryTitle = String(rawTitle).trim();
+          const detail = (c.detail && String(c.detail).trim() !== primaryTitle) ? String(c.detail).trim() : '';
+          const acceptance = (c.acceptance && String(c.acceptance).trim() !== primaryTitle && String(c.acceptance).trim() !== detail)
+            ? String(c.acceptance).trim()
+            : (dagNode && dagNode.acceptance && String(dagNode.acceptance).trim() !== primaryTitle ? String(dagNode.acceptance).trim() : '');
+
+          let iconHtml = '';
+          if (isMet) {
+            iconHtml = `<span class="ghost-crit-icon is-met" title="Verified" aria-label="Verified">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#30d158" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M2.5 6.5L4.8 8.8L9.5 3.5"/>
+              </svg>
+            </span>`;
+          } else if (gapType === 'needs_user') {
+            iconHtml = `<span class="ghost-crit-icon is-needs-user" title="Needs user decision" aria-label="Needs user decision">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#0a84ff" stroke-width="2" stroke-linecap="round">
+                <path d="M4.5 4.5a1.5 1.5 0 0 1 3 0c0 1-1.5 1.5-1.5 2.5"/><circle cx="6" cy="9.5" r="0.6" fill="currentColor"/>
+              </svg>
+            </span>`;
+          } else if (gapType === 'broken') {
+            iconHtml = `<span class="ghost-crit-icon is-broken" title="Broken" aria-label="Broken">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#ff453a" stroke-width="2" stroke-linecap="round">
+                <line x1="6" y1="3" x2="6" y2="7"/><circle cx="6" cy="9.5" r="0.6" fill="currentColor"/>
+              </svg>
+            </span>`;
+          } else {
+            iconHtml = `<span class="ghost-crit-icon is-unmet" title="Unsatisfied" aria-label="Unsatisfied">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--warn, #f0ad4e)" stroke-width="2" stroke-linecap="round">
+                <circle cx="6" cy="6" r="4.2"/>
+              </svg>
+            </span>`;
+          }
+
+          let badgeLabel = '';
+          let badgeClass = '';
+          if (isMet) {
+            badgeLabel = 'Verified';
+            badgeClass = 'badge-met';
+          } else if (gapType === 'needs_user') {
+            badgeLabel = 'Needs input';
+            badgeClass = 'badge-user';
+          } else if (gapType === 'broken') {
+            badgeLabel = 'Broken';
+            badgeClass = 'badge-broken';
+          } else {
+            badgeLabel = gapType === 'fillable' ? 'Gap' : (c.gap_type || 'Pending');
+            badgeClass = 'badge-gap';
+          }
+
+          critListHtml += `
+            <div class="ghost-crit-row ${isMet ? 'is-met' : 'is-unmet'}">
+              <div class="ghost-crit-icon-wrap">
+                ${iconHtml}
+              </div>
+              <div class="ghost-crit-content">
+                <div class="ghost-crit-title-line">
+                  ${c.id ? `<span class="ghost-crit-chip">${_esc(c.id)}</span>` : ''}
+                  <span class="ghost-crit-title" title="${_esc(primaryTitle)}">${_esc(primaryTitle)}</span>
+                </div>
+                ${detail ? `<div class="ghost-crit-detail">${_esc(detail)}</div>` : ''}
+                ${acceptance ? `<div class="ghost-crit-acceptance">Target: ${_esc(acceptance)}</div>` : ''}
+              </div>
+              <div class="ghost-crit-badge-wrap">
+                <span class="ghost-crit-badge ${badgeClass}">${_esc(badgeLabel)}</span>
+              </div>
+            </div>`;
+        });
+        critListHtml += '</div>';
+      }
+
       html += `
-        <div class="ghost-completeness-bar">
-          <div style="font-size:10px;font-weight:600;color:var(--text);margin-bottom:4px">Completeness: ${pct}%</div>
-          <div style="background:var(--border);height:6px;border-radius:3px;overflow:hidden">
-            <div style="background:var(--pass);height:100%;width:${pct}%;transition:width 0.3s ease"></div>
+        <div class="ghost-completeness-card ghost-completeness-bar">
+          <div class="ghost-completeness-header">
+            <div class="ghost-completeness-meta">
+              <span class="ghost-completeness-kicker">Acceptance Audit</span>
+              <span class="ghost-completeness-headline">${_esc(headline)}</span>
+            </div>
+            <div class="ghost-completeness-pill ${pct === 100 ? 'is-complete' : ''}">
+              <span>${pct}%</span>
+            </div>
           </div>
-          ${critHtml}
+          <div class="ghost-completeness-track">
+            <div class="ghost-completeness-fill ${pct === 100 ? 'is-complete' : ''}" style="width:${pct}%"></div>
+          </div>
+          ${critListHtml}
         </div>`;
     }
 

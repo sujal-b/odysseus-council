@@ -788,6 +788,11 @@ class CompletenessCriterion(BaseModel):
     gap_type: str = "fillable"  # fillable | needs_user | broken
     detail: str = ""
     question: str = ""        # populated only when gap_type == "needs_user"
+    description: str = ""
+    acceptance: str = ""
+    name: str = ""
+    title: str = ""
+    criterion: str = ""
 
 
 class CompletenessAuditOutput(BaseModel):
@@ -970,7 +975,7 @@ def compact_agent_contract(role: str, data: dict) -> dict:
     if role == "completeness_auditor":
         result = keep(data, ("completeness", "done"), ("completeness", "done"))
         result["criteria"] = [
-            keep(item, ("id", "met", "gap_type", "detail", "question"), ("id", "met"))
+            keep(item, ("id", "met", "gap_type", "detail", "question", "description", "acceptance", "name", "title", "criterion"), ("id", "met"))
             for item in (data.get("criteria") or [])
         ]
         return result

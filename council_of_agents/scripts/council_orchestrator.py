@@ -3247,9 +3247,19 @@ Report what you FIND, not what you think might exist."""
         v = validate_agent_output("completeness_auditor", reply)
         if not (v.success and v.data):
             return None
-        return self._ground_audit(
+        grounded = self._ground_audit(
             v.data, written_paths, forced_met_ids=self._restore_verification_passed
         )
+        if grounded and "criteria" in grounded:
+            crit_map = {str(c.get("id", "")): c for c in (criteria or []) if isinstance(c, dict)}
+            for c in grounded.get("criteria", []):
+                cid = str(c.get("id", ""))
+                if cid in crit_map:
+                    if not c.get("description"):
+                        c["description"] = crit_map[cid].get("description", "")
+                    if not c.get("acceptance"):
+                        c["acceptance"] = crit_map[cid].get("acceptance", "")
+        return grounded
 
     async def _ask_user_decision(self, state, question, emit, resume_event, criterion_id="", options=None):
         """Pause the run on a critical fork and ask the user; return their answer.
