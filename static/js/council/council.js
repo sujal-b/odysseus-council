@@ -9,7 +9,46 @@ function _normalizeFilePath(p) {
     s = s.split('council_workspace/').pop();
   }
   if (s.startsWith('/')) s = s.slice(1);
+  // Strip markdown formatting tokens leaking from LLM completions (e.g. **file**, `file`, "file", etc.)
+  s = s.replace(/^[*`"']+|[*`"':]+$/g, '').trim();
   return s;
+}
+
+function _getFileExtensionTag(filename) {
+  if (!filename) return '';
+  const parts = filename.split('.');
+  if (parts.length <= 1) return 'FILE';
+  const ext = parts.pop().toLowerCase();
+  switch (ext) {
+    case 'py': return 'PY';
+    case 'html': case 'htm': return 'HTML';
+    case 'css': return 'CSS';
+    case 'js': case 'mjs': return 'JS';
+    case 'ts': return 'TS';
+    case 'jsx': return 'JSX';
+    case 'tsx': return 'TSX';
+    case 'json': return 'JSON';
+    case 'md': case 'markdown': return 'MD';
+    case 'sql': return 'SQL';
+    case 'sh': case 'bash': return 'SH';
+    case 'yaml': case 'yml': return 'YML';
+    case 'txt': return 'TXT';
+    default: return ext.length <= 4 ? ext.toUpperCase() : 'DOC';
+  }
+}
+
+function _updateTabsOverflowMask(tabs) {
+  if (!tabs) return;
+  const maxScroll = tabs.scrollWidth - tabs.clientWidth;
+  if (maxScroll <= 2) {
+    tabs.classList.remove('fade-left', 'fade-right', 'fade-both');
+    return;
+  }
+  const hasLeft = tabs.scrollLeft > 4;
+  const hasRight = tabs.scrollLeft < maxScroll - 4;
+  tabs.classList.toggle('fade-left', hasLeft && !hasRight);
+  tabs.classList.toggle('fade-right', hasRight && !hasLeft);
+  tabs.classList.toggle('fade-both', hasLeft && hasRight);
 }
 
 function _resolveCanonicalFile(targetPath, fileKeys) {
@@ -3418,44 +3457,51 @@ class CouncilUI {
       if (sortedFiles.length > 0) {
         // Sort files to keep consistent tab ordering (alphabetical)
         const fileSig = sortedFiles.join('::');
-        const isSelectMode = sortedFiles.length > 3;
 
-        if (headerContainer._lastFileSig !== fileSig || headerContainer._lastMode !== isSelectMode) {
+        if (headerContainer._lastFileSig !== fileSig) {
           headerContainer._lastFileSig = fileSig;
-          headerContainer._lastMode = isSelectMode;
 
-          if (isSelectMode) {
-            let selectHtml = '<select class="council-file-select" title="Select output file">';
-            sortedFiles.forEach((filepath, idx) => {
-              const filename = filepath.split(/[/\\]/).pop();
-              const isSelected = (filepath === selectedFile) ? ' selected' : '';
-              selectHtml += `<option value="${_esc(filepath)}"${isSelected} title="${_esc(filepath)}">[${idx + 1}/${sortedFiles.length}] ${_esc(filename)}</option>`;
-            });
-            selectHtml += '</select>';
-            headerContainer.innerHTML = selectHtml;
-          } else {
-            let tabsHtml = '<div class="council-code-tabs">';
-            sortedFiles.forEach(filepath => {
-              const filename = filepath.split(/[/\\]/).pop();
-              const isActive = (filepath === selectedFile);
-              tabsHtml += `<button type="button" class="council-code-tab${isActive ? ' active' : ''}" data-filepath="${_esc(filepath)}" title="${_esc(filepath)}">${_esc(filename)}</button>`;
-            });
-            tabsHtml += '</div>';
-            headerContainer.innerHTML = tabsHtml;
+          let tabsHtml = '<div class="council-code-tabs" role="tablist">';
+          sortedFiles.forEach(filepath => {
+            let filename = filepath.split(/[/\\]/).pop();
+            filename = filename.replace(/^[*`"']+|[*`"':]+$/g, '').trim();
+            const isActive = (filepath === selectedFile);
+            const extTag = _getFileExtensionTag(filename);
+            const badgeHtml = extTag ? `<span class="council-tab-ext ext-${extTag.toLowerCase()}">${extTag}</span>` : '';
+            tabsHtml += `<button type="button" class="council-code-tab${isActive ? ' active' : ''}" data-filepath="${_esc(filepath)}" title="${_esc(filepath)}">${badgeHtml}${_esc(filename)}</button>`;
+          });
+          tabsHtml += '</div>';
+          headerContainer.innerHTML = tabsHtml;
+
+          const tabsEl = headerContainer.querySelector('.council-code-tabs');
+          if (tabsEl) {
+            const activeTab = tabsEl.querySelector('.council-code-tab.active');
+            if (activeTab && typeof activeTab.scrollIntoView === 'function') {
+              activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+            }
+            _updateTabsOverflowMask(tabsEl);
+            if (!tabsEl._resizeObserved && typeof ResizeObserver !== 'undefined') {
+              tabsEl._resizeObserved = true;
+              const ro = new ResizeObserver(() => {
+                _updateTabsOverflowMask(tabsEl);
+              });
+              ro.observe(tabsEl);
+            }
           }
         } else {
           // Fast path: signature hasn't changed. Update selection without re-creating DOM
-          if (isSelectMode) {
-            const selectEl = headerContainer.querySelector('.council-file-select');
-            if (selectEl && selectEl.value !== selectedFile) {
-              selectEl.value = selectedFile;
+          const tabs = headerContainer.querySelectorAll('.council-code-tab');
+          tabs.forEach(tab => {
+            const path = tab.getAttribute('data-filepath');
+            tab.classList.toggle('active', path === selectedFile);
+          });
+          const tabsEl = headerContainer.querySelector('.council-code-tabs');
+          if (tabsEl) {
+            const activeTab = tabsEl.querySelector('.council-code-tab.active');
+            if (activeTab && typeof activeTab.scrollIntoView === 'function') {
+              activeTab.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
             }
-          } else {
-            const tabs = headerContainer.querySelectorAll('.council-code-tab');
-            tabs.forEach(tab => {
-              const path = tab.getAttribute('data-filepath');
-              tab.classList.toggle('active', path === selectedFile);
-            });
+            _updateTabsOverflowMask(tabsEl);
           }
         }
 
@@ -3480,37 +3526,64 @@ class CouncilUI {
             this._renderCodePanel(st);
           });
 
-          headerContainer.addEventListener('change', e => {
-            const select = e.target.closest('.council-file-select');
-            if (!select) return;
-            const path = select.value;
-            const norm = _normalizeFilePath(path);
-            const st = this._state;
-            if (st.selectedFile === norm && this._lastRenderedFile === norm) return;
-            st._userSelectedFile = norm;
-            st.selectedFile = norm;
-            st.lastFile = norm;
-            const code = _getGeneratedFile(st.generatedFiles, norm);
-            if (code !== undefined) {
-              st.lastCode = code;
-            }
-            this._renderCodePanel(st);
-          });
+          let momentumTarget = null;
+          let momentumRaf = null;
 
+          const smoothWheelStep = (tabs) => {
+            if (!tabs || momentumTarget === null) return;
+            const current = tabs.scrollLeft;
+            const diff = momentumTarget - current;
+            if (Math.abs(diff) < 0.5) {
+              tabs.scrollLeft = momentumTarget;
+              momentumTarget = null;
+              momentumRaf = null;
+              _updateTabsOverflowMask(tabs);
+              return;
+            }
+            // Emil Kowalski spring damping factor (0.22 per frame @ 60fps)
+            tabs.scrollLeft = current + diff * 0.22;
+            _updateTabsOverflowMask(tabs);
+            momentumRaf = requestAnimationFrame(() => smoothWheelStep(tabs));
+          };
+
+          // Mouse wheel scroll: converts vertical wheel movement (deltaY) into horizontal momentum
           headerContainer.addEventListener('wheel', e => {
             const tabs = headerContainer.querySelector('.council-code-tabs');
             if (!tabs) return;
+            const maxScroll = tabs.scrollWidth - tabs.clientWidth;
+            if (maxScroll <= 0) return;
+
+            // If user is swiping horizontally on a trackpad, let native browser trackpad physics run
+            if (Math.abs(e.deltaX) >= Math.abs(e.deltaY) && e.deltaX !== 0) {
+              if (momentumRaf) {
+                cancelAnimationFrame(momentumRaf);
+                momentumTarget = null;
+                momentumRaf = null;
+              }
+              return;
+            }
+
             if (e.deltaY !== 0) {
               e.preventDefault();
-              const delta = e.deltaMode === 1 ? e.deltaY * 20 : (e.deltaMode === 2 ? e.deltaY * tabs.clientWidth : e.deltaY);
-              tabs.scrollLeft += delta;
+              const delta = e.deltaMode === 1 ? e.deltaY * 18 : (e.deltaMode === 2 ? e.deltaY * tabs.clientWidth : e.deltaY);
+              const currentTarget = (momentumTarget !== null) ? momentumTarget : tabs.scrollLeft;
+              momentumTarget = Math.max(0, Math.min(maxScroll, currentTarget + delta));
+
+              if (!momentumRaf) {
+                momentumRaf = requestAnimationFrame(() => smoothWheelStep(tabs));
+              }
             }
           }, { passive: false });
+
+          // Keep fade mask in sync during smooth or momentum scrolling
+          headerContainer.addEventListener('scroll', e => {
+            const tabs = e.target.closest('.council-code-tabs') || headerContainer.querySelector('.council-code-tabs');
+            if (tabs) _updateTabsOverflowMask(tabs);
+          }, { passive: true, capture: true });
         }
       } else {
         // No generated files yet, show original title logic
         headerContainer._lastFileSig = null;
-        headerContainer._lastMode = null;
         let titleText = 'Changes';
         if (state.status === 'FAILED') {
           titleText = 'Execution Failed';
@@ -3524,11 +3597,17 @@ class CouncilUI {
       }
     }
 
+    const codeToInspect = (selectedFile && _getGeneratedFile(state.generatedFiles, selectedFile) !== undefined)
+      ? _getGeneratedFile(state.generatedFiles, selectedFile)
+      : state.lastCode;
+    const hasValidCode = (codeToInspect !== undefined && codeToInspect !== null && sortedFiles.length > 0);
+
     if (btn) {
-      const code = (selectedFile && _getGeneratedFile(state.generatedFiles, selectedFile) !== undefined)
-        ? _getGeneratedFile(state.generatedFiles, selectedFile)
-        : state.lastCode;
-      btn.hidden = (code === undefined || code === null);
+      btn.hidden = !hasValidCode;
+    }
+    const copyBtn = document.getElementById('council-copy-code-btn');
+    if (copyBtn) {
+      copyBtn.hidden = !hasValidCode;
     }
   }
 
@@ -5203,11 +5282,38 @@ class CouncilUI {
     // Wire attention dock click listener
     this._wireAttentionDock(document.getElementById('council-attention-dock'));
 
+    // Copy code button
+    document.getElementById('council-copy-code-btn')?.addEventListener('click', async () => {
+      const state = this._state;
+      const code = (state.selectedFile && _getGeneratedFile(state.generatedFiles, state.selectedFile) !== undefined)
+        ? _getGeneratedFile(state.generatedFiles, state.selectedFile)
+        : state.lastCode;
+      if (typeof code !== 'string') return;
+      const ok = await _copyToClipboard(code);
+      const copyBtn = document.getElementById('council-copy-code-btn');
+      if (copyBtn && ok) {
+        const textSpan = copyBtn.querySelector('.council-action-text') || copyBtn;
+        const iconSpan = copyBtn.querySelector('.council-action-icon');
+        const origText = textSpan.textContent;
+        const origIcon = iconSpan ? iconSpan.textContent : '';
+        if (iconSpan) iconSpan.textContent = '✓';
+        textSpan.textContent = 'Copied';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          if (iconSpan) iconSpan.textContent = origIcon;
+          textSpan.textContent = origText;
+          copyBtn.classList.remove('copied');
+        }, 1500);
+      }
+    });
+
     // Promote to Canvas
     document.getElementById('council-promote-btn')?.addEventListener('click', async () => {
       const state = this._state;
       if (state.lastCode === undefined || state.lastCode === null) return;
       try {
+        const btn = document.getElementById('council-promote-btn');
+        if (btn) btn.disabled = true;
         const res = await fetch('/api/document', {
           method:  'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -5220,7 +5326,19 @@ class CouncilUI {
         });
         if (res.ok) {
           const btn = document.getElementById('council-promote-btn');
-          if (btn) { btn.textContent = '✓ Promoted'; setTimeout(() => { btn.textContent = 'Promote to Canvas ↗'; }, 2500); }
+          if (btn) {
+            const textSpan = btn.querySelector('.council-action-text') || btn;
+            const iconSpan = btn.querySelector('.council-action-icon');
+            const origText = textSpan.textContent;
+            const origIcon = iconSpan ? iconSpan.textContent : '';
+            if (iconSpan) iconSpan.textContent = '✓';
+            textSpan.textContent = 'Promoted';
+            setTimeout(() => {
+              if (iconSpan) iconSpan.textContent = origIcon;
+              textSpan.textContent = origText;
+              btn.disabled = false;
+            }, 2000);
+          }
         }
       } catch(e) { console.error('[Council] promote failed:', e); }
     });

@@ -39418,21 +39418,23 @@ body.theme-frosted .modal {
 .council-promote-btn {
   font-size: 11px;
   font-family: inherit;
-  font-weight: 700;
-  letter-spacing: .1em;
-  text-transform: uppercase;
-  color: var(--council-copper);
-  background: none;
-  border: 1px solid var(--council-copper-brd);
-  border-radius: 3px;
-  padding: 2px 10px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--council-muted, var(--dim));
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 8px;
+  height: 26px;
   cursor: pointer;
-  transition: background .15s, border-color .15s, box-shadow .15s;
+  transition: background .12s, border-color .12s, color .12s;
 }
 .council-promote-btn:hover {
-  background: var(--council-copper-dim);
-  border-color: var(--council-copper);
-  box-shadow: 0 0 8px var(--council-copper-glow);
+  background: color-mix(in srgb, var(--panel) 95%, white);
+  border-color: color-mix(in srgb, var(--border) 160%, white);
+  color: var(--fg);
+  box-shadow: none;
 }
 
 /* ── Manager review bar ── */
@@ -40365,8 +40367,10 @@ body.theme-frosted .modal {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 44px;
-  padding: 0 14px;
+  height: 40px;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 0 12px;
   gap: 8px;
 }
 
@@ -40419,27 +40423,55 @@ body.theme-frosted .modal {
   letter-spacing: .06em;
 }
 
-.council-code-pane .council-promote-btn {
-  color: var(--color-implementer, #4eb870);
-  border: 1px solid color-mix(in srgb, var(--color-implementer, #4eb870) 30%, transparent);
-  background: none;
-  font-size: 11px;
-  font-family: inherit;
-  font-weight: 700;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-  border-radius: 4px;
-  padding: 3px 8px;
+/* Files pane action toolbar */
+.council-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   flex-shrink: 0;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background .15s, border-color .15s, box-shadow .15s;
 }
 
+.council-code-action-btn,
+.council-code-pane .council-promote-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--council-muted, var(--dim));
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.council-code-action-btn:hover,
 .council-code-pane .council-promote-btn:hover {
-  background: color-mix(in srgb, var(--color-implementer, #4eb870) 10%, transparent);
-  border-color: var(--color-implementer, #4eb870);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--color-implementer, #4eb870) 35%, transparent);
+  background: color-mix(in srgb, var(--panel) 95%, white);
+  border-color: color-mix(in srgb, var(--border) 160%, white);
+  color: var(--fg);
+  box-shadow: none;
+}
+
+.council-code-action-btn.copied {
+  color: var(--color-success, #4caf50);
+  border-color: var(--color-success, #4caf50);
+}
+
+.council-action-icon {
+  font-size: 11.5px;
+  line-height: 1;
+}
+.council-action-text {
+  font-size: 11px;
 }
 
 .council-code-pane .code-panel-container::-webkit-scrollbar {
@@ -40474,7 +40506,7 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--fg) 35%, transparent);
 }
 
-/* Tabs styles */
+/* Fluid modern file tabs with Gemini Antigravity IDE overflow fade masks */
 .council-code-tabs {
   min-width: 0;
   flex: 1;
@@ -40485,56 +40517,92 @@ body.theme-frosted .modal {
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
+  scroll-behavior: auto;
+  padding: 0 4px;
+  transition: mask-image 0.15s ease, -webkit-mask-image 0.15s ease;
 }
 .council-code-tabs::-webkit-scrollbar {
   display: none;
 }
 
+/* Scroll fade masks matching Gemini Antigravity IDE */
+.council-code-tabs.fade-right {
+  mask-image: linear-gradient(to right, black calc(100% - 32px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - 32px), transparent 100%);
+}
+.council-code-tabs.fade-left {
+  mask-image: linear-gradient(to right, transparent 0%, black 32px);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 32px);
+}
+.council-code-tabs.fade-both {
+  mask-image: linear-gradient(to right, transparent 0%, black 32px, black calc(100% - 32px), transparent 100%);
+  -webkit-mask-image: linear-gradient(to right, transparent 0%, black 32px, black calc(100% - 32px), transparent 100%);
+}
+
 .council-code-tab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  gap: 4px;
   flex-shrink: 0;
   white-space: nowrap;
-  max-width: 140px;
+  max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
-  height: 28px;
-  padding: 0 12px;
-  background: color-mix(in srgb, var(--panel) 80%, var(--bg));
+  height: 26px;
+  padding: 0 8px;
+  background: color-mix(in srgb, var(--panel) 70%, var(--bg));
   border: 1px solid var(--border);
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
+  border-radius: 4px;
   color: var(--council-muted, var(--dim));
   font-family: var(--code-font, 'Fira Code', monospace);
   font-size: 11px;
+  font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
   user-select: none;
 }
 
 .council-code-tab:hover {
-  background: var(--panel);
+  background: color-mix(in srgb, var(--panel) 90%, var(--bg));
+  border-color: color-mix(in srgb, var(--border) 160%, white);
   color: var(--fg);
 }
 
 .council-code-tab.active {
-  background: var(--panel);
-  color: var(--fg);
-  border-color: var(--border);
-  border-bottom: 1px solid var(--panel);
-  position: relative;
-  font-weight: bold;
+  background: var(--surface, color-mix(in srgb, var(--panel) 95%, white));
+  color: var(--fg, #ffffff);
+  border-color: color-mix(in srgb, var(--border) 200%, white);
+  font-weight: 600;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
 }
 
-.council-code-tab.active::before {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--color-implementer, #4eb870);
+.council-code-tab:active,
+.council-code-action-btn:active,
+.council-code-pane .council-promote-btn:active {
+  transform: scale(0.97);
 }
+
+/* File extension badge */
+.council-tab-ext {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 3.5px;
+  border-radius: 3px;
+  line-height: 1;
+  letter-spacing: -0.02em;
+  margin-right: 2px;
+  flex-shrink: 0;
+}
+.council-tab-ext.ext-py { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
+.council-tab-ext.ext-html { background: rgba(249, 115, 22, 0.15); color: #fb923c; }
+.council-tab-ext.ext-css { background: rgba(234, 179, 8, 0.15); color: #facc15; }
+.council-tab-ext.ext-js, .council-tab-ext.ext-ts, .council-tab-ext.ext-jsx, .council-tab-ext.ext-tsx { background: rgba(56, 189, 248, 0.15); color: #38bdf8; }
+.council-tab-ext.ext-json { background: rgba(34, 197, 94, 0.15); color: #4ade80; }
+.council-tab-ext.ext-md { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+.council-tab-ext.ext-sh { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.council-tab-ext.ext-sql { background: rgba(236, 72, 153, 0.15); color: #f472b6; }
+.council-tab-ext.ext-yml { background: rgba(20, 184, 166, 0.15); color: #2dd4bf; }
+.council-tab-ext.ext-file { background: rgba(255, 255, 255, 0.08); color: var(--dim); }
 
 .council-file-select {
   flex: 1;
