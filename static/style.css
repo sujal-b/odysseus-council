@@ -40001,6 +40001,7 @@ body.theme-frosted .modal {
   color: var(--log-text-muted);
   font-size: 10px;
   font-family: var(--code-font, monospace);
+  cursor: pointer;
 }
 
 .council-log-body {
@@ -42370,7 +42371,7 @@ body.theme-frosted .modal {
   flex-shrink: 0;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
-  padding: 0 14px 0 0;
+  padding: 0 12px 0 10px;
   gap: 0;
 }
 .council-ctx-tabbar-spacer { flex: 1; }
@@ -42378,7 +42379,7 @@ body.theme-frosted .modal {
 .council-ctx-tabs-group {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 3px;
   margin: 0;
   padding: 0;
 }
@@ -42386,12 +42387,13 @@ body.theme-frosted .modal {
 /* Tab buttons */
 .council-ctx-tab {
   position: relative;
-  height: 36px;
-  min-width: 38px;
-  padding: 0 10px;
+  height: 26px;
+  width: 26px;
+  min-width: 26px;
+  padding: 0;
   background: none;
   border: none;
-  border-bottom: 2px solid transparent;
+  border-radius: 5px;
   color: color-mix(in srgb, var(--fg) 55%, transparent);
   font-family: inherit;
   font-size: 13px;
@@ -42400,40 +42402,59 @@ body.theme-frosted .modal {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: color .15s, border-color .15s, background .15s;
+  transition: color .15s, background .15s, transform .1s;
   white-space: nowrap;
 }
 .council-ctx-tab:hover {
   color: var(--fg);
-  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 .council-ctx-tab.active {
-  color: var(--council-copper);
-  border-bottom-color: var(--council-copper);
-  background: transparent;
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
 }
 .council-ctx-tab:focus-visible {
   outline: 2px solid var(--council-copper);
-  outline-offset: -2px;
+  outline-offset: 1px;
 }
 .council-tab-icon {
   font-size: 13px;
   line-height: 1;
   display: inline-block;
 }
-.council-ctx-tab-tooltip {
+
+/* Flying description tooltip on hover */
+.council-ctx-tab::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-2px);
+  background: var(--panel-raised, #1f2328);
+  color: var(--fg, #e6edf3);
+  border: 1px solid var(--border, #30363d);
   font-size: 11px;
   font-weight: 500;
-  font-family: var(--code-font, monospace);
-  color: var(--council-subtle, var(--dim));
-  margin-right: 12px;
-  opacity: 0;
-  transition: opacity .15s ease;
-  pointer-events: none;
+  font-family: var(--code-font, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  padding: 3px 7px;
+  border-radius: 5px;
   white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .12s ease, transform .12s ease;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
 }
-.council-ctx-tab-tooltip.is-visible {
+.council-ctx-tab:hover::after,
+.council-ctx-tab:focus-visible::after {
   opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0);
+}
+
+.council-ctx-tab-tooltip {
+  display: none !important;
 }
 .council-ctx-session-group {
   display: flex;
@@ -42441,39 +42462,36 @@ body.theme-frosted .modal {
   gap: 4px;
 }
 .council-log-copy-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
+  display: none !important;
+}
+.council-log-sid {
+  max-width: 140px;
+  overflow: hidden;
+  color: var(--council-subtle, var(--dim));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+  font-family: var(--code-font, monospace);
+  padding: 3px 8px;
+  border-radius: 5px;
   background: var(--council-surface-raised, rgba(255, 255, 255, 0.04));
   border: 1px solid var(--council-line, rgba(255, 255, 255, 0.08));
-  border-radius: 4px;
-  color: var(--council-subtle, var(--dim));
-  font-size: 11px;
   cursor: pointer;
+  user-select: none;
   transition: color .15s, border-color .15s, background .15s;
 }
-.council-log-copy-btn:hover {
+.council-log-sid:hover {
   color: var(--fg);
-  border-color: var(--council-copper);
+  border-color: var(--council-copper, #d97706);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
-.council-log-copy-btn:active {
+.council-log-sid:active {
   transform: scale(0.96);
 }
 
-/* Badge on Log tab */
+/* Badge on Log tab - suppressed to eliminate alarming numbers beside icon */
 .ctx-tab-badge {
-  display: inline-block;
-  margin-left: 5px;
-  padding: 1px 5px;
-  background: var(--council-copper);
-  color: #000;
-  border-radius: 8px;
-  font-size: 9px;
-  font-weight: 700;
-  vertical-align: middle;
-  line-height: 1.4;
+  display: none !important;
 }
 .ctx-tab-badge--warning,
 .ctx-tab-badge--error {

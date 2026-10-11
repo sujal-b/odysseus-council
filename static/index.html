@@ -1150,16 +1150,16 @@
         <!-- Tab bar -->
         <div class="council-ctx-tabbar" role="tablist" aria-label="Context panel views">
           <div class="council-ctx-tabs-group">
-            <button type="button" class="council-ctx-tab active" data-tab="files" id="ctx-tab-files" role="tab" aria-selected="true" aria-controls="ctx-body-files" aria-label="Files">
+            <button type="button" class="council-ctx-tab active" data-tab="files" id="ctx-tab-files" role="tab" aria-selected="true" aria-controls="ctx-body-files" aria-label="Files" data-tooltip="Files">
               <span class="council-tab-icon" aria-hidden="true">&#x25A4;</span>
               <span class="council-tab-label sr-only">Files</span>
             </button>
-            <button type="button" class="council-ctx-tab" data-tab="log" id="ctx-tab-log" role="tab" aria-selected="false" aria-controls="ctx-body-log" aria-label="Pipeline">
+            <button type="button" class="council-ctx-tab" data-tab="log" id="ctx-tab-log" role="tab" aria-selected="false" aria-controls="ctx-body-log" aria-label="Pipeline" data-tooltip="Pipeline">
               <span class="council-tab-icon" aria-hidden="true">&#x2261;</span>
               <span class="council-tab-label sr-only">Pipeline</span>
               <span class="ctx-tab-badge" id="ctx-log-badge" hidden></span>
             </button>
-            <button type="button" class="council-ctx-tab" data-tab="debug" id="ctx-tab-debug" role="tab" aria-selected="false" aria-controls="ctx-body-debug" aria-label="Debug">
+            <button type="button" class="council-ctx-tab" data-tab="debug" id="ctx-tab-debug" role="tab" aria-selected="false" aria-controls="ctx-body-debug" aria-label="Debug" data-tooltip="Debug">
               <span class="council-tab-icon" aria-hidden="true">&#x25C8;</span>
               <span class="council-tab-label sr-only">Debug</span>
             </button>
@@ -1167,8 +1167,8 @@
           <div class="council-ctx-tabbar-spacer"></div>
           <div class="council-ctx-tab-tooltip" id="council-ctx-tab-tooltip" aria-hidden="true"></div>
           <div class="council-ctx-session-group">
-            <span class="council-log-sid" id="council-log-session-id" title="Session ID (click to copy)">ID: PENDING</span>
-            <button type="button" class="council-log-copy-btn" id="council-log-copy-btn" title="Copy Session ID" aria-label="Copy Session ID">&#x29C9;</button>
+            <button type="button" class="council-log-sid" id="council-log-session-id" title="Click to copy Session ID" aria-label="Copy Session ID">ID: PENDING</button>
+            <button type="button" class="council-log-copy-btn" id="council-log-copy-btn" hidden style="display:none;" title="Copy Session ID" aria-label="Copy Session ID">&#x29C9;</button>
             <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close council panel">&times;</button>
           </div>
         </div>

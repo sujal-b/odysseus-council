@@ -5254,7 +5254,27 @@ class CouncilUI {
       tab.addEventListener('blur', hideTooltip);
     });
 
-    // Copy session ID button
+    // Session ID click-to-copy
+    const sidBtn = document.getElementById('council-log-session-id');
+    if (sidBtn && !sidBtn._hasCopyListener) {
+      sidBtn._hasCopyListener = true;
+      sidBtn.addEventListener('click', () => {
+        const sid = this._state?.sessionId;
+        if (sid) {
+          _copyToClipboard(sid).then(() => {
+            sidBtn._isCopied = true;
+            const orig = sidBtn.textContent;
+            sidBtn.textContent = '✓ Copied';
+            setTimeout(() => {
+              sidBtn._isCopied = false;
+              if (sidBtn.isConnected) sidBtn.textContent = orig;
+            }, 1200);
+          });
+        }
+      });
+    }
+
+    // Retained copy button listener for test compatibility
     const copySidBtn = document.getElementById('council-log-copy-btn');
     if (copySidBtn && !copySidBtn._hasCopyListener) {
       copySidBtn._hasCopyListener = true;

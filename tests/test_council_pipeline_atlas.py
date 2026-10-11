@@ -32,6 +32,7 @@ def test_pipeline_atlas_html_and_css_invariants():
     for line in tab_buttons:
         assert 'title=' not in line, f"Native title tooltip must not be present on tab buttons: {line}"
         assert 'aria-label=' in line, f"Accessible aria-label required on tab buttons: {line}"
+        assert 'data-tooltip=' in line, f"Flying description data-tooltip required on tab buttons: {line}"
 
     # 2. Pipeline Atlas container in Log tab
     assert 'id="ctx-body-log"' in HTML
@@ -43,21 +44,32 @@ def test_pipeline_atlas_html_and_css_invariants():
     assert 'id="council-revert-btn"' in HTML
 
     # 3. CSS invariants
-    # Zero dead-space tabs
+    # Sleek compact tabs with minimal box highlight
     tabbar_block = CSS.split(".council-ctx-tabbar {", 1)[1].split("}", 1)[0]
     assert "gap: 0" in tabbar_block
 
     tabs_group_block = CSS.split(".council-ctx-tabs-group {", 1)[1].split("}", 1)[0]
-    assert "gap: 0" in tabs_group_block
+    assert "gap: 3px" in tabs_group_block
 
-    # Tooltip right alignment styling
+    # Flying description tooltips and retired right-docked tooltip text
+    assert ".council-ctx-tab::after" in CSS
+    assert "content: attr(data-tooltip)" in CSS
     tooltip_block = CSS.split(".council-ctx-tab-tooltip {", 1)[1].split("}", 1)[0]
-    assert "margin-right: 12px" in tooltip_block
-    assert "white-space: nowrap" in tooltip_block
+    assert "display: none !important" in tooltip_block
 
-    # Restrained 2px active indicator
+    # No glowing underscore on active tab
     tab_active_block = CSS.split(".council-ctx-tab.active {", 1)[1].split("}", 1)[0]
-    assert "border-bottom-color: var(--council-copper)" in tab_active_block
+    assert "border-bottom" not in tab_active_block
+
+    # Single interactive session ID pill & hidden double copy button
+    copy_btn_block = CSS.split(".council-log-copy-btn {", 1)[1].split("}", 1)[0]
+    assert "display: none !important" in copy_btn_block
+    sid_block = CSS.split(".council-log-sid {", 1)[1].split("}", 1)[0]
+    assert "cursor: pointer" in sid_block
+
+    # Alarming number badge beside pipeline icon is suppressed
+    badge_block = CSS.split(".ctx-tab-badge {", 1)[1].split("}", 1)[0]
+    assert "display: none !important" in badge_block
 
     # Text shimmer and animation
     assert "@keyframes pipeline-text-shimmer" in CSS
