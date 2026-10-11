@@ -39414,29 +39414,6 @@ body.theme-frosted .modal {
   min-width: 0;
 }
 
-/* Promote to Canvas button */
-.council-promote-btn {
-  font-size: 11px;
-  font-family: inherit;
-  font-weight: 500;
-  letter-spacing: normal;
-  text-transform: none;
-  color: var(--council-muted, var(--dim));
-  background: color-mix(in srgb, var(--panel) 80%, transparent);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 8px;
-  height: 26px;
-  cursor: pointer;
-  transition: background .12s, border-color .12s, color .12s;
-}
-.council-promote-btn:hover {
-  background: color-mix(in srgb, var(--panel) 95%, white);
-  border-color: color-mix(in srgb, var(--border) 160%, white);
-  color: var(--fg);
-  box-shadow: none;
-}
-
 /* ── Manager review bar ── */
 .review-bar {
   display: flex;
@@ -40431,13 +40408,13 @@ body.theme-frosted .modal {
   flex-shrink: 0;
 }
 
-.council-code-action-btn,
-.council-code-pane .council-promote-btn {
+.council-code-action-btn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  justify-content: center;
+  width: 26px;
   height: 26px;
-  padding: 0 8px;
+  padding: 0;
   background: color-mix(in srgb, var(--panel) 80%, transparent);
   border: 1px solid var(--border);
   border-radius: 4px;
@@ -40445,20 +40422,35 @@ body.theme-frosted .modal {
   font-family: inherit;
   font-size: 11px;
   font-weight: 500;
-  text-transform: none;
-  letter-spacing: normal;
   cursor: pointer;
-  white-space: nowrap;
   flex-shrink: 0;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  position: relative;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.08s ease;
 }
 
-.council-code-action-btn:hover,
-.council-code-pane .council-promote-btn:hover {
+.council-code-action-btn:hover {
   background: color-mix(in srgb, var(--panel) 95%, white);
   border-color: color-mix(in srgb, var(--border) 160%, white);
   color: var(--fg);
   box-shadow: none;
+}
+
+.council-diff-btn.active {
+  background: color-mix(in srgb, var(--impl, #4eb870) 16%, transparent);
+  border-color: color-mix(in srgb, var(--impl, #4eb870) 50%, transparent);
+  color: var(--impl, #4eb870);
+}
+
+.council-diff-btn.active:hover {
+  background: color-mix(in srgb, var(--impl, #4eb870) 24%, transparent);
+  border-color: var(--impl, #4eb870);
+  color: var(--impl, #4eb870);
+}
+
+.council-diff-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
 }
 
 .council-code-action-btn.copied {
@@ -40469,9 +40461,62 @@ body.theme-frosted .modal {
 .council-action-icon {
   font-size: 11.5px;
   line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
-.council-action-text {
+
+.council-diff-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+/* Flying description tooltip on hover matching .council-ctx-tab */
+.council-code-action-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  transform: translateY(-2px);
+  background: var(--panel-raised, #1f2328);
+  color: var(--fg, #e6edf3);
+  border: 1px solid var(--border, #30363d);
   font-size: 11px;
+  font-weight: 500;
+  font-family: var(--code-font, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+  padding: 3px 7px;
+  border-radius: 5px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .12s ease, transform .12s ease;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+.council-code-action-btn:hover::after,
+.council-code-action-btn:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* Flash pulse animation for execution stream jump-to-change */
+@keyframes diff-target-pulse {
+  0% {
+    background-color: color-mix(in srgb, var(--impl, #4eb870) 40%, transparent);
+  }
+  40% {
+    background-color: color-mix(in srgb, var(--impl, #4eb870) 25%, transparent);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+.diff-line.jump-target,
+.code-row.jump-target {
+  animation: diff-target-pulse 1.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .council-code-pane .code-panel-container::-webkit-scrollbar {
@@ -40577,8 +40622,7 @@ body.theme-frosted .modal {
 }
 
 .council-code-tab:active,
-.council-code-action-btn:active,
-.council-code-pane .council-promote-btn:active {
+.council-code-action-btn:active {
   transform: scale(0.97);
 }
 
@@ -41086,7 +41130,6 @@ body.theme-frosted .modal {
 }
 .council-run-stop,
 .council-revert-btn,
-.council-promote-btn,
 .council-disclosure-btn,
 .log-filter-btn,
 .council-code-tab {
@@ -41537,7 +41580,6 @@ body.theme-frosted .modal {
 .council-resizer:focus-visible,
 .council-run-stop:focus-visible,
 .council-revert-btn:focus-visible,
-.council-promote-btn:focus-visible,
 .council-disclosure-btn:focus-visible,
 .council-dag-modal-close:focus-visible,
 .dag-rail-task-pill:focus-visible,
@@ -43187,7 +43229,6 @@ body.theme-frosted .modal {
 .council-disclosure-btn:active,
 .btn-override:active,
 .btn-approve:active,
-.council-promote-btn:active,
 .mode-toggle-btn:active {
   transform: scale(0.97);
 }

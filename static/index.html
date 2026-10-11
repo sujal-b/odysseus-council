@@ -1180,13 +1180,15 @@
               <span class="council-pane-title" id="council-code-title">Changes</span>
             </div>
             <div class="council-code-actions" id="council-code-actions">
-              <button type="button" id="council-copy-code-btn" class="council-code-action-btn" hidden title="Copy code to clipboard" aria-label="Copy code to clipboard">
-                <span class="council-action-icon">&#x29C9;</span>
-                <span class="council-action-text">Copy</span>
+              <button type="button" id="council-copy-code-btn" class="council-code-action-btn" hidden data-tooltip="Copy code" aria-label="Copy code to clipboard">
+                <span class="council-action-icon" aria-hidden="true">&#x29C9;</span>
               </button>
-              <button type="button" id="council-promote-btn" class="council-promote-btn council-code-action-btn" hidden title="Open in Document Canvas" aria-label="Open in Document Canvas">
-                <span class="council-action-icon">&#x2197;</span>
-                <span class="council-action-text">Canvas</span>
+              <button type="button" id="council-diff-btn" class="council-code-action-btn council-diff-btn" hidden data-tooltip="Show diff" aria-label="Toggle diff view" aria-pressed="false">
+                <svg class="council-action-icon council-diff-icon" width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="2.5" y="2.5" width="11" height="11" rx="2" stroke-width="1.4"/>
+                  <line x1="8" y1="2.5" x2="8" y2="13.5" stroke-dasharray="1.5 1.5" stroke-width="1.2"/>
+                  <path d="M4.5 8h2M10 8h2M11 7v2" stroke-width="1.4"/>
+                </svg>
               </button>
             </div>
           </div>

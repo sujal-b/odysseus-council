@@ -1054,6 +1054,8 @@ class CouncilUI {
     this._autoFollow = true;
     this._dagOverlayOpen = false;
     this._activeThoughtExpanded = false;
+    this._diffModeActive = false;
+    this._targetDiffLineIndex = null;
     this._telemetry = new CouncilTelemetry(this._state);
     this._state.telemetry = this._telemetry;
     this._telemetry.start();
@@ -1128,6 +1130,8 @@ class CouncilUI {
     this._activeThoughtExpanded = false;
     this._hasAutoSwitchedToFiles = false;
     this._lastRenderedFile = null;
+    this._diffModeActive = false;
+    this._targetDiffLineIndex = null;
     this._state.fileVersions = {};
     this._state._userSelectedFile = null;
     if (this._dagOverlayOpen) {
@@ -3239,7 +3243,8 @@ class CouncilUI {
   _renderCodePanel(state) {
     const el  = document.getElementById('council-code-panel');
     const linenosEl = document.getElementById('council-code-linenos');
-    const btn = document.getElementById('council-promote-btn');
+    const diffBtn = document.getElementById('council-diff-btn');
+    const copyBtn = document.getElementById('council-copy-code-btn');
     const headerContainer = document.getElementById('council-code-header-container');
 
     const rawFiles = Object.keys(state.generatedFiles || {});
@@ -3267,6 +3272,17 @@ class CouncilUI {
       }
     }
 
+    const fileVer = (state.fileVersions && selectedFile) ? _getFileVersion(state.fileVersions, selectedFile) : null;
+    const hasDiff = Boolean(
+      fileVer &&
+      typeof fileVer.current === 'string' &&
+      (
+        (typeof fileVer.original === 'string' && fileVer.original !== fileVer.current) ||
+        (fileVer.original === null && fileVer.current.length > 0)
+      )
+    );
+    const shouldShowDiff = Boolean(this._diffModeActive && hasDiff);
+
     // Snapshot scroll positions: preserve during live streaming updates to the same file,
     // but reset to 0 when switching to a different file.
     const isSameFile = (this._lastRenderedFile === selectedFile);
@@ -3289,20 +3305,11 @@ class CouncilUI {
           ? _getGeneratedFile(state.generatedFiles, selectedFile)
           : (typeof state.lastCode === 'string' ? state.lastCode : '');
 
-        const fileVer = state.fileVersions ? _getFileVersion(state.fileVersions, selectedFile) : null;
-        const hasDiff = Boolean(
-          fileVer &&
-          typeof fileVer.original === 'string' &&
-          fileVer.original.length > 0 &&
-          fileVer.original !== fileVer.current &&
-          typeof fileVer.current === 'string'
-        );
-
         const MAX_INITIAL_LINES = 1500;
         if (!el._expandedFiles) el._expandedFiles = new Set();
         const isExpanded = el._expandedFiles.has(selectedFile);
 
-        const renderKey = `${selectedFile}::${isExpanded}::${hasDiff ? (fileVer.original.length + ':' + fileVer.current.length + ':' + fileVer.current) : (safeCode.length + ':' + safeCode)}`;
+        const renderKey = `${selectedFile}::${shouldShowDiff}::${this._targetDiffLineIndex}::${isExpanded}::${shouldShowDiff ? ((fileVer?.original || '').length + ':' + (fileVer?.current || '').length + ':' + fileVer?.current) : (safeCode.length + ':' + safeCode)}`;
         const contentChanged = (el._lastRenderKey !== renderKey);
 
         if (contentChanged) {
@@ -3311,7 +3318,7 @@ class CouncilUI {
           el.style.padding = '';
           if (linenosEl) linenosEl.style.display = 'none';
 
-          if (hasDiff) {
+          if (shouldShowDiff) {
             let diffLines = fileVer._cachedDiff;
             if (!Array.isArray(diffLines)) {
               diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
@@ -3323,12 +3330,14 @@ class CouncilUI {
               const item = diffLines[idx];
               const lineNum = item.lineNum != null ? item.lineNum : (item.type === 'add' ? '+' : (item.type === 'del' ? '-' : ''));
               const textContent = (item.text !== '') ? _esc(item.text) : '<br>';
+              const isTarget = (this._targetDiffLineIndex === idx);
+              const targetCls = isTarget ? ' jump-target' : '';
               if (item.type === 'add') {
-                chunks.push(`<div class="diff-line diff-line-add"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-add${targetCls}"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`);
               } else if (item.type === 'del') {
-                chunks.push(`<div class="diff-line diff-line-del"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-del${targetCls}"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`);
               } else {
-                chunks.push(`<div class="diff-line diff-line-equal"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-equal${targetCls}"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`);
               }
             }
             if (diffLines.length > renderCount) {
@@ -3345,7 +3354,9 @@ class CouncilUI {
             for (let i = 0; i < renderCount; i++) {
               const line = lines[i];
               const textContent = (line !== '') ? _esc(line) : '<br>';
-              chunks.push(`<div class="code-row"><span class="code-row-num">${i + 1}</span><span class="code-row-text">${textContent}</span></div>`);
+              const isTarget = (this._targetDiffLineIndex === i);
+              const targetCls = isTarget ? ' jump-target' : '';
+              chunks.push(`<div class="code-row${targetCls}"><span class="code-row-num">${i + 1}</span><span class="code-row-text">${textContent}</span></div>`);
             }
             if (lines.length > renderCount) {
               chunks.push(`<div class="code-panel-truncated"><span>Showing first ${renderCount.toLocaleString()} of ${lines.length.toLocaleString()} lines</span><button type="button" class="council-expand-lines-btn" data-filepath="${_esc(selectedFile)}">Show all ${lines.length.toLocaleString()} lines</button></div>`);
@@ -3353,9 +3364,17 @@ class CouncilUI {
             el.innerHTML = chunks.join('');
           }
 
-          // Restore scroll positions to prevent jumping
-          el.scrollTop = savedCodeScrollTop;
-          if (linenosEl) linenosEl.scrollTop = savedLinenosScrollTop;
+          if (this._targetDiffLineIndex != null) {
+            const targetEl = el.querySelector('.jump-target');
+            if (targetEl && typeof targetEl.scrollIntoView === 'function') {
+              targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+            this._targetDiffLineIndex = null;
+          } else {
+            // Restore scroll positions to prevent jumping
+            el.scrollTop = savedCodeScrollTop;
+            if (linenosEl) linenosEl.scrollTop = savedLinenosScrollTop;
+          }
         }
 
         if (!el._expandWired) {
@@ -3602,10 +3621,15 @@ class CouncilUI {
       : state.lastCode;
     const hasValidCode = (codeToInspect !== undefined && codeToInspect !== null && sortedFiles.length > 0);
 
-    if (btn) {
-      btn.hidden = !hasValidCode;
+    if (diffBtn) {
+      diffBtn.hidden = !hasValidCode;
+      diffBtn.disabled = !hasDiff;
+      diffBtn.classList.toggle('active', shouldShowDiff);
+      diffBtn.setAttribute('aria-pressed', String(shouldShowDiff));
+      const diffTooltip = shouldShowDiff ? 'Hide diff' : (hasDiff ? 'Show diff' : 'No changes in file');
+      diffBtn.setAttribute('data-tooltip', diffTooltip);
+      diffBtn.setAttribute('title', diffTooltip);
     }
-    const copyBtn = document.getElementById('council-copy-code-btn');
     if (copyBtn) {
       copyBtn.hidden = !hasValidCode;
     }
@@ -4590,7 +4614,7 @@ class CouncilUI {
       item.addEventListener('click', () => {
         const filePath = item.dataset.filePath;
         if (filePath) {
-          this.selectFile(filePath);
+          this.selectFile(filePath, { activateDiff: true });
         }
       });
     });
@@ -5115,7 +5139,7 @@ class CouncilUI {
       const fileLink = e.target.closest('.tx--file-link');
       if (fileLink) {
         const fp = fileLink.getAttribute('data-filepath');
-        if (fp) this.selectFile(fp);
+        if (fp) this.selectFile(fp, { activateDiff: true });
         return;
       }
     });
@@ -5274,7 +5298,7 @@ class CouncilUI {
           const target = chip;
           target.style.opacity = '0.5';
           setTimeout(() => { if (target.isConnected) target.style.opacity = ''; }, 600);
-          this.selectFile(path);
+          this.selectFile(path, { activateDiff: true });
         }
       }
     });
@@ -5292,55 +5316,27 @@ class CouncilUI {
       const ok = await _copyToClipboard(code);
       const copyBtn = document.getElementById('council-copy-code-btn');
       if (copyBtn && ok) {
-        const textSpan = copyBtn.querySelector('.council-action-text') || copyBtn;
         const iconSpan = copyBtn.querySelector('.council-action-icon');
-        const origText = textSpan.textContent;
         const origIcon = iconSpan ? iconSpan.textContent : '';
         if (iconSpan) iconSpan.textContent = '✓';
-        textSpan.textContent = 'Copied';
+        copyBtn.setAttribute('data-tooltip', 'Copied!');
+        copyBtn.setAttribute('title', 'Copied!');
         copyBtn.classList.add('copied');
         setTimeout(() => {
           if (iconSpan) iconSpan.textContent = origIcon;
-          textSpan.textContent = origText;
+          copyBtn.setAttribute('data-tooltip', 'Copy code');
+          copyBtn.setAttribute('title', 'Copy code');
           copyBtn.classList.remove('copied');
         }, 1500);
       }
     });
 
-    // Promote to Canvas
-    document.getElementById('council-promote-btn')?.addEventListener('click', async () => {
-      const state = this._state;
-      if (state.lastCode === undefined || state.lastCode === null) return;
-      try {
-        const btn = document.getElementById('council-promote-btn');
-        if (btn) btn.disabled = true;
-        const res = await fetch('/api/document', {
-          method:  'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body:    JSON.stringify({
-            session_id: state.sessionId,
-            title:    state.lastFile || 'Council Output',
-            content:  state.lastCode,
-            language: 'auto',
-          }),
-        });
-        if (res.ok) {
-          const btn = document.getElementById('council-promote-btn');
-          if (btn) {
-            const textSpan = btn.querySelector('.council-action-text') || btn;
-            const iconSpan = btn.querySelector('.council-action-icon');
-            const origText = textSpan.textContent;
-            const origIcon = iconSpan ? iconSpan.textContent : '';
-            if (iconSpan) iconSpan.textContent = '✓';
-            textSpan.textContent = 'Promoted';
-            setTimeout(() => {
-              if (iconSpan) iconSpan.textContent = origIcon;
-              textSpan.textContent = origText;
-              btn.disabled = false;
-            }, 2000);
-          }
-        }
-      } catch(e) { console.error('[Council] promote failed:', e); }
+    // Diff toggle button
+    document.getElementById('council-diff-btn')?.addEventListener('click', () => {
+      this._diffModeActive = !this._diffModeActive;
+      const el = document.getElementById('council-code-panel');
+      if (el) delete el._lastRenderKey;
+      this._renderCodePanel(this._state);
     });
 
     // Enable button based on active/complete state
@@ -5462,7 +5458,7 @@ class CouncilUI {
     }
   }
 
-  selectFile(filepath) {
+  selectFile(filepath, options = {}) {
     if (!filepath) return;
     const norm = _normalizeFilePath(filepath);
     const genFiles = this._state.generatedFiles || {};
@@ -5478,6 +5474,26 @@ class CouncilUI {
     if (code !== undefined) {
       this._state.lastCode = code;
     }
+
+    if (options.activateDiff) {
+      this._diffModeActive = true;
+      const fileVer = this._state.fileVersions ? _getFileVersion(this._state.fileVersions, target) : null;
+      if (fileVer) {
+        let diffLines = fileVer._cachedDiff;
+        if (!Array.isArray(diffLines)) {
+          diffLines = computeLineDiff(fileVer.original || '', fileVer.current || '');
+          fileVer._cachedDiff = diffLines;
+        }
+        const firstChangeIdx = diffLines.findIndex(d => d.type === 'add' || d.type === 'del');
+        if (firstChangeIdx !== -1) {
+          this._targetDiffLineIndex = firstChangeIdx;
+        }
+      }
+    }
+
+    const el = document.getElementById('council-code-panel');
+    if (el) delete el._lastRenderKey;
+
     this._activateCtxTab('files');
     this._renderCodePanel(this._state);
   }

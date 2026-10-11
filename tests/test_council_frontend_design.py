@@ -874,4 +874,44 @@ def test_stream_apple_design_audit_invariants():
     assert "@media (prefers-contrast: more)" in css
 
 
+def test_council_diff_viewer_toggle_and_canvas_removal():
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    js = (ROOT / "static" / "js" / "council" / "council.js").read_text(encoding="utf-8")
+    css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+
+    # 1. Canvas button eradicated safely from HTML, CSS, JS
+    assert 'id="council-promote-btn"' not in html
+    assert "council-promote-btn" not in css
+    assert "council-promote-btn" not in js
+
+    # 2. Diff toggle button and Copy button in HTML action toolbar
+    assert 'id="council-diff-btn"' in html
+    assert 'id="council-copy-code-btn"' in html
+    assert 'data-tooltip="Show diff"' in html
+    assert 'data-tooltip="Copy code"' in html
+    assert '<rect x="2.5" y="2.5"' in html  # Bespoke split-card SVG
+
+    # 3. Action buttons are icon-only (no visible text spans or text nodes inside action toolbar)
+    actions_markup = html.split('id="council-code-actions"', 1)[1].split('</div>', 1)[0]
+    assert "council-action-text" not in actions_markup
+    assert ">Copy<" not in actions_markup
+    assert ">Canvas<" not in actions_markup
+
+    # 4. CSS: 26px square icon buttons, diff active/disabled states, flying tooltip, pulse animation
+    assert ".council-code-action-btn {" in css
+    assert ".council-diff-btn.active {" in css
+    assert ".council-diff-btn:disabled {" in css
+    assert ".council-code-action-btn::after {" in css
+    assert "@keyframes diff-target-pulse {" in css
+    assert ".diff-line.jump-target," in css
+
+    # 5. JS: Diff mode state, clean view default, execution stream jump with diff activation
+    assert "this._diffModeActive = false;" in js
+    assert "const shouldShowDiff = Boolean(this._diffModeActive && hasDiff);" in js
+    assert "document.getElementById('council-diff-btn')" in js
+    assert "selectFile(filepath, options = {})" in js
+    assert "options.activateDiff" in js
+    assert "this._targetDiffLineIndex" in js
+
+
 
