@@ -42722,7 +42722,8 @@ body.theme-frosted .modal {
 }
 
 .council-attention-dock[hidden],
-.council-attention-dock:empty {
+.council-attention-dock:empty,
+#ctx-body-log .council-attention-dock {
   display: none !important;
 }
 

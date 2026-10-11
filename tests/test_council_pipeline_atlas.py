@@ -90,6 +90,7 @@ def test_pipeline_atlas_html_and_css_invariants():
     assert ".stream-block-focus-highlight" in CSS
     assert ".pipeline-drawer-metric-line--failed" in CSS
     assert ".pipeline-drawer-metric-line--blocked" in CSS
+    assert "#ctx-body-log .council-attention-dock" in CSS
 
 
 def test_pipeline_atlas_node_simulation():
@@ -228,16 +229,16 @@ def test_pipeline_atlas_node_simulation():
     }
 
     // Summary line should contain files changed, outputs, failed op, and revision cycle
-    if (!summaryEl.innerHTML.includes('4 files changed')) {
-        throw new Error('Summary missing 4 files changed: ' + summaryEl.innerHTML);
+    if (!summaryEl.innerHTML.includes('4 Modified')) {
+        throw new Error('Summary missing 4 Modified: ' + summaryEl.innerHTML);
     }
-    if (!summaryEl.innerHTML.includes('output')) {
+    if (!summaryEl.innerHTML.includes('Output')) {
         throw new Error('Summary missing outputs: ' + summaryEl.innerHTML);
     }
-    if (!summaryEl.innerHTML.includes('1 failed op') || !summaryEl.innerHTML.includes('pipeline-metric-failed')) {
+    if (!summaryEl.innerHTML.includes('1 Failed') || !summaryEl.innerHTML.includes('pipeline-metric-failed')) {
         throw new Error('Summary missing restrained failed op: ' + summaryEl.innerHTML);
     }
-    if (!summaryEl.innerHTML.includes('1 revision cycle')) {
+    if (!summaryEl.innerHTML.includes('1 Revision')) {
         throw new Error('Summary missing revision cycle: ' + summaryEl.innerHTML);
     }
 

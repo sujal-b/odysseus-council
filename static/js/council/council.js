@@ -4245,21 +4245,21 @@ class CouncilUI {
       }
 
       // Update Global Summary Line
-      // Format: X files changed · Y outputs · Z failed ops · W revision cycles
+      // Format: X Modified · Y Outputs · Z Failed · W Revisions
       const summaryEl = document.getElementById('council-pipeline-summary');
       if (summaryEl) {
         const parts = [];
         if (derived.globalFilesCount > 0) {
-          parts.push(`${derived.globalFilesCount} ${derived.globalFilesCount === 1 ? 'file changed' : 'files changed'}`);
+          parts.push(`${derived.globalFilesCount} Modified`);
         }
         if (derived.globalOutputsCount > 0) {
-          parts.push(`${derived.globalOutputsCount} ${derived.globalOutputsCount === 1 ? 'output' : 'outputs'}`);
+          parts.push(`${derived.globalOutputsCount} ${derived.globalOutputsCount === 1 ? 'Output' : 'Outputs'}`);
         }
         if (derived.globalFailedOps > 0) {
-          parts.push(`<span class="pipeline-metric-failed">${derived.globalFailedOps} ${derived.globalFailedOps === 1 ? 'failed op' : 'failed ops'}</span>`);
+          parts.push(`<span class="pipeline-metric-failed">${derived.globalFailedOps} Failed</span>`);
         }
         if (derived.globalRevisionCycles > 0) {
-          parts.push(`${derived.globalRevisionCycles} ${derived.globalRevisionCycles === 1 ? 'revision cycle' : 'revision cycles'}`);
+          parts.push(`${derived.globalRevisionCycles} ${derived.globalRevisionCycles === 1 ? 'Revision' : 'Revisions'}`);
         }
 
         if (parts.length > 0) {
