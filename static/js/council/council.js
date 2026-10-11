@@ -3328,16 +3328,16 @@ class CouncilUI {
             const chunks = [];
             for (let idx = 0; idx < renderCount; idx++) {
               const item = diffLines[idx];
-              const lineNum = item.lineNum != null ? item.lineNum : (item.type === 'add' ? '+' : (item.type === 'del' ? '-' : ''));
+              const lineNum = item.lineNum != null ? item.lineNum : '';
               const textContent = (item.text !== '') ? _esc(item.text) : '<br>';
               const isTarget = (this._targetDiffLineIndex === idx);
               const targetCls = isTarget ? ' jump-target' : '';
               if (item.type === 'add') {
-                chunks.push(`<div class="diff-line diff-line-add${targetCls}"><span class="diff-lineno" style="color:var(--impl,#4eb870);">${lineNum}</span><span class="diff-gutter" style="color:var(--impl,#4eb870);">+</span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-add${targetCls}"><span class="diff-lineno">${lineNum}</span><span class="diff-content">${textContent}</span></div>`);
               } else if (item.type === 'del') {
-                chunks.push(`<div class="diff-line diff-line-del${targetCls}"><span class="diff-lineno" style="color:var(--fail,#e05858);">${lineNum}</span><span class="diff-gutter" style="color:var(--fail,#e05858);">-</span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-del${targetCls}"><span class="diff-lineno">${lineNum}</span><span class="diff-content">${textContent}</span></div>`);
               } else {
-                chunks.push(`<div class="diff-line diff-line-equal${targetCls}"><span class="diff-lineno">${lineNum}</span><span class="diff-gutter" style="opacity:0.3;"> </span><span class="diff-content">${textContent}</span></div>`);
+                chunks.push(`<div class="diff-line diff-line-equal${targetCls}"><span class="diff-lineno">${lineNum}</span><span class="diff-content">${textContent}</span></div>`);
               }
             }
             if (diffLines.length > renderCount) {
@@ -7002,6 +7002,7 @@ function _injectRemediationStyles() {
       font-size: 12px;
       box-sizing: border-box;
       width: 100%;
+      border-left: 3px solid transparent;
     }
     .council-code-pane .code-row-num,
     .council-code-pane .diff-lineno,
@@ -7032,25 +7033,26 @@ function _injectRemediationStyles() {
       font-size: inherit;
     }
     .diff-line.diff-line-add {
-      background: rgba(78, 184, 112, 0.12);
-      border-left: 3px solid var(--impl, #4eb870);
+      background: color-mix(in srgb, #3db868 11%, transparent);
+      border-left: 3px solid #3db868;
+    }
+    .diff-line.diff-line-add .diff-lineno {
+      color: color-mix(in srgb, #3db868 75%, var(--dim, #8b949e));
     }
     .diff-line.diff-line-del {
-      background: rgba(224, 88, 88, 0.12);
-      border-left: 3px solid var(--fail, #e05858);
-      text-decoration: line-through;
-      opacity: 0.75;
+      background: color-mix(in srgb, #e05555 11%, transparent);
+      border-left: 3px solid #e05555;
     }
-    .diff-gutter {
-      display: inline-block;
-      width: 12px;
-      min-width: 12px;
-      flex-shrink: 0;
-      margin-right: 4px;
-      user-select: none;
-      line-height: 20px;
-      font-weight: 700;
-      text-align: center;
+    .diff-line.diff-line-del .diff-lineno {
+      color: color-mix(in srgb, #e05555 75%, var(--dim, #8b949e));
+    }
+    .diff-line.diff-line-del .diff-content {
+      text-decoration: line-through;
+      text-decoration-color: color-mix(in srgb, #e05555 45%, transparent);
+      opacity: 0.82;
+    }
+    .diff-line.diff-line-equal {
+      border-left: 3px solid transparent;
     }
     .code-panel-truncated {
       display: flex;

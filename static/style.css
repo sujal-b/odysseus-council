@@ -40674,6 +40674,41 @@ body.theme-frosted .modal {
   font-size: 12px;
   box-sizing: border-box;
   width: 100%;
+  border-left: 3px solid transparent;
+}
+
+.council-code-pane .diff-line.diff-line-add,
+.diff-line.diff-line-add {
+  background: color-mix(in srgb, #3db868 11%, transparent);
+  border-left-color: #3db868;
+}
+
+.council-code-pane .diff-line.diff-line-add .diff-lineno,
+.diff-line.diff-line-add .diff-lineno {
+  color: color-mix(in srgb, #3db868 75%, var(--dim, #8b949e));
+}
+
+.council-code-pane .diff-line.diff-line-del,
+.diff-line.diff-line-del {
+  background: color-mix(in srgb, #e05555 11%, transparent);
+  border-left-color: #e05555;
+}
+
+.council-code-pane .diff-line.diff-line-del .diff-lineno,
+.diff-line.diff-line-del .diff-lineno {
+  color: color-mix(in srgb, #e05555 75%, var(--dim, #8b949e));
+}
+
+.council-code-pane .diff-line.diff-line-del .diff-content,
+.diff-line.diff-line-del .diff-content {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, #e05555 45%, transparent);
+  opacity: 0.82;
+}
+
+.council-code-pane .diff-line.diff-line-equal,
+.diff-line.diff-line-equal {
+  border-left-color: transparent;
 }
 
 .council-code-pane .code-row-num,
@@ -40694,15 +40729,7 @@ body.theme-frosted .modal {
 
 .council-code-pane .diff-gutter,
 .diff-gutter {
-  display: inline-block;
-  width: 12px;
-  min-width: 12px;
-  flex-shrink: 0;
-  margin-right: 4px;
-  user-select: none;
-  line-height: 20px;
-  font-weight: 700;
-  text-align: center;
+  display: none;
 }
 
 .council-code-pane .code-row-text,
@@ -41803,26 +41830,22 @@ body.theme-frosted .modal {
   overflow-x: auto;
 }
 .diff-line-add {
-  background: color-mix(in srgb, var(--color-implementer, #4eb870) 12%, transparent);
+  background: color-mix(in srgb, #3db868 11%, transparent);
+  border-left: 3px solid #3db868;
   color: var(--fg);
-}
-.diff-line-add .diff-gutter {
-  color: var(--color-implementer, #4eb870);
-  background: color-mix(in srgb, var(--color-implementer, #4eb870) 20%, transparent);
 }
 .diff-line-del {
-  background: color-mix(in srgb, var(--color-chair, #df4b45) 12%, transparent);
+  background: color-mix(in srgb, #e05555 11%, transparent);
+  border-left: 3px solid #e05555;
   color: var(--fg);
 }
-.diff-line-del .diff-gutter {
-  color: var(--color-chair, #df4b45);
-  background: color-mix(in srgb, var(--color-chair, #df4b45) 20%, transparent);
+.diff-line-del .diff-content {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, #e05555 45%, transparent);
+  opacity: 0.82;
 }
 .diff-line-context {
   color: var(--fg);
-}
-.diff-line-context .diff-gutter {
-  color: var(--council-subtle, var(--dim));
 }
 /* ─── Responsive Council Console ─── */
 /* ─── Responsive Council Console Architecture ─── */

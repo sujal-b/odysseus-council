@@ -913,5 +913,12 @@ def test_council_diff_viewer_toggle_and_canvas_removal():
     assert "options.activateDiff" in js
     assert "this._targetDiffLineIndex" in js
 
+    # 6. Clean diff lines: no distracting +/- signs in gutter, calibrated emerald & ruby indicators
+    assert "#3db868" in css
+    assert "#e05555" in css
+    assert 'diff-gutter" style=' not in js
+    assert "border-left-color: #3db868;" in css
+    assert "border-left-color: #e05555;" in css
+
 
 
