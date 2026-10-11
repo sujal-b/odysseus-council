@@ -186,3 +186,54 @@ def test_ambiguous_plan_raises_targeted_revision_in_acceptance_path():
     }]})
     with pytest.raises(ValueError, match="T2"):
         CouncilOrchestrator._task_dag_from_plan(plan)
+
+
+def test_dependency_preamble_preserves_workspace_root():
+    """Session ed481120 regression: tasks like 'Using T1's output, create ./splitsmart.py'
+    must not be demoted to read-only when workspace_root: true is declared."""
+    tasks = [
+        {
+            "id": "T2",
+            "description": "Using T1's output, create ./splitsmart.py (standard library only, single file)",
+            "workspace_root": True,
+            "write_scope": [],
+        },
+        {
+            "id": "T3",
+            "description": "Using T1's output and the API from T2, create ./test_splitsmart.py (unittest)",
+            "workspace_root": True,
+            "write_scope": [],
+        },
+    ]
+    res = repair_file_write_scopes(tasks)
+    assert res == {"repaired": [], "errors": []}
+    assert tasks[0].get("workspace_root") is True
+    assert tasks[1].get("workspace_root") is True
+
+
+def test_dependency_preamble_repairs_empty_scope_to_workspace_root():
+    tasks = [
+        {
+            "id": "T2",
+            "description": "Using T1's output, create ./splitsmart.py for expense splitting",
+            "write_scope": [],
+        }
+    ]
+    assert file_write_scope_error(tasks) is None
+    assert tasks[0].get("workspace_root") is True
+    assert tasks[0]["write_scope"] == []
+
+
+def test_build_verb_preserves_workspace_root():
+    tasks = [
+        {
+            "id": "T2",
+            "description": "Build ./splitsmart.py CLI tool",
+            "workspace_root": True,
+            "write_scope": [],
+        }
+    ]
+    res = repair_file_write_scopes(tasks)
+    assert res == {"repaired": [], "errors": []}
+    assert tasks[0].get("workspace_root") is True
+

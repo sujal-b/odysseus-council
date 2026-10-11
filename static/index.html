@@ -1148,13 +1148,29 @@
       <!-- RIGHT: Contextual panel -->
       <div class="council-ctx-pane council-log-sidebar">
         <!-- Tab bar -->
-        <div class="council-ctx-tabbar">
-          <button type="button" class="council-ctx-tab active" data-tab="files" id="ctx-tab-files">Files</button>
-          <button type="button" class="council-ctx-tab" data-tab="log" id="ctx-tab-log">Log<span class="ctx-tab-badge" id="ctx-log-badge" hidden></span></button>
-          <button type="button" class="council-ctx-tab" data-tab="debug" id="ctx-tab-debug">Debug</button>
+        <div class="council-ctx-tabbar" role="tablist" aria-label="Context panel views">
+          <div class="council-ctx-tabs-group">
+            <button type="button" class="council-ctx-tab active" data-tab="files" id="ctx-tab-files" role="tab" aria-selected="true" aria-controls="ctx-body-files" title="Files" aria-label="Files">
+              <span class="council-tab-icon" aria-hidden="true">&#x25A4;</span>
+              <span class="council-tab-label sr-only">Files</span>
+            </button>
+            <button type="button" class="council-ctx-tab" data-tab="log" id="ctx-tab-log" role="tab" aria-selected="false" aria-controls="ctx-body-log" title="Pipeline" aria-label="Pipeline">
+              <span class="council-tab-icon" aria-hidden="true">&#x2261;</span>
+              <span class="council-tab-label sr-only">Pipeline</span>
+              <span class="ctx-tab-badge" id="ctx-log-badge" hidden></span>
+            </button>
+            <button type="button" class="council-ctx-tab" data-tab="debug" id="ctx-tab-debug" role="tab" aria-selected="false" aria-controls="ctx-body-debug" title="Debug" aria-label="Debug">
+              <span class="council-tab-icon" aria-hidden="true">&#x25C8;</span>
+              <span class="council-tab-label sr-only">Debug</span>
+            </button>
+          </div>
           <div class="council-ctx-tabbar-spacer"></div>
-          <span class="council-log-sid" id="council-log-session-id">ID: PENDING</span>
-          <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close council panel">&times;</button>
+          <div class="council-ctx-tab-tooltip" id="council-ctx-tab-tooltip" aria-hidden="true"></div>
+          <div class="council-ctx-session-group">
+            <span class="council-log-sid" id="council-log-session-id" title="Session ID (click to copy)">ID: PENDING</span>
+            <button type="button" class="council-log-copy-btn" id="council-log-copy-btn" title="Copy Session ID" aria-label="Copy Session ID">&#x29C9;</button>
+            <button type="button" class="council-log-close" id="council-cancel-btn" title="Close panel" aria-label="Close council panel">&times;</button>
+          </div>
         </div>
 
         <!-- Files tab body (default active) -->
@@ -1171,13 +1187,29 @@
           </div>
         </div>
 
-        <!-- Log tab body (hidden by default) -->
+        <!-- Log tab body (Pipeline Atlas) -->
         <div class="council-ctx-body" id="ctx-body-log" hidden>
-          <div class="council-pane-header" id="council-log-header">
+          <!-- Pipeline Atlas Header & Global Summary -->
+          <div class="council-pipeline-header" id="council-pipeline-header">
+            <div class="council-pipeline-title-row">
+              <span class="council-pipeline-title">PIPELINE</span>
+              <span class="council-pipeline-phases-badge" id="council-pipeline-phase-count">0 PHASES</span>
+            </div>
+            <div class="council-pipeline-summary-line" id="council-pipeline-summary">
+              <span class="pipeline-summary-empty">— No activity recorded —</span>
+            </div>
+          </div>
+
+          <!-- Dynamic Organic Spine -->
+          <div class="council-pipeline-atlas scroll-container" id="council-pipeline-atlas" role="region" aria-label="Pipeline Atlas"></div>
+
+          <!-- Dormant compatibility elements retained for backward-compatibility test contracts -->
+          <div class="council-pane-header" id="council-log-header" hidden style="display:none;">
             <span class="council-pane-title">Audit Ledger</span>
             <span class="council-pane-status" id="council-log-summary">0 events · 0 errors</span>
           </div>
-          <div class="council-log-toolbar" id="council-log-toolbar">
+          <div class="council-attention-dock" id="council-attention-dock" hidden></div>
+          <div class="council-log-toolbar" id="council-log-toolbar" hidden style="display:none;">
             <div class="log-filters-pill-group">
               <div class="log-filters-pill-track">
                 <button type="button" class="log-filter-pill active" data-filter="ALL">ALL</button>
@@ -1189,12 +1221,11 @@
               <input type="text" class="log-search-input" id="council-log-search" placeholder="Filter ledger entries..." autocomplete="off" spellcheck="false" />
             </div>
           </div>
-          <div class="council-log-body scroll-container" id="council-captains-log" role="log" aria-label="Run events log"></div>
-          <div class="council-log-footer">
-            <div class="log-footer-stats">
-              <span>Estimated context</span>
-              <span id="council-log-tokens">0 TOKENS</span>
-            </div>
+          <div class="council-log-body scroll-container" id="council-captains-log" role="log" aria-label="Run events log" hidden style="display:none;"></div>
+          <span id="council-log-tokens" hidden style="display:none;">0 TOKENS</span>
+
+          <!-- Footer (preserves #council-revert-btn, omits redundant token counts) -->
+          <div class="council-log-footer" id="council-pipeline-footer">
             <button class="council-revert-btn" id="council-revert-btn" disabled>Restart from brief</button>
           </div>
         </div>

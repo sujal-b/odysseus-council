@@ -964,9 +964,15 @@ class CouncilUI {
     this._manuallyClosedTools = new Set();
     this._manuallyClosedBursts = new Set();
     this._peekDrawers = new Set();
+    this._attentionShelfCollapsed = false;
     this._logSearchQuery = '';
     this._currentPhaseCount = 0;
     this._lastViewedPhaseCount = 0;
+    this._autoExpandedPhaseId = null;
+    this._userExpandedPhaseIds = new Set();
+    this._userCollapsedPhaseIds = new Set();
+    this._pipelineShowAllHistory = false;
+    this._expandedOutputsPhaseIds = new Set();
     // Handle for the pending scroll-to-bottom rAF. Cancelled and replaced
     // on every render so only one rAF is ever queued at a time, preventing
     // accumulation at high event rates.
@@ -1122,6 +1128,18 @@ class CouncilUI {
     const searchInputInline = document.getElementById('council-log-search-inline');
     if (searchInputInline) {
       searchInputInline.value = '';
+    }
+    this._attentionShelfCollapsed = false;
+    this._autoExpandedPhaseId = null;
+    this._userExpandedPhaseIds.clear();
+    this._userCollapsedPhaseIds.clear();
+    this._pipelineShowAllHistory = false;
+    this._expandedOutputsPhaseIds.clear();
+    const attentionDock = document.getElementById('council-attention-dock');
+    if (attentionDock) {
+      attentionDock._shelfSignature = null;
+      attentionDock.hidden = true;
+      attentionDock.innerHTML = '';
     }
     // Reset animation-tracking cursors so next run starts fresh
     this._lastRenderedCount = 0;
@@ -2264,17 +2282,21 @@ class CouncilUI {
         String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
       ].join(':');
 
+      const isFailed = (b.status === 'FAILED');
+      const isUserExpanded = this._manuallyOpenedTools.has(toolKey);
       let isOpen;
-      if (this._manuallyOpenedTools.has(toolKey)) {
+      if (isUserExpanded) {
         isOpen = true;
       } else if (this._manuallyClosedTools.has(toolKey)) {
         isOpen = false;
       } else {
-        isOpen = isRunning; // Live accordion: expands when running, auto-collapses on finish!
+        isOpen = isRunning || isFailed; // Expands when running or failed, auto-collapses on clean finish
       }
 
-      const durText = _fmtDuration(b.durationMs);
-      const durHtml = durText ? `<span class="tool-duration-badge" title="Execution duration">— ${_esc(durText)}</span>` : '';
+      const durText = _fmtDuration(b.durationMs != null ? b.durationMs : (isRunning && b.startTime && Math.abs(Date.now() - b.startTime) < 3600000 ? Math.max(0, Date.now() - b.startTime) : null));
+      const durHtml = durText
+        ? `<span class="tool-duration-badge" title="Execution duration">— ${_esc(durText)}</span>`
+        : (isRunning ? `<span class="tool-duration-badge tool-duration-badge--live" title="Execution in progress">— live</span>` : '');
 
       // If running and body lacks live output, inject running activity indicator
       if (isRunning && !b.output) {
@@ -2302,7 +2324,7 @@ class CouncilUI {
       const role = _resolveRole(b.agent || 'impl');
 
       return `
-        <div class="ghost-tool-card ${isOpen ? 'open' : ''} ${isRunning ? 'is-running' : ''}" data-tool-key="${_esc(toolKey)}" style="border:none;margin:0;">
+        <div class="ghost-tool-card ${isOpen ? 'open' : ''} ${isRunning ? 'is-running' : ''} ${isUserExpanded ? 'is-user-expanded' : ''} ${isFailed ? 'open-error' : ''}" data-tool-key="${_esc(toolKey)}" style="border:none;margin:0;">
           <div class="row ghost-tool-header" tabindex="0">
             <span class="id">${stepNum}</span>
             <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
@@ -2312,7 +2334,7 @@ class CouncilUI {
               <span class="tx" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>
               ${diffHtml}
               ${durHtml}
-              ${body ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isOpen ? '▼' : '▶'}</span>` : ''}
+              ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
             </div>
           </div>
           ${body ? '<div class="ghost-tool-body">' + body + '</div>' : ''}
@@ -2557,7 +2579,7 @@ class CouncilUI {
               <div class="ct">
                 <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
                 ${_itemDurHtml}
-                ${itemBody ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isItemOpen ? '▼' : '▶'}</span>` : ''}
+                ${itemBody ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
               </div>
             </div>
             ${itemBody ? '<div class="ghost-tool-body">' + itemBody + '</div>' : ''}
@@ -3442,11 +3464,121 @@ class CouncilUI {
     }
   }
 
+  /* Build Attention Required shelf markup with collapse/expand toggle */
+  _renderAttentionShelfHtml(visibleErrors) {
+    if (!visibleErrors || visibleErrors.length === 0) return '';
+    const isCollapsed = Boolean(this._attentionShelfCollapsed);
+    return `
+      <div class="audit-attention-shelf ${isCollapsed ? 'audit-attention-shelf--collapsed' : ''}" id="council-attention-shelf" role="region" aria-label="Attention Required">
+        <div class="audit-attention-header">
+          <div class="audit-attention-title">
+            <span class="audit-attention-indicator" aria-hidden="true"></span>
+            <span class="audit-attention-heading">Attention Required</span>
+            <span class="audit-attention-badge">${visibleErrors.length} failure${visibleErrors.length === 1 ? '' : 's'}</span>
+          </div>
+          <button type="button" class="audit-attention-toggle-btn" aria-expanded="${isCollapsed ? 'false' : 'true'}" title="${isCollapsed ? 'Show failures' : 'Collapse failures'}">
+            ${isCollapsed ? '[▶ Show]' : '[▼ Collapse]'}
+          </button>
+        </div>
+        <div class="audit-attention-list" ${isCollapsed ? 'hidden' : ''}>
+          ${visibleErrors.map(err => {
+            const isShelfPeekOpen = Boolean(this._peekDrawers?.has('shelf-' + err.id));
+            const shelfAgent = String(err.agent || 'system').toLowerCase();
+            return `
+              <div class="audit-attention-item" data-entry-id="${_esc(err.id)}">
+                <div class="audit-attention-item-header">
+                  <span class="audit-attention-agent">${_esc(shelfAgent.slice(0, 4).toUpperCase())}</span>
+                  <span class="audit-attention-action">${_esc(err.action)}</span>
+                  <span class="audit-attention-target" title="${_esc(err.target)}">${_esc(err.target)}</span>
+                  <div class="audit-error-actions">
+                    ${err.stderr ? `<button type="button" class="audit-btn-peek" data-peek-id="shelf-${_esc(err.id)}">${isShelfPeekOpen ? '[Hide Stderr]' : '[Peek Stderr]'}</button>` : ''}
+                    ${err.command ? `<button type="button" class="audit-btn-copy" data-copy-text="${_esc(err.command)}">[Copy Command]</button>` : (err.stderr ? `<button type="button" class="audit-btn-copy" data-copy-text="${_esc(err.stderr)}">[Copy Error]</button>` : '')}
+                  </div>
+                </div>
+                ${err.stderr ? `
+                  <div class="audit-peek-drawer" id="peek-shelf-${_esc(err.id)}" ${isShelfPeekOpen ? '' : 'hidden'}>
+                    <pre class="audit-peek-content">${_esc(err.stderr)}</pre>
+                  </div>
+                ` : ''}
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>`;
+  }
+
+  /* Wire attention dock click handlers for toggle, peek, copy, and item navigation */
+  _wireAttentionDock(dockEl) {
+    if (!dockEl || dockEl._wired) return;
+    dockEl._wired = true;
+    dockEl.addEventListener('click', e => {
+      // Toggle collapse/expand
+      const toggleBtn = e.target.closest('.audit-attention-toggle-btn');
+      if (toggleBtn) {
+        this._attentionShelfCollapsed = !this._attentionShelfCollapsed;
+        if (dockEl) dockEl._shelfSignature = null;
+        this._renderCaptainsLog(this._state);
+        return;
+      }
+
+      // Peek Stderr toggle inside attention shelf
+      const peekBtn = e.target.closest('.audit-btn-peek');
+      if (peekBtn) {
+        const id = peekBtn.dataset.peekId;
+        if (id) {
+          if (!this._peekDrawers) this._peekDrawers = new Set();
+          if (this._peekDrawers.has(id)) {
+            this._peekDrawers.delete(id);
+          } else {
+            this._peekDrawers.add(id);
+          }
+          const drawer = document.getElementById('peek-' + id);
+          if (drawer) {
+            drawer.hidden = !this._peekDrawers.has(id);
+          }
+          peekBtn.textContent = this._peekDrawers.has(id) ? '[Hide Stderr]' : '[Peek Stderr]';
+          if (dockEl) dockEl._shelfSignature = null;
+        }
+        return;
+      }
+
+      // Copy command / error
+      const copyBtn = e.target.closest('.audit-btn-copy');
+      if (copyBtn) {
+        const text = copyBtn.dataset.copyText;
+        if (text) {
+          _copyToClipboard(text).then(() => {
+            const orig = copyBtn.textContent;
+            copyBtn.textContent = '[Copied!]';
+            setTimeout(() => { if (copyBtn.isConnected) copyBtn.textContent = orig; }, 1200);
+          });
+        }
+        return;
+      }
+
+      // Click on attention item body (outside buttons) jumps to corresponding row in audit ledger
+      const itemEl = e.target.closest('.audit-attention-item');
+      if (itemEl && !e.target.closest('button')) {
+        const entryId = itemEl.dataset.entryId;
+        if (entryId) {
+          const logEl = document.getElementById('council-captains-log');
+          if (logEl && typeof logEl.querySelector === 'function') {
+            const targetRow = logEl.querySelector(`[data-entry-id="${entryId}"]`);
+            if (targetRow && typeof targetRow.scrollIntoView === 'function') {
+              targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          }
+        }
+      }
+    });
+  }
+
   /* Captain's Log: Chair Brief card + timeline entries */
   /* Captain's Log: The Calm Audit Ledger */
   _renderCaptainsLog(state) {
     const el = document.getElementById('council-captains-log');
     if (!el) return;
+    if (state) this._state = state;
 
     try {
       const keepPinnedToBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -3681,8 +3813,34 @@ class CouncilUI {
 
       this._currentPhaseCount = phaseCount;
 
+      // Synthesize session failure entry if session is FAILED but no specific error event exists in log
+      if (state?.status === 'FAILED' && !entries.some(item => item.isError)) {
+        let failMsg = 'Session execution failed';
+        if (typeof state.error === 'string' && state.error) {
+          failMsg = state.error;
+        } else if (state.error && typeof state.error === 'object') {
+          try { failMsg = state.error.message || JSON.stringify(state.error); } catch (_) { failMsg = String(state.error); }
+        } else if (state.error != null) {
+          failMsg = String(state.error);
+        } else if (typeof state.text === 'string' && state.text) {
+          failMsg = state.text;
+        }
+        entries.push({
+          id: 'aud-sess-fail',
+          ts: entries.length && entries[entries.length - 1].ts ? entries[entries.length - 1].ts : new Date().toTimeString().slice(0, 8),
+          agent: 'system',
+          action: 'FAILED',
+          target: compactFailureReason(failMsg, 'Session stopped with failure'),
+          status: 'FAIL',
+          isCommand: false,
+          isError: true,
+          stderr: failMsg,
+          files: []
+        });
+      }
+
       // Calculate accurate error count and total events
-      const errorCount = entries.filter(item => item.isError).length + ((state.status === 'FAILED' && !entries.some(item => item.isError)) ? 1 : 0);
+      const errorCount = entries.filter(item => item.isError).length;
       const totalEvents = Array.isArray(state?.log) ? state.log.length : 0;
 
       // Synchronize header inside the Log panel with accurate summary
@@ -3792,6 +3950,29 @@ class CouncilUI {
         });
       }
 
+      // Pinned Attention Required shelf in dedicated sibling flex dock outside scroll container
+      const visibleErrors = filtered.filter(item => item.isError);
+      const dockEl = document.getElementById('council-attention-dock');
+      const shelfHtml = visibleErrors.length > 0 ? this._renderAttentionShelfHtml(visibleErrors) : '';
+
+      if (dockEl) {
+        if (visibleErrors.length > 0) {
+          const shelfSignature = visibleErrors.map(e => e.id).join(',') + ':' + Boolean(this._attentionShelfCollapsed) + ':' + Array.from(this._peekDrawers || []).filter(k => k.startsWith('shelf-')).join(',');
+          if (dockEl._shelfSignature !== shelfSignature) {
+            dockEl.innerHTML = shelfHtml;
+            dockEl._shelfSignature = shelfSignature;
+          }
+          dockEl.hidden = false;
+        } else {
+          dockEl._shelfSignature = null;
+          dockEl.innerHTML = '';
+          dockEl.hidden = true;
+        }
+        if (!dockEl._wired) {
+          this._wireAttentionDock(dockEl);
+        }
+      }
+
       let html = '';
 
       // If toolbar is not present in external DOM, render an inline fallback toolbar
@@ -3813,6 +3994,12 @@ class CouncilUI {
 
       if (filtered.length) {
         html += '<div class="audit-ledger-container" role="table" aria-label="Audit ledger">';
+
+        // Fallback: If dedicated dock is absent in legacy/mock DOM environments, render shelf inline
+        if (!dockEl && visibleErrors.length > 0) {
+          html += shelfHtml;
+        }
+
         filtered.forEach(entry => {
           let fileChipsHtml = '';
           if (entry.files && entry.files.length) {
@@ -3916,9 +4103,16 @@ class CouncilUI {
       });
 
       if (keepPinnedToBottom) el.scrollTop = el.scrollHeight;
+      this._renderPipelineAtlas(state);
     } catch (ledgerErr) {
       console.warn('[Council] Calm Audit Ledger render error — auto-recovery active:', ledgerErr);
-      el.innerHTML = '<div style="color:var(--fail,#ef4444);font-size:11px;font-family:var(--code-font,monospace);padding:12px;">Audit ledger encountered an issue. Events recorded: ' + (state.log ? state.log.length : 0) + '</div>';
+      const dock = document.getElementById('council-attention-dock');
+      if (dock) {
+        dock._shelfSignature = null;
+        dock.hidden = true;
+        dock.innerHTML = '';
+      }
+      el.innerHTML = '<div style="color:var(--fail,#ef4444);font-size:11px;font-family:var(--code-font,monospace);padding:12px;">Audit ledger encountered an issue. Events recorded: ' + (Array.isArray(state?.log) ? state.log.length : 0) + '</div>';
     }
   }
 
@@ -3944,6 +4138,361 @@ class CouncilUI {
       window.documentModule.streamDocFinalize();
     } else {
       console.warn('[Council] documentModule not available — cannot open skill/reflection in document panel');
+    }
+  }
+
+  /* ── Pipeline Atlas: Spine & Drawer Management ── */
+  _isPhaseExpanded(phase) {
+    if (!phase || !phase.id) return false;
+    if (this._userCollapsedPhaseIds.has(phase.id)) return false;
+    if (this._userExpandedPhaseIds.has(phase.id)) return true;
+    return this._autoExpandedPhaseId === phase.id;
+  }
+
+  _onPhaseHeaderClick(phaseId) {
+    const isCurrentlyExpanded = this._isPhaseExpanded({ id: phaseId });
+    if (isCurrentlyExpanded) {
+      this._userExpandedPhaseIds.delete(phaseId);
+      this._userCollapsedPhaseIds.add(phaseId);
+    } else {
+      this._userExpandedPhaseIds.add(phaseId);
+      this._userCollapsedPhaseIds.delete(phaseId);
+    }
+    this._renderPipelineAtlas(this._state);
+  }
+
+  _renderPipelineAtlas(state) {
+    const atlasEl = document.getElementById('council-pipeline-atlas');
+    if (!atlasEl) return;
+    const currentState = state || this._state;
+
+    try {
+      const derived = _derivePipelinePhases(currentState);
+      const phases = derived.phases;
+
+      // Update Phase Count Badge
+      const phaseCountEl = document.getElementById('council-pipeline-phase-count');
+      if (phaseCountEl) {
+        phaseCountEl.textContent = `${phases.length} PHASE${phases.length === 1 ? '' : 'S'}`;
+      }
+
+      // Update Global Summary Line
+      // Format: X files changed · Y outputs · Z failed ops · W revision cycles
+      const summaryEl = document.getElementById('council-pipeline-summary');
+      if (summaryEl) {
+        const parts = [];
+        if (derived.globalFilesCount > 0) {
+          parts.push(`${derived.globalFilesCount} ${derived.globalFilesCount === 1 ? 'file changed' : 'files changed'}`);
+        }
+        if (derived.globalOutputsCount > 0) {
+          parts.push(`${derived.globalOutputsCount} ${derived.globalOutputsCount === 1 ? 'output' : 'outputs'}`);
+        }
+        if (derived.globalFailedOps > 0) {
+          parts.push(`<span class="pipeline-metric-failed">${derived.globalFailedOps} ${derived.globalFailedOps === 1 ? 'failed op' : 'failed ops'}</span>`);
+        }
+        if (derived.globalRevisionCycles > 0) {
+          parts.push(`${derived.globalRevisionCycles} ${derived.globalRevisionCycles === 1 ? 'revision cycle' : 'revision cycles'}`);
+        }
+
+        if (parts.length > 0) {
+          summaryEl.innerHTML = parts.join('<span class="pipeline-metric-sep">&middot;</span>');
+        } else {
+          summaryEl.innerHTML = '<span class="pipeline-summary-empty">— No activity recorded —</span>';
+        }
+      }
+
+      // Expansion Ownership Management
+      const activeOrBlockedPhase = phases.find(p => p.status === 'active' || p.status === 'blocked');
+      if (activeOrBlockedPhase) {
+        this._autoExpandedPhaseId = activeOrBlockedPhase.id;
+      } else {
+        this._autoExpandedPhaseId = null;
+      }
+
+      // 4-Phase Ceiling & Unified Progressive Disclosure
+      let visiblePhases = phases;
+      let disclosureHtml = '';
+
+      if (phases.length > 4) {
+        const earlierCount = phases.length - 4;
+        if (!this._pipelineShowAllHistory) {
+          visiblePhases = phases.slice(phases.length - 4);
+          disclosureHtml = `
+            <button type="button" class="pipeline-disclosure-toggle" id="pipeline-disclosure-toggle" aria-expanded="false">
+              &#x25BE; Show earlier phases (${earlierCount})
+            </button>`;
+        } else {
+          visiblePhases = phases;
+          disclosureHtml = `
+            <button type="button" class="pipeline-disclosure-toggle" id="pipeline-disclosure-toggle" aria-expanded="true">
+              &#x25B4; Show recent (4)
+            </button>`;
+        }
+      }
+
+      // Render Dynamic Spine
+      let spineHtml = '<div class="pipeline-spine-container">';
+      spineHtml += disclosureHtml;
+
+      visiblePhases.forEach((phase) => {
+        const isExpanded = this._isPhaseExpanded(phase);
+        const isActive = phase.status === 'active';
+
+        let nodeIcon = '&#x2713;'; // ✓
+        if (isActive) nodeIcon = '&#x25C9;'; // ◉
+        else if (phase.status === 'failed') nodeIcon = '&#x2717;'; // ✗
+        else if (phase.status === 'blocked') nodeIcon = '&#x2298;'; // ⊘
+
+        const roleName = phase.roleName || phase.agentKey;
+        const durationText = phase.duration || (isActive ? 'active' : (phase.status === 'blocked' ? 'paused' : ''));
+
+        spineHtml += `
+          <div class="pipeline-phase-item pipeline-phase--${phase.status}" data-phase-id="${_esc(phase.id)}">
+            <div class="pipeline-phase-header" tabindex="0" role="button" aria-expanded="${isExpanded}" data-phase-id="${_esc(phase.id)}">
+              <span class="pipeline-node-icon pipeline-node-icon--${phase.status}" aria-hidden="true">${nodeIcon}</span>
+              <span class="pipeline-agent-name">
+                <span class="pipeline-agent-name-text ${isActive ? 'pipeline-agent-name--active' : ''}">${_esc(roleName)}</span>
+                ${phase.labelSuffix ? `<span class="pipeline-phase-suffix">${_esc(phase.labelSuffix)}</span>` : ''}
+                ${isActive ? '<span class="pipeline-loader-icon" aria-hidden="true">&#x25CC;</span>' : (phase.status === 'blocked' ? '<span class="pipeline-pause-icon" aria-hidden="true">&#x23F8;</span>' : '')}
+              </span>
+              <span class="pipeline-phase-time">${_esc(durationText)}</span>
+              <span class="pipeline-phase-chevron" aria-hidden="true">${isExpanded ? '&#x25BE;' : '&#x25B8;'}</span>
+            </div>
+            <div class="pipeline-spine-connector pipeline-spine-connector--${phase.status}">
+              <div class="pipeline-phase-drawer" ${isExpanded ? '' : 'hidden'}>
+                ${this._renderPhaseDrawerContent(phase)}
+              </div>
+            </div>
+          </div>`;
+      });
+
+      spineHtml += '</div>';
+
+      atlasEl.innerHTML = spineHtml;
+      this._wirePipelineAtlas(atlasEl);
+
+    } catch (atlasErr) {
+      console.warn('[Council] Pipeline Atlas render error:', atlasErr);
+    }
+  }
+
+  _renderPhaseDrawerContent(phase) {
+    let html = '';
+
+    // Primary summary line
+    let primaryLine = '';
+    if (phase.agentKey === 'chair') {
+      const route = phase.summaryInfo.route || this._state?.route || 'COUNCIL';
+      const complexity = phase.summaryInfo.complexity || this._state?.complexity || 'Medium Complexity';
+      primaryLine = `Route: ${_esc(route)} &middot; ${_esc(complexity)}`;
+    } else if (phase.agentKey === 'strategist') {
+      const tasksCount = phase.summaryInfo.tasksScheduled != null ? phase.summaryInfo.tasksScheduled : (this._state?.dag?.nodes ? this._state.dag.nodes.length : 0);
+      const wavesCount = phase.summaryInfo.waves || 1;
+      primaryLine = `${tasksCount} tasks scheduled &middot; ${wavesCount} wave${wavesCount === 1 ? '' : 's'} &middot; 0 cycles`;
+    } else if (phase.agentKey === 'perspective_analyzer') {
+      const angles = phase.summaryInfo.angles || 3;
+      const blockers = phase.summaryInfo.blockers || 0;
+      primaryLine = `${angles} angles evaluated &middot; ${blockers} critical blockers`;
+    } else if (phase.agentKey === 'manager') {
+      const verdict = phase.summaryInfo.verdict || 'APPROVED';
+      const issues = phase.summaryInfo.issues || (verdict === 'REVISE' ? 1 : 0);
+      primaryLine = `Verdict: ${_esc(verdict)} &middot; ${issues} issue${issues === 1 ? '' : 's'} flagged`;
+    } else if (phase.agentKey === 'completeness_auditor') {
+      const pct = phase.summaryInfo.acceptance != null ? phase.summaryInfo.acceptance : 100;
+      const met = phase.summaryInfo.criteriaMet != null ? phase.summaryInfo.criteriaMet : 0;
+      const total = phase.summaryInfo.criteriaTotal != null ? phase.summaryInfo.criteriaTotal : 0;
+      primaryLine = `Acceptance: ${pct}% &middot; ${met} of ${total} criteria met`;
+    } else {
+      const tasksCount = phase.tasks.size || 0;
+      const filesCount = phase.files.size || 0;
+      const failedCount = phase.failedOps || 0;
+      const parts = [];
+      if (tasksCount > 0) parts.push(`${tasksCount} task${tasksCount === 1 ? '' : 's'}`);
+      parts.push(`${filesCount} file${filesCount === 1 ? '' : 's'} updated`);
+      if (failedCount > 0) parts.push(`${failedCount} failed op${failedCount === 1 ? '' : 's'}`);
+      primaryLine = parts.join(' &middot; ');
+    }
+
+    if (primaryLine) {
+      html += `<div class="pipeline-drawer-metric-line pipeline-drawer-metric-line--primary">${primaryLine}</div>`;
+    }
+
+    if (phase.activeDuration > 0 || phase.waitingDuration > 0) {
+      html += `<div class="pipeline-drawer-metric-line">${phase.activeDuration}s active &middot; ${phase.waitingDuration || 0}s waiting</div>`;
+    }
+
+    // Task branches
+    if (phase.tasks.size > 0) {
+      const taskArr = Array.from(phase.tasks.values());
+      html += '<div class="pipeline-task-branch-list">';
+      taskArr.forEach((t, i) => {
+        const isLast = i === taskArr.length - 1;
+        const branchGlyph = isLast ? '└──' : '├──';
+        const st = String(t.status || 'DONE').toUpperCase();
+        const statusIcon = st === 'DONE' ? '✓' : (st === 'IN_PROGRESS' ? '◉' : (st === 'FAILED' ? '✗' : '○'));
+        const statusCls = st === 'DONE' ? 'done' : (st === 'IN_PROGRESS' ? 'active' : (st === 'FAILED' ? 'failed' : 'pending'));
+        html += `
+          <div class="pipeline-task-branch-item">
+            <span class="pipeline-task-glyph">${branchGlyph}</span>
+            <span class="pipeline-task-status-icon pipeline-task-status-icon--${statusCls}">${statusIcon}</span>
+            <span class="pipeline-task-id">${_esc(t.id)}</span>
+            <span class="pipeline-task-label">${_esc(t.label)}</span>
+          </div>`;
+      });
+      html += '</div>';
+    }
+
+    // Output previews
+    const allOutputs = [];
+    phase.outputs.filter(o => !o.isFile).forEach(o => allOutputs.push(o));
+    phase.files.forEach(f => allOutputs.push(f));
+
+    if (allOutputs.length > 0) {
+      const isExpandedOutputs = this._expandedOutputsPhaseIds?.has(phase.id);
+      const visibleOutputs = isExpandedOutputs ? allOutputs : allOutputs.slice(0, 2);
+      const remainingCount = allOutputs.length - 2;
+
+      html += '<div class="pipeline-outputs-section">';
+      visibleOutputs.forEach(out => {
+        html += `
+          <div class="pipeline-output-item ${out.isFile ? 'pipeline-output-item--file' : ''}" ${out.isFile ? `data-file-path="${_esc(out.path)}"` : ''} title="${_esc(out.path || out.title)}">
+            <div class="pipeline-output-left">
+              <span class="pipeline-output-arrow">&#x2197;</span>
+              <span class="pipeline-output-title">${_esc(out.title)}</span>
+            </div>
+            <span class="pipeline-output-badge">${_esc(out.badge)}</span>
+          </div>`;
+      });
+
+      if (!isExpandedOutputs && remainingCount > 0) {
+        html += `
+          <button type="button" class="pipeline-outputs-overflow-btn" data-phase-id="${_esc(phase.id)}">
+            See all outputs (${allOutputs.length}) &rarr;
+          </button>`;
+      }
+      html += '</div>';
+    }
+
+    if (phase.status === 'blocked') {
+      const blockReason = this._state?.pendingDecision?.reason || (this._state?.pendingReview ? 'Decision gate: review approval required' : 'Execution paused at gate');
+      html += `<div class="pipeline-drawer-metric-line" style="color:var(--council-warning, #f59e0b);font-weight:600;">&#x23F8; ${_esc(blockReason)}</div>`;
+    }
+
+    // Execution history link
+    html += `
+      <button type="button" class="pipeline-stage-history-link" data-agent="${_esc(phase.agentKey)}" data-phase-id="${_esc(phase.id)}" data-invocation="${phase.prevInvocations || 0}">
+        View execution history &rarr;
+      </button>`;
+
+    return html;
+  }
+
+  _wirePipelineAtlas(atlasEl) {
+    if (!atlasEl) return;
+
+    // 1. Phase header clicks
+    atlasEl.querySelectorAll('.pipeline-phase-header').forEach(hdr => {
+      hdr.addEventListener('click', () => {
+        const phaseId = hdr.dataset.phaseId;
+        if (phaseId) this._onPhaseHeaderClick(phaseId);
+      });
+      hdr.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          const phaseId = hdr.dataset.phaseId;
+          if (phaseId) this._onPhaseHeaderClick(phaseId);
+        }
+      });
+    });
+
+    // 2. Progressive disclosure toggle
+    const toggleBtn = atlasEl.querySelector('#pipeline-disclosure-toggle');
+    if (toggleBtn) {
+      toggleBtn.addEventListener('click', () => {
+        this._pipelineShowAllHistory = !this._pipelineShowAllHistory;
+        this._renderPipelineAtlas(this._state);
+      });
+    }
+
+    // 3. Overflow output previews
+    atlasEl.querySelectorAll('.pipeline-outputs-overflow-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const phaseId = btn.dataset.phaseId;
+        if (phaseId) {
+          if (!this._expandedOutputsPhaseIds) this._expandedOutputsPhaseIds = new Set();
+          this._expandedOutputsPhaseIds.add(phaseId);
+          this._renderPipelineAtlas(this._state);
+        }
+      });
+    });
+
+    // 4. Output file clicks
+    atlasEl.querySelectorAll('.pipeline-output-item--file').forEach(item => {
+      item.addEventListener('click', () => {
+        const filePath = item.dataset.filePath;
+        if (filePath) {
+          this.selectFile(filePath);
+        }
+      });
+    });
+
+    // 5. Execution history link
+    atlasEl.querySelectorAll('.pipeline-stage-history-link').forEach(link => {
+      link.addEventListener('click', () => {
+        const agent = link.dataset.agent;
+        const invocation = parseInt(link.dataset.invocation || '0', 10);
+        this._scrollToStreamAgent(agent, invocation);
+      });
+    });
+  }
+
+  _scrollToStreamAgent(agent, invocationIndex = 0) {
+    if (!agent) return;
+    const ledger = document.getElementById('council-ghost-stream-ledger');
+    if (!ledger) return;
+
+    const lowerAgent = agent.toLowerCase();
+    const candidates = Array.from(ledger.querySelectorAll('.row, .ghost-burst-group, .active-cockpit-box, .ghost-thought-card, .ghost-perspective-card'));
+
+    const isMatch = (el) => {
+      return (el.dataset.agent === lowerAgent ||
+              Boolean(el.querySelector(`.ag--${lowerAgent}`)) ||
+              el.classList.contains(`role--${lowerAgent}`) ||
+              el.classList.contains(`ag--${lowerAgent}`) ||
+              el.textContent.toLowerCase().includes(lowerAgent));
+    };
+
+    // Group matching elements into distinct contiguous clusters (stages)
+    const matchingClusters = [];
+    let currentCluster = [];
+    for (const el of candidates) {
+      if (isMatch(el)) {
+        currentCluster.push(el);
+      } else if (currentCluster.length > 0) {
+        matchingClusters.push(currentCluster);
+        currentCluster = [];
+      }
+    }
+    if (currentCluster.length > 0) {
+      matchingClusters.push(currentCluster);
+    }
+
+    let target = null;
+    const targetIdx = Math.max(0, Math.min(invocationIndex || 0, matchingClusters.length - 1));
+    if (matchingClusters.length > 0 && matchingClusters[targetIdx] && matchingClusters[targetIdx].length > 0) {
+      target = matchingClusters[targetIdx][0];
+    } else if (candidates.length > 0) {
+      target = candidates.find(isMatch) || null;
+    }
+
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('stream-block-focus-highlight');
+      setTimeout(() => {
+        if (target.isConnected) {
+          target.classList.remove('stream-block-focus-highlight');
+        }
+      }, 1800);
     }
   }
 
@@ -4302,11 +4851,14 @@ class CouncilUI {
         const card = toolHeader.closest('.ghost-tool-card');
         if (card) {
           const key = card.getAttribute('data-tool-key') || '';
+          const isUserExpanded = card.classList.contains('is-user-expanded');
           const isOpen = card.classList.contains('open');
-          const nowOpen = !isOpen;
+          const isRunning = card.classList.contains('is-running') && !card.classList.contains('open-error');
+          const nowOpen = isRunning ? !isUserExpanded : !isOpen;
           card.classList.toggle('open', nowOpen);
+          card.classList.toggle('is-user-expanded', nowOpen);
           const chevron = card.querySelector('.ghost-tool-chevron');
-          if (chevron) chevron.textContent = nowOpen ? '▼' : '▶';
+          if (chevron) chevron.textContent = '▶';
           if (key) {
             if (nowOpen) {
               this._manuallyOpenedTools.add(key);
@@ -4504,6 +5056,14 @@ class CouncilUI {
         this._renderCaptainsLog(this._state);
         return;
       }
+      // Attention shelf toggle fallback (if rendered inside log body)
+      const shelfToggle = e.target.closest('.audit-attention-toggle-btn');
+      if (shelfToggle) {
+        this._attentionShelfCollapsed = !this._attentionShelfCollapsed;
+        this._renderCaptainsLog(this._state);
+        return;
+      }
+
       // File chip — copy full path to clipboard AND switch to Files panel
       const chip = e.target.closest('.log-file-chip');
       if (chip) {
@@ -4517,6 +5077,9 @@ class CouncilUI {
         }
       }
     });
+
+    // Wire attention dock click listener
+    this._wireAttentionDock(document.getElementById('council-attention-dock'));
 
     // Promote to Canvas
     document.getElementById('council-promote-btn')?.addEventListener('click', async () => {
@@ -4548,12 +5111,50 @@ class CouncilUI {
       }
     });
 
-    // Contextual panel tab switching
+    // Contextual panel tab tooltips & switching
+    const tabTooltip = document.getElementById('council-ctx-tab-tooltip');
+    const tabNames = {
+      files: 'Files',
+      log: 'Pipeline',
+      debug: 'Debug'
+    };
     document.querySelectorAll('.council-ctx-tab').forEach(tab => {
       tab.addEventListener('click', () => {
         this._activateCtxTab(tab.dataset.tab);
       });
+      const showTooltip = () => {
+        if (tabTooltip) {
+          const tName = tabNames[tab.dataset.tab] || tab.dataset.tab;
+          tabTooltip.textContent = `(${tName})`;
+          tabTooltip.classList.add('is-visible');
+        }
+      };
+      const hideTooltip = () => {
+        if (tabTooltip) {
+          tabTooltip.classList.remove('is-visible');
+        }
+      };
+      tab.addEventListener('mouseenter', showTooltip);
+      tab.addEventListener('mouseleave', hideTooltip);
+      tab.addEventListener('focus', showTooltip);
+      tab.addEventListener('blur', hideTooltip);
     });
+
+    // Copy session ID button
+    const copySidBtn = document.getElementById('council-log-copy-btn');
+    if (copySidBtn && !copySidBtn._hasCopyListener) {
+      copySidBtn._hasCopyListener = true;
+      copySidBtn.addEventListener('click', () => {
+        const sid = this._state?.sessionId;
+        if (sid) {
+          _copyToClipboard(sid).then(() => {
+            const orig = copySidBtn.textContent;
+            copySidBtn.textContent = '✓';
+            setTimeout(() => { if (copySidBtn.isConnected) copySidBtn.textContent = orig; }, 1200);
+          });
+        }
+      });
+    }
 
     // Global keyboard contract (Decision 5)
     document.addEventListener('keydown', e => this._handleGlobalKeydown(e, session));
@@ -4592,6 +5193,7 @@ class CouncilUI {
         badge.hidden = true;
         badge.classList.remove('ctx-tab-badge--warning', 'ctx-tab-badge--error');
       }
+      this._renderPipelineAtlas(this._state);
     }
     // When switching to Debug tab, render DAG if available
     if (tabId === 'debug' && this._state.dag) {
@@ -5514,6 +6116,325 @@ function _fmtElapsed(ms) {
 }
 function _agentCount(complexity) {
   return { SIMPLE: 2, MEDIUM: 3, COMPLEX: 4 }[complexity] || 3;
+}
+
+function _calcDuration(startTs, endTs) {
+  if (!startTs) return '';
+  const start = new Date(startTs).getTime();
+  const end = endTs ? new Date(endTs).getTime() : Date.now();
+  if (isNaN(start) || isNaN(end)) return '';
+  const diffSec = Math.max(1, Math.round((end - start) / 1000));
+  if (diffSec < 60) return `${diffSec}s`;
+  const mins = Math.floor(diffSec / 60);
+  const remSec = diffSec % 60;
+  return `${mins}m ${remSec}s`;
+}
+
+function _accumulatePhaseTelemetry(phase, e, state, globalChangedFiles) {
+  if (!phase || !e) return;
+
+  // File mutations
+  const ops = parseFileOperations(e);
+  if (ops && ops.length) {
+    ops.forEach(op => {
+      if (op.op === 'WRITE') {
+        const norm = _normalizeFilePath(op.path);
+        const name = _shortPath(norm);
+        phase.files.set(norm, { path: norm, title: name, badge: 'Modified', isFile: true });
+        globalChangedFiles.add(norm);
+      }
+    });
+  }
+
+  // Tool execution active duration
+  if (e.event === 'tool_start') {
+    phase._toolStartTs = e.ts ? new Date(e.ts).getTime() : Date.now();
+  } else if (e.event === 'tool_output') {
+    let dur = 0;
+    if (e.extra?.duration_ms) dur = Number(e.extra.duration_ms);
+    else if (e.durationMs) dur = Number(e.durationMs);
+    else if (phase._toolStartTs) dur = Math.max(0, (e.ts ? new Date(e.ts).getTime() : Date.now()) - phase._toolStartTs);
+    if (dur > 0) {
+      phase._totalToolMs = (phase._totalToolMs || 0) + dur;
+      phase.activeDuration = Math.round(phase._totalToolMs / 1000);
+    }
+  }
+
+  // Tasks
+  if (e.event === 'task_status_update') {
+    const taskId = e.extra?.task_id || e.taskId;
+    const taskStatus = e.extra?.task_status || e.status || 'DONE';
+    const dagNodes = e.extra?.dag?.nodes || state?.dag?.nodes || [];
+    const dagNode = Array.isArray(dagNodes) ? dagNodes.find(n => n.id === taskId) : null;
+    const taskLabel = e.extra?.task_label || dagNode?.label || dagNode?.description || (taskId ? `Task ${taskId}` : 'Task update');
+    if (taskId) {
+      phase.tasks.set(String(taskId), { id: String(taskId), label: taskLabel, status: taskStatus });
+    }
+  }
+
+  if (phase.agentKey === 'implementer' && state?.dag?.nodes && Array.isArray(state.dag.nodes)) {
+    state.dag.nodes.forEach(n => {
+      if (!phase.tasks.has(n.id)) {
+        phase.tasks.set(n.id, { id: n.id, label: n.label || n.description || `Task ${n.id}`, status: n.status || 'PENDING' });
+      }
+    });
+  }
+
+  // Agent deliverables & summary info
+  if (phase.agentKey === 'chair') {
+    const route = state?.route || 'COUNCIL';
+    const complexity = state?.complexity || 'Medium Complexity';
+    phase.summaryInfo.route = route;
+    phase.summaryInfo.complexity = complexity;
+    if (!phase.outputs.some(o => o.title === 'Routing Brief')) {
+      phase.outputs.push({ title: 'Routing Brief', badge: route, isFile: false });
+    }
+  } else if (phase.agentKey === 'strategist') {
+    const dag = e.extra?.dag || state?.dag;
+    if (dag && Array.isArray(dag.nodes)) {
+      phase.summaryInfo.tasksScheduled = dag.nodes.length;
+      phase.summaryInfo.waves = (typeof _computeTaskWaves === 'function') ? _computeTaskWaves(dag.nodes).length : 1;
+      phase.summaryInfo.cycles = 0;
+      if (!phase.outputs.some(o => o.title === 'Task Graph (DAG)')) {
+        phase.outputs.push({ title: 'Task Graph (DAG)', badge: `${dag.nodes.length} tasks`, isFile: false });
+      }
+    }
+  } else if (phase.agentKey === 'perspective_analyzer') {
+    const perspVerdict = e.extra?.perspective?.verdict || state?.perspectiveVerdict || 'CONSENSUS';
+    phase.summaryInfo.angles = 3;
+    phase.summaryInfo.blockers = perspVerdict === 'CONSENSUS' ? 0 : 1;
+    if (!phase.outputs.some(o => o.title === 'Perspective Synthesis')) {
+      phase.outputs.push({ title: 'Perspective Synthesis', badge: perspVerdict, isFile: false });
+    }
+  } else if (phase.agentKey === 'manager') {
+    let verdict = e.extra?.verdict || e.extra?.manager_verdict || e.extra?.review?.verdict;
+    if (!verdict) {
+      verdict = (e.status === 'FAILED' || e.event === 'error') ? 'REVISE' : (e.event === 'review_required' && e.extra?.requires_override ? 'REVISE' : 'APPROVED');
+    }
+    phase.summaryInfo.verdict = verdict;
+    phase.summaryInfo.issues = (verdict === 'REVISE' || verdict === 'REJECT') ? 1 : 0;
+    phase.summaryInfo.reviewDone = true;
+    if (!phase.outputs.some(o => o.title === 'Review Verdict')) {
+      phase.outputs.push({ title: 'Review Verdict', badge: verdict, isFile: false });
+    }
+  } else if (phase.agentKey === 'completeness_auditor') {
+    const criteria = (Array.isArray(state?.completenessCriteria) && state.completenessCriteria.length > 0)
+      ? state.completenessCriteria
+      : (Array.isArray(e.extra?.criteria) ? e.extra.criteria : []);
+    const totalCrits = criteria.length;
+    const metCrits = criteria.filter(c => c && (c.met === true || String(c.status || '').toLowerCase() === 'verified')).length;
+    let pct = 100;
+    if (totalCrits > 0) {
+      pct = Math.round((metCrits / totalCrits) * 100);
+    } else if (Number.isFinite(Number(state?.completeness))) {
+      const raw = Number(state.completeness);
+      pct = Math.round(raw <= 1 && raw > 0 ? raw * 100 : raw);
+    } else if (Number.isFinite(Number(e.extra?.completeness))) {
+      const raw = Number(e.extra.completeness);
+      pct = Math.round(raw <= 1 && raw > 0 ? raw * 100 : raw);
+    }
+    const verdict = (pct === 100) ? 'CLEAR' : (e.extra?.verdict || `${pct}%`);
+    phase.summaryInfo.acceptance = pct;
+    phase.summaryInfo.criteriaMet = totalCrits > 0 ? metCrits : (state?.dag?.nodes ? state.dag.nodes.filter(n => n.status === 'DONE').length : 4);
+    phase.summaryInfo.criteriaTotal = totalCrits > 0 ? totalCrits : (state?.dag?.nodes ? state.dag.nodes.length : 4);
+    if (!phase.outputs.some(o => o.title === 'Acceptance Audit Report')) {
+      phase.outputs.push({ title: 'Acceptance Audit Report', badge: verdict, isFile: false });
+    }
+  }
+}
+
+function _derivePipelinePhases(state) {
+  const rawLog = Array.isArray(state?.log) ? state.log : [];
+  const phases = [];
+  let currentPhase = null;
+  const globalChangedFiles = new Set();
+  let globalFailedOps = 0;
+  let globalRevisionCycles = 0;
+
+  const isNoise = (ev, agent) => {
+    if (!ev) return true;
+    if (ev === 'thought_delta' || ev === 'tool_progress' || ev === 'heartbeat' || ev === 'metrics' || ev === 'token_count') return true;
+    if (agent === 'chair' && ev === 'status_changed') return true;
+    return false;
+  };
+
+  const getAgentKey = (e) => {
+    let a = typeof e.agent === 'string' ? e.agent.toLowerCase().trim() : '';
+    if (!a && e.extra?.agent) a = String(e.extra.agent).toLowerCase().trim();
+    if (a === 'chairperson') a = 'chair';
+    if (a === 'impl') a = 'implementer';
+    if (a === 'strat') a = 'strategist';
+    if (a === 'mgr') a = 'manager';
+    return a;
+  };
+
+  const roleNames = {
+    chair: 'Chairperson',
+    strategist: 'Strategist',
+    perspective_analyzer: 'Perspective Analyzer',
+    implementer: 'Implementer',
+    manager: 'Manager',
+    completeness_auditor: 'Completeness Auditor',
+    chair_arbitration: 'Chair Arbitration',
+    system: 'System'
+  };
+
+  rawLog.forEach((e, idx) => {
+    if (!e) return;
+    const agentKey = getAgentKey(e);
+    if (isNoise(e.event, agentKey)) return;
+
+    if (!agentKey || agentKey === 'system' || agentKey === 'sys') {
+      if (currentPhase) {
+        if (e.event === 'error' || e.status === 'FAILED') {
+          currentPhase.failedOps++;
+          globalFailedOps++;
+        }
+        _accumulatePhaseTelemetry(currentPhase, e, state, globalChangedFiles);
+      }
+      return;
+    }
+
+    const isNewAgent = !currentPhase || currentPhase.agentKey !== agentKey;
+    const isExplicitIteration = currentPhase && currentPhase.agentKey === agentKey && (
+      (e.event === 'review_required' && currentPhase.summaryInfo.reviewDone) ||
+      (e.event === 'iteration_start')
+    );
+
+    if (isNewAgent || isExplicitIteration) {
+      if (currentPhase) {
+        currentPhase.completed = true;
+        currentPhase.duration = _calcDuration(currentPhase.startTs, e.ts);
+        if (currentPhase.startTs && e.ts) {
+          const totalSec = Math.max(0, Math.round((new Date(e.ts).getTime() - new Date(currentPhase.startTs).getTime()) / 1000));
+          if (currentPhase.activeDuration > 0 && totalSec >= currentPhase.activeDuration) {
+            currentPhase.waitingDuration = totalSec - currentPhase.activeDuration;
+          }
+        }
+      }
+
+      const prevInvocations = phases.filter(p => p.agentKey === agentKey).length;
+      currentPhase = {
+        id: `phase-${phases.length}`,
+        index: phases.length,
+        agentKey: agentKey,
+        roleName: roleNames[agentKey] || _roleMeta(agentKey).name,
+        labelSuffix: '',
+        startTs: e.ts || new Date().toISOString(),
+        endTs: e.ts || new Date().toISOString(),
+        status: 'completed',
+        files: new Map(),
+        outputs: [],
+        failedOps: 0,
+        activeDuration: 0,
+        waitingDuration: 0,
+        tasks: new Map(),
+        summaryInfo: {},
+        firstLogIndex: idx,
+        prevInvocations: prevInvocations
+      };
+      phases.push(currentPhase);
+    }
+
+    currentPhase.endTs = e.ts || currentPhase.endTs;
+    if (e.event === 'error' || e.status === 'FAILED' || (e.exit_code != null && Number(e.exit_code) !== 0) || Boolean(e.extra?.error)) {
+      currentPhase.failedOps++;
+      globalFailedOps++;
+    }
+    _accumulatePhaseTelemetry(currentPhase, e, state, globalChangedFiles);
+  });
+
+  if (currentPhase) {
+    currentPhase.duration = _calcDuration(currentPhase.startTs, currentPhase.endTs);
+    if (currentPhase.startTs && currentPhase.endTs) {
+      const totalSec = Math.max(0, Math.round((new Date(currentPhase.endTs).getTime() - new Date(currentPhase.startTs).getTime()) / 1000));
+      if (currentPhase.activeDuration > 0 && totalSec >= currentPhase.activeDuration) {
+        currentPhase.waitingDuration = totalSec - currentPhase.activeDuration;
+      }
+    }
+  }
+
+  // Active Phase identification
+  if (state?.status === 'IN_PROGRESS' && state.activeAgent) {
+    let activeKey = String(state.activeAgent).toLowerCase().trim();
+    if (activeKey === 'chairperson') activeKey = 'chair';
+    if (activeKey === 'impl') activeKey = 'implementer';
+    if (activeKey === 'strat') activeKey = 'strategist';
+    if (activeKey === 'mgr') activeKey = 'manager';
+
+    if (currentPhase && currentPhase.agentKey === activeKey) {
+      currentPhase.status = 'active';
+      currentPhase.duration = _calcDuration(currentPhase.startTs);
+    } else {
+      const prevInvocations = phases.filter(p => p.agentKey === activeKey).length;
+      currentPhase = {
+        id: `phase-${phases.length}`,
+        index: phases.length,
+        agentKey: activeKey,
+        roleName: roleNames[activeKey] || _roleMeta(activeKey).name,
+        labelSuffix: '',
+        startTs: new Date().toISOString(),
+        endTs: new Date().toISOString(),
+        status: 'active',
+        duration: '1s',
+        files: new Map(),
+        outputs: [],
+        failedOps: 0,
+        activeDuration: 0,
+        waitingDuration: 0,
+        tasks: new Map(),
+        summaryInfo: {},
+        firstLogIndex: rawLog.length,
+        prevInvocations: prevInvocations
+      };
+      phases.push(currentPhase);
+    }
+  } else if (state?.status === 'FAILED') {
+    if (currentPhase) currentPhase.status = 'failed';
+  } else if (state?.status === 'BLOCKED') {
+    if (currentPhase) currentPhase.status = 'blocked';
+  }
+
+  // Label contextualization & revision cycles
+  let managerRevisions = 0;
+  phases.forEach(p => {
+    if (p.agentKey === 'manager') {
+      const verdict = p.summaryInfo.verdict;
+      if (verdict === 'REVISE' || verdict === 'REJECT') {
+        p.labelSuffix = '(Revision requested)';
+        managerRevisions++;
+      } else if (p.prevInvocations > 0) {
+        p.labelSuffix = `(Review round ${p.prevInvocations + 1})`;
+      }
+    } else if (p.agentKey === 'implementer') {
+      if (p.prevInvocations === 1) {
+        p.labelSuffix = '(Revision fix)';
+      } else if (p.prevInvocations > 1) {
+        p.labelSuffix = `(Revision fix ${p.prevInvocations})`;
+      }
+    } else if (p.prevInvocations > 0) {
+      p.labelSuffix = `(Round ${p.prevInvocations + 1})`;
+    }
+  });
+
+  const implementerRevisions = phases.filter(p => p.agentKey === 'implementer').length > 1
+    ? phases.filter(p => p.agentKey === 'implementer').length - 1
+    : 0;
+  globalRevisionCycles = Math.max(managerRevisions, implementerRevisions);
+
+  // Global deliverables count (non-file deliverables)
+  let globalOutputsCount = 0;
+  phases.forEach(p => {
+    globalOutputsCount += p.outputs.filter(o => !o.isFile).length;
+  });
+
+  return {
+    phases,
+    globalFilesCount: globalChangedFiles.size,
+    globalOutputsCount,
+    globalFailedOps,
+    globalRevisionCycles
+  };
 }
 
 const _diffCache = new Map();

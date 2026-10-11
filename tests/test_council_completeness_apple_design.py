@@ -99,3 +99,35 @@ def test_council_schema_preserves_criterion_semantic_labels():
     c1 = pruned["criteria"][1]
     assert c1["description"] == "Password reset flow"
     assert c1["met"] is False
+
+
+def test_council_calm_breathable_velocity_damper_and_apple_springs():
+    """Verify Calm & Breathable Council mode: velocity damper, fixed 32px tool height,
+    attention shelf containment, and Apple spring physics."""
+    # R1 Velocity damper, zero-jitter fixed height, and live duration timer
+    assert ".ghost-tool-card.is-running:not(.is-user-expanded):not(.open-error) .ghost-tool-body" in CSS
+    assert ".ghost-tool-card.is-running .row.ghost-tool-header" in CSS
+    assert "height: 32px" in CSS
+    assert "line-height: 32px" in CSS
+    assert "tool-header-breathe" in CSS
+    assert "tool-duration-badge--live" in CSS
+    assert "is-user-expanded" in JS
+    assert "open-error" in JS
+    assert "${body ? '<span class=\"ghost-tool-chevron\" style=\"margin-left:auto;\">▶</span>' : ''}" in JS
+
+    # R2 Quiet Telemetry Spine & Attention Required Shelf containment
+    assert ".council-attention-dock" in CSS
+    assert ".audit-attention-shelf" in CSS
+    assert ".audit-attention-list" in CSS
+    assert "max-height: 220px" in CSS
+    assert ".audit-row:not(.audit-row--error)" in CSS
+    assert "opacity: 0.38" in CSS
+
+    # R3 Apple fluid spring physics and active press feedback
+    assert "scale(0.96)" in CSS
+    assert "scale(0.97)" in CSS
+    assert ".role-popover" in CSS
+    assert "cubic-bezier(0.32, 0.72, 0, 1)" in CSS
+    assert ".log-filter-btn:active" in CSS
+
+

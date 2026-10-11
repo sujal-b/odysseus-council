@@ -38,11 +38,11 @@ def repair_file_write_scopes(tasks: list[dict]) -> dict:
     repaired = []
     errors = []
     create_pattern = re.compile(
-        r'^(?:create|add|generate|write|implement)\s+(.+)$',
+        r'^(?:(?:using|from|based\s+on|following|with|per|after)\s+[^,:]+,\s*)?(?:create|add|generate|write|implement|build)\s+(.+)$',
         re.IGNORECASE,
     )
     # File token: optionally quoted, non-whitespace path ending with an extension (.xxx)
-    file_token_pattern = re.compile(r'["\']?([^\s"\']+\.[a-zA-Z0-9_-]+)["\']?')
+    file_token_pattern = re.compile(r'["\'`]?([^\s"\'`()]+\.[a-zA-Z0-9_-]+)["\'`]?')
 
     for task in tasks or []:
         if not isinstance(task, dict):

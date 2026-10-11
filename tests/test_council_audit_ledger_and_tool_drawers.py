@@ -10,6 +10,7 @@ CSS = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
 def test_html_audit_ledger_header_and_toolbar():
     assert 'id="council-log-header"' in HTML
     assert 'id="council-log-summary"' in HTML
+    assert 'id="council-attention-dock"' in HTML
     assert 'id="council-log-toolbar"' in HTML
     assert 'data-filter="ALL"' in HTML
     assert 'data-filter="ERRORS"' in HTML
@@ -18,6 +19,9 @@ def test_html_audit_ledger_header_and_toolbar():
 
 
 def test_css_audit_ledger_and_tool_drawer_styles():
+    assert ".council-attention-dock" in CSS
+    assert ".audit-attention-shelf" in CSS
+    assert ".audit-attention-toggle-btn" in CSS
     assert ".ctx-tab-badge--warning" in CSS
     assert ".audit-ledger-container" in CSS
     assert ".audit-row" in CSS
