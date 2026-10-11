@@ -411,6 +411,12 @@ class CouncilState {
       this.completeness = data.extra?.completeness ?? null;
       this.completenessCriteria = data.extra?.criteria || [];
     }
+    if (data.completeness !== undefined && data.completeness !== null) {
+      this.completeness = data.completeness;
+    }
+    if (Array.isArray(data.completeness_criteria) && data.completeness_criteria.length > 0) {
+      this.completenessCriteria = data.completeness_criteria;
+    }
 
     if (data.event === 'dag_update' && data.extra?.dag) {
       const dag = data.extra.dag;
@@ -888,6 +894,25 @@ class CouncilSession {
         this._state.showDAG = true;
       }
 
+      // Restore completeness metric and criteria across page refresh
+      if (Number.isFinite(Number(data.completeness))) {
+        this._state.completeness = Number(data.completeness);
+      }
+      if (Array.isArray(data.completeness_criteria) && data.completeness_criteria.length > 0) {
+        this._state.completenessCriteria = data.completeness_criteria;
+      } else if (Array.isArray(data.log)) {
+        for (let i = data.log.length - 1; i >= 0; i--) {
+          const ev = data.log[i];
+          if (ev && ev.event === 'completeness_update') {
+            if (this._state.completeness === null) {
+              this._state.completeness = ev.extra?.completeness ?? null;
+            }
+            this._state.completenessCriteria = Array.isArray(ev.extra?.criteria) ? ev.extra.criteria : [];
+            break;
+          }
+        }
+      }
+
       this._state.update({}); // trigger render
 
       // If still in progress/blocked, reconnect SSE stream to listen for real-time updates
@@ -973,6 +998,8 @@ class CouncilUI {
     this._userCollapsedPhaseIds = new Set();
     this._pipelineShowAllHistory = false;
     this._expandedOutputsPhaseIds = new Set();
+    this._expandedCriteriaIds = new Set();
+    this._completenessListCollapsed = true;
     // Handle for the pending scroll-to-bottom rAF. Cancelled and replaced
     // on every render so only one rAF is ever queued at a time, preventing
     // accumulation at high event rates.
@@ -1048,6 +1075,8 @@ class CouncilUI {
     this._manuallyClosedTools.clear();
     this._manuallyClosedBursts.clear();
     this._peekDrawers.clear();
+    if (this._expandedCriteriaIds) this._expandedCriteriaIds.clear();
+    this._completenessListCollapsed = true;
     this._logSearchQuery = '';
     this._currentPhaseCount = 0;
     this._lastViewedPhaseCount = 0;
@@ -2657,6 +2686,17 @@ class CouncilUI {
     }
 
     // Append completeness & acceptance audit card if available (Apple Design)
+    if ((state.completeness === null || !state.completenessCriteria?.length) && Array.isArray(state.log)) {
+      for (let i = state.log.length - 1; i >= 0; i--) {
+        const item = state.log[i];
+        if (item && item.event === 'completeness_update') {
+          if (state.completeness === null) state.completeness = item.extra?.completeness ?? null;
+          if (!state.completenessCriteria?.length) state.completenessCriteria = Array.isArray(item.extra?.criteria) ? item.extra.criteria : [];
+          break;
+        }
+      }
+    }
+
     const hasCompleteness = state.completeness !== null || (Array.isArray(state.completenessCriteria) && state.completenessCriteria.length > 0);
     if (hasCompleteness) {
       const criteria = Array.isArray(state.completenessCriteria) ? state.completenessCriteria : [];
@@ -2681,10 +2721,11 @@ class CouncilUI {
         headline = `Specification coverage ${pct}%`;
       }
 
+      const isListCollapsed = this._completenessListCollapsed !== false;
       let critListHtml = '';
       if (totalCrits > 0) {
-        critListHtml = '<div class="ghost-criteria-list">';
-        criteria.forEach(c => {
+        critListHtml = `<div class="ghost-criteria-list" ${isListCollapsed ? 'style="display:none;"' : ''}>`;
+        criteria.forEach((c, idx) => {
           if (!c) return;
           const isMet = Boolean(c.met === true || String(c.status || '').toLowerCase() === 'verified');
           const gapType = String(c.gap_type || (isMet ? 'verified' : 'unsatisfied')).toLowerCase();
@@ -2707,28 +2748,41 @@ class CouncilUI {
             ? String(c.acceptance).trim()
             : (dagNode && dagNode.acceptance && String(dagNode.acceptance).trim() !== primaryTitle ? String(dagNode.acceptance).trim() : '');
 
+          // Clean title and shorten tooltips to eliminate bloated popup boxes
+          const cleanTitle = primaryTitle
+            .replace(/^(?:Inspect|Examine|Analyze)\s+(?:the\s+)?repository\s+and\s+environment\s+for:\s*(?:Task:\s*)?/i, 'Inspect: ')
+            .replace(/^(?:Implement|Apply)\s+required\s+changes\s+for:\s*(?:Task:\s*)?/i, 'Implement: ')
+            .replace(/^Task:\s*/i, '')
+            .trim();
+          const tooltipTitle = cleanTitle.length > 70 ? (cleanTitle.slice(0, 67) + '…') : cleanTitle;
+
+          const hasDetail = Boolean(detail || acceptance);
+          if (!this._expandedCriteriaIds) this._expandedCriteriaIds = new Set();
+          const critKey = String(c.id || `crit-${idx}`);
+          const isExpanded = this._expandedCriteriaIds.has(critKey);
+
           let iconHtml = '';
           if (isMet) {
             iconHtml = `<span class="ghost-crit-icon is-met" title="Verified" aria-label="Verified">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#30d158" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M2.5 6.5L4.8 8.8L9.5 3.5"/>
               </svg>
             </span>`;
           } else if (gapType === 'needs_user') {
             iconHtml = `<span class="ghost-crit-icon is-needs-user" title="Needs user decision" aria-label="Needs user decision">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#0a84ff" stroke-width="2" stroke-linecap="round">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
                 <path d="M4.5 4.5a1.5 1.5 0 0 1 3 0c0 1-1.5 1.5-1.5 2.5"/><circle cx="6" cy="9.5" r="0.6" fill="currentColor"/>
               </svg>
             </span>`;
           } else if (gapType === 'broken') {
             iconHtml = `<span class="ghost-crit-icon is-broken" title="Broken" aria-label="Broken">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="#ff453a" stroke-width="2" stroke-linecap="round">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
                 <line x1="6" y1="3" x2="6" y2="7"/><circle cx="6" cy="9.5" r="0.6" fill="currentColor"/>
               </svg>
             </span>`;
           } else {
             iconHtml = `<span class="ghost-crit-icon is-unmet" title="Unsatisfied" aria-label="Unsatisfied">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="var(--warn, #f0ad4e)" stroke-width="2" stroke-linecap="round">
+              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
                 <circle cx="6" cy="6" r="4.2"/>
               </svg>
             </span>`;
@@ -2751,20 +2805,24 @@ class CouncilUI {
           }
 
           critListHtml += `
-            <div class="ghost-crit-row ${isMet ? 'is-met' : 'is-unmet'}">
+            <div class="ghost-crit-row ${isMet ? 'is-met' : 'is-unmet'} ${hasDetail ? 'has-detail' : ''} ${isExpanded ? 'is-expanded' : ''}" data-crit-id="${_esc(critKey)}">
               <div class="ghost-crit-icon-wrap">
                 ${iconHtml}
               </div>
               <div class="ghost-crit-content">
                 <div class="ghost-crit-title-line">
                   ${c.id ? `<span class="ghost-crit-chip">${_esc(c.id)}</span>` : ''}
-                  <span class="ghost-crit-title" title="${_esc(primaryTitle)}">${_esc(primaryTitle)}</span>
+                  <span class="ghost-crit-title" title="${_esc(tooltipTitle)}">${_esc(cleanTitle)}</span>
                 </div>
-                ${detail ? `<div class="ghost-crit-detail">${_esc(detail)}</div>` : ''}
-                ${acceptance ? `<div class="ghost-crit-acceptance">Target: ${_esc(acceptance)}</div>` : ''}
+                ${hasDetail ? `
+                  <div class="ghost-crit-drawer ${isExpanded ? 'is-open' : ''}">
+                    ${detail ? `<div class="ghost-crit-detail">${_esc(detail)}</div>` : ''}
+                    ${acceptance ? `<div class="ghost-crit-acceptance">Target: ${_esc(acceptance)}</div>` : ''}
+                  </div>` : ''}
               </div>
               <div class="ghost-crit-badge-wrap">
                 <span class="ghost-crit-badge ${badgeClass}">${_esc(badgeLabel)}</span>
+                ${hasDetail ? `<span class="ghost-crit-toggle" title="${isExpanded ? 'Collapse audit details' : 'View audit details'}">${isExpanded ? '▼' : '▶'}</span>` : ''}
               </div>
             </div>`;
         });
@@ -2772,14 +2830,21 @@ class CouncilUI {
       }
 
       html += `
-        <div class="ghost-completeness-card ghost-completeness-bar">
+        <div class="ghost-completeness-card ghost-completeness-bar ${isListCollapsed ? 'is-collapsed' : ''}">
           <div class="ghost-completeness-header">
             <div class="ghost-completeness-meta">
               <span class="ghost-completeness-kicker">Acceptance Audit</span>
               <span class="ghost-completeness-headline">${_esc(headline)}</span>
             </div>
-            <div class="ghost-completeness-pill ${pct === 100 ? 'is-complete' : ''}">
-              <span>${pct}%</span>
+            <div class="ghost-completeness-actions">
+              ${totalCrits > 0 ? `
+                <button type="button" class="ghost-completeness-collapse-btn" title="${isListCollapsed ? 'Show criteria list' : 'Hide criteria list'}">
+                  ${isListCollapsed ? 'Show criteria ▾' : 'Hide criteria ▴'}
+                </button>
+              ` : ''}
+              <div class="ghost-completeness-pill ${pct === 100 ? 'is-complete' : ''}">
+                <span>${pct}%</span>
+              </div>
             </div>
           </div>
           <div class="ghost-completeness-track">
@@ -2896,8 +2961,11 @@ class CouncilUI {
       const status = String(n.status || 'PENDING').toUpperCase();
       const statusCls = status === 'DONE' ? 'done' : (status === 'IN_PROGRESS' || status === 'RUNNING') ? 'in-progress' : status === 'FAILED' ? 'failed' : status === 'BLOCKED' ? 'blocked' : 'pending';
       const summary = n.summary || compactTaskLabel(n.description, n.id);
+      const rawDesc = String(n.description || '').replace(/^(?:Inspect|Examine|Analyze)\s+(?:the\s+)?repository\s+and\s+environment\s+for:\s*(?:Task:\s*)?/i, 'Inspect: ').replace(/^(?:Implement|Apply)\s+required\s+changes\s+for:\s*(?:Task:\s*)?/i, 'Implement: ').trim();
+      const pillDesc = rawDesc.length > 70 ? (rawDesc.slice(0, 67) + '…') : rawDesc;
+      const pillTitle = pillDesc ? `${n.id}: ${pillDesc}` : n.id;
       return `
-        <button type="button" class="council-dag-pill dag-pill--${statusCls}" data-task-id="${_esc(n.id)}" title="${_esc(n.id)}: ${_esc(n.description || '')}">
+        <button type="button" class="council-dag-pill dag-pill--${statusCls}" data-task-id="${_esc(n.id)}" title="${_esc(pillTitle)}">
           <span class="dag-pill-dot"></span>
           <span class="dag-pill-id">${_esc(n.id)}</span>
           <span class="dag-pill-summary">${_esc(summary)}</span>
@@ -4908,6 +4976,48 @@ class CouncilUI {
             ? `+ Show ${container.querySelectorAll('.tk').length} more tasks ▾` 
             : `- Hide extra tasks ▴`;
         }
+      }
+
+      // Expand/collapse entire Acceptance Audit criteria list
+      const auditCollapseBtn = e.target.closest('.ghost-completeness-collapse-btn');
+      if (auditCollapseBtn) {
+        this._completenessListCollapsed = !this._completenessListCollapsed;
+        const card = auditCollapseBtn.closest('.ghost-completeness-card');
+        if (card) {
+          card.classList.toggle('is-collapsed', this._completenessListCollapsed);
+          const list = card.querySelector('.ghost-criteria-list');
+          if (list) {
+            list.style.display = this._completenessListCollapsed ? 'none' : '';
+          }
+        }
+        auditCollapseBtn.textContent = this._completenessListCollapsed ? 'Show criteria ▾' : 'Hide criteria ▴';
+        auditCollapseBtn.title = this._completenessListCollapsed ? 'Show criteria list' : 'Hide criteria list';
+        return;
+      }
+
+      // Expand/collapse individual Acceptance Audit criterion details
+      const critRow = e.target.closest('.ghost-crit-row.has-detail');
+      if (critRow) {
+        const critId = critRow.getAttribute('data-crit-id');
+        if (!this._expandedCriteriaIds) this._expandedCriteriaIds = new Set();
+        const isOpen = critRow.classList.contains('is-expanded');
+        const nowOpen = !isOpen;
+        critRow.classList.toggle('is-expanded', nowOpen);
+        const drawer = critRow.querySelector('.ghost-crit-drawer');
+        if (drawer) drawer.classList.toggle('is-open', nowOpen);
+        const toggle = critRow.querySelector('.ghost-crit-toggle');
+        if (toggle) {
+          toggle.textContent = nowOpen ? '▼' : '▶';
+          toggle.title = nowOpen ? 'Collapse audit details' : 'View audit details';
+        }
+        if (critId) {
+          if (nowOpen) {
+            this._expandedCriteriaIds.add(critId);
+          } else {
+            this._expandedCriteriaIds.delete(critId);
+          }
+        }
+        return;
       }
 
       // Click file link in Implementer step

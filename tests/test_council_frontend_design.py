@@ -833,4 +833,45 @@ def test_stream_layout_containment_and_memoization():
     assert "_ghostMd._cacheVal" in js
 
 
+def test_stream_apple_design_audit_invariants():
+    """Verify Apple Design audit fixes: gutter consistency, no --bg self-reference,
+    no double border, explicit transitions, static gate bars, markup leak fixes, and a11y media queries."""
+    css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+
+    # Group A & B: Gutter owned by ledger, children margin-inline collapsed
+    stream_ledger = css.split(".ghost-stream-ledger {", 1)[1].split("}", 1)[0]
+    assert "padding: 10px 12px;" in stream_ledger
+
+    row_block = css.split(".ghost-editor-stream .row {", 1)[1].split("}", 1)[0]
+    assert "margin: 1px 0;" in row_block
+    assert "min-height: 28px;" in row_block
+
+    # Group C: No self-referential --bg: var(--bg); no double border on stream pane
+    editor_stream = css.split(".ghost-editor-stream {", 1)[1].split("}", 1)[0]
+    assert "--bg: var(--bg);" not in editor_stream
+
+    stream_pane = css.split(".council-stream-pane {", 1)[1].split("}", 1)[0]
+    assert "border-right:" not in stream_pane
+
+    # Group D: Markup leaks eliminated from index.html gate bars
+    assert 'id="council-permission-cmd" style="' not in html
+    assert 'id="council-permission-label" style="' not in html
+    assert 'id="review-plan-body" style="' not in html
+    assert "council-perm-cmd-box" in html
+    assert "gate-bar-plan-body" in html
+
+    # Group E: Palette unified, no neon purple (#a67cff) on manager / thinking
+    assert "--mgr: #a67cff" not in css
+    assert "--think: #a67cff" not in css
+    gate_bar = css.split(".council-gate-bar {", 1)[1].split("}", 1)[0]
+    assert "review-pulse" not in gate_bar
+
+    # Group F: Explicit transitions & a11y media queries
+    tk_block = css.split(".ghost-editor-stream .tk {", 1)[1].split("}", 1)[0]
+    assert "transition: all" not in tk_block
+    assert "@media (prefers-reduced-transparency: reduce)" in css
+    assert "@media (prefers-contrast: more)" in css
+
+
 

@@ -43,6 +43,8 @@ class SessionState:
     # <context:repository_capsule> in the Strategist envelope). Set by the
     # caller that owns the workspace; the orchestrator only forwards it.
     repository_context:    Optional[str] = None
+    completeness:          Optional[float] = None
+    completeness_criteria: list = field(default_factory=list)
 
 class SessionStore(ABC):
     @abstractmethod
@@ -95,6 +97,8 @@ class InMemorySessionStore(SessionStore):
             "run_status": state.run_status,
             "pending_gate": state.pending_gate,
             "manager_override": state.manager_override,
+            "completeness": state.completeness,
+            "completeness_criteria": state.completeness_criteria,
         }
         fd, tmp_path = tempfile.mkstemp(dir=self._dir, suffix=".tmp")
         try:
@@ -147,6 +151,8 @@ class InMemorySessionStore(SessionStore):
                 run_status=data.get("run_status", ""),
                 pending_gate=data.get("pending_gate"),
                 manager_override=bool(data.get("manager_override", False)),
+                completeness=data.get("completeness"),
+                completeness_criteria=data.get("completeness_criteria", []),
             )
             self._cache[session_id] = state
             return state

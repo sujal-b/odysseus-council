@@ -3337,6 +3337,10 @@ Report what you FIND, not what you think might exist."""
                        text=f"Completeness: {audit.get('completeness', 0):.0%}",
                        extra={"completeness": audit.get("completeness", 0.0),
                               "criteria": audit.get("criteria", [])})
+            if hasattr(state, "completeness"):
+                state.completeness = audit.get("completeness", 0.0)
+            if hasattr(state, "completeness_criteria"):
+                state.completeness_criteria = audit.get("criteria", [])
             unmet = [c for c in audit.get("criteria", []) if not c.get("met")]
             current_unmet_ids = {str(c.get("id", "")) for c in unmet}
             if initial_unmet_ids is None:

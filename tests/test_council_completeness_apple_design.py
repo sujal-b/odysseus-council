@@ -131,3 +131,65 @@ def test_council_calm_breathable_velocity_damper_and_apple_springs():
     assert ".log-filter-btn:active" in CSS
 
 
+def test_council_completeness_progressive_disclosure_and_clean_tooltips():
+    """Verify progressive disclosure, compact criteria rows, capped tooltips, and drawer containment."""
+    js = (ROOT / "static" / "js" / "council" / "council.js").read_text(encoding="utf-8")
+    css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+
+    # Progressive disclosure classes in JS and CSS
+    assert "ghost-crit-drawer" in js
+    assert "ghost-crit-toggle" in js
+    assert "ghost-completeness-collapse-btn" in js
+    assert "_expandedCriteriaIds" in js
+    assert "_completenessListCollapsed" in js
+    assert "this._completenessListCollapsed = true;" in js
+    assert "cleanTitle" in js
+    assert "tooltipTitle" in js
+
+    # CSS containment
+    assert ".ghost-crit-drawer" in css
+    assert ".ghost-crit-row.is-expanded .ghost-crit-drawer" in css
+    assert "max-height: 140px" in css
+    assert "overflow-y: auto" in css
+    assert ".ghost-completeness-card.is-collapsed" in css
+
+
+def test_council_completeness_persistence_and_refresh_restoration():
+    """Verify completeness is persisted on disk and rehydrated across page refresh / reload."""
+    import tempfile
+    from council_of_agents.scripts.session_store import InMemorySessionStore, SessionState
+
+    with tempfile.TemporaryDirectory() as td:
+        store = InMemorySessionStore()
+        store._dir = td
+
+        state = SessionState(
+            session_id="test-session-refresh",
+            owner="test-user",
+            user_prompt="Build Sort Race",
+            completeness=0.5,
+            completeness_criteria=[
+                {"id": "T1", "met": True, "detail": "setup done"},
+                {"id": "T2", "met": False, "detail": "index.html incomplete"},
+            ],
+        )
+        store.save(state)
+
+        # Clear memory cache to simulate fresh server / restart
+        store._cache.clear()
+        loaded = store.load("test-session-refresh")
+        assert loaded is not None
+        assert loaded.completeness == 0.5
+        assert len(loaded.completeness_criteria) == 2
+        assert loaded.completeness_criteria[0]["id"] == "T1"
+        assert loaded.completeness_criteria[1]["id"] == "T2"
+
+    # Also verify council.js rehydrates completeness in load() and stream render
+    js = (ROOT / "static" / "js" / "council" / "council.js").read_text(encoding="utf-8")
+    assert "data.completeness_criteria" in js
+    assert "this._state.completenessCriteria = data.completeness_criteria;" in js
+    assert "ev.event === 'completeness_update'" in js
+
+
+
+
