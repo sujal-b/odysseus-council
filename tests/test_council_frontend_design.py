@@ -920,5 +920,12 @@ def test_council_diff_viewer_toggle_and_canvas_removal():
     assert "border-left-color: #3db868;" in css
     assert "border-left-color: #e05555;" in css
 
+    # 7. Sleek vector SVGs for Files, Pipeline, and Debug tabs (no raw unicode glyphs)
+    assert '<svg class="council-tab-icon"' in html
+    assert '&#x25A4;' not in html
+    assert '&#x2261;' not in html
+    assert '&#x25C8;' not in html
+    assert "svg.council-tab-icon {" in css
+
 
 

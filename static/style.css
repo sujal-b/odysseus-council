@@ -42551,9 +42551,18 @@ body.theme-frosted .modal {
   outline-offset: 1px;
 }
 .council-tab-icon {
-  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
   line-height: 1;
-  display: inline-block;
+  flex-shrink: 0;
+}
+svg.council-tab-icon {
+  width: 13px;
+  height: 13px;
+  display: block;
 }
 
 /* Flying description tooltip on hover */
