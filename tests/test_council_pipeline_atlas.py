@@ -29,6 +29,9 @@ def test_pipeline_atlas_html_and_css_invariants():
     # Ensure no fourth tab was added (exactly 3 contextual view tabs)
     tab_buttons = [line for line in HTML.splitlines() if '<button' in line and 'class="council-ctx-tab' in line]
     assert len(tab_buttons) == 3
+    for line in tab_buttons:
+        assert 'title=' not in line, f"Native title tooltip must not be present on tab buttons: {line}"
+        assert 'aria-label=' in line, f"Accessible aria-label required on tab buttons: {line}"
 
     # 2. Pipeline Atlas container in Log tab
     assert 'id="ctx-body-log"' in HTML
@@ -85,6 +88,8 @@ def test_pipeline_atlas_html_and_css_invariants():
     assert ".pipeline-outputs-overflow-btn" in CSS
     assert ".pipeline-stage-history-link" in CSS
     assert ".stream-block-focus-highlight" in CSS
+    assert ".pipeline-drawer-metric-line--failed" in CSS
+    assert ".pipeline-drawer-metric-line--blocked" in CSS
 
 
 def test_pipeline_atlas_node_simulation():
@@ -518,6 +523,37 @@ def test_pipeline_atlas_node_simulation():
     }
     if (timedImplPhase.waitingDuration !== 5) {
         throw new Error('Expected waitingDuration 5s, got: ' + timedImplPhase?.waitingDuration);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // TEST 13: Failed Run & Inline Stage Drawer Failure Callout
+    // ─────────────────────────────────────────────────────────────
+    const stateFailedRun = {
+        sessionId: 'sess-failed-1',
+        status: 'FAILED',
+        error: 'Execution failed: test assertion error',
+        log: [
+            { event: 'brief_created', agent: 'chair', ts: '2026-10-11T15:00:00Z' },
+            { event: 'tool_start', agent: 'implementer', ts: '2026-10-11T15:00:05Z' },
+            { event: 'tool_output', agent: 'implementer', ts: '2026-10-11T15:00:10Z', exit_code: 1, extra: { error: 'AssertionError: expected true' } }
+        ]
+    };
+    ui._renderCaptainsLog(stateFailedRun);
+    const failedAtlasHtml = document.getElementById('council-pipeline-atlas').innerHTML;
+    if (!failedAtlasHtml.includes('pipeline-node-icon--failed') || !failedAtlasHtml.includes('&#x2717;')) {
+        throw new Error('Failed phase must render ✗ failed node icon: ' + failedAtlasHtml);
+    }
+    if (!failedAtlasHtml.includes('pipeline-drawer-metric-line--failed') || !failedAtlasHtml.includes('Failure:')) {
+        throw new Error('Failed drawer must render inline failure callout with pipeline-drawer-metric-line--failed: ' + failedAtlasHtml);
+    }
+    if (!failedAtlasHtml.includes('AssertionError: expected true')) {
+        throw new Error('Failed drawer must show specific failure reason: ' + failedAtlasHtml);
+    }
+    // Failed phase must be auto-expanded
+    const derivedFailed = _derivePipelinePhases(stateFailedRun);
+    const lastFailedPhase = derivedFailed.phases[derivedFailed.phases.length - 1];
+    if (!ui._isPhaseExpanded(lastFailedPhase)) {
+        throw new Error('Failed phase must auto-expand to reveal failure reason');
     }
 
     console.log('PIPELINE_ATLAS_VERIFIED_SUCCESSFULLY');

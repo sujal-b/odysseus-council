@@ -4270,9 +4270,9 @@ class CouncilUI {
       }
 
       // Expansion Ownership Management
-      const activeOrBlockedPhase = phases.find(p => p.status === 'active' || p.status === 'blocked');
-      if (activeOrBlockedPhase) {
-        this._autoExpandedPhaseId = activeOrBlockedPhase.id;
+      const autoExpandPhase = phases.find(p => p.status === 'active') || phases.find(p => p.status === 'blocked' || p.status === 'failed');
+      if (autoExpandPhase) {
+        this._autoExpandedPhaseId = autoExpandPhase.id;
       } else {
         this._autoExpandedPhaseId = null;
       }
@@ -4443,7 +4443,11 @@ class CouncilUI {
 
     if (phase.status === 'blocked') {
       const blockReason = this._state?.pendingDecision?.reason || (this._state?.pendingReview ? 'Decision gate: review approval required' : 'Execution paused at gate');
-      html += `<div class="pipeline-drawer-metric-line" style="color:var(--council-warning, #f59e0b);font-weight:600;">&#x23F8; ${_esc(blockReason)}</div>`;
+      html += `<div class="pipeline-drawer-metric-line pipeline-drawer-metric-line--blocked">&#x23F8; ${_esc(blockReason)}</div>`;
+    } else if (phase.status === 'failed') {
+      const failReason = phase.failureReason || (typeof this._state?.error === 'string' ? this._state.error : (this._state?.error?.message || 'Stage execution failed'));
+      const cleanReason = String(failReason).slice(0, 140);
+      html += `<div class="pipeline-drawer-metric-line pipeline-drawer-metric-line--failed">&#x2717; Failure: ${_esc(cleanReason)}</div>`;
     }
 
     // Execution history link
@@ -6378,6 +6382,19 @@ function _derivePipelinePhases(state) {
     return a;
   };
 
+  const _extractError = (val) => {
+    if (!val) return '';
+    if (typeof val === 'string') return val;
+    if (typeof val.extra?.error === 'string') return val.extra.error;
+    if (typeof val.extra?.error?.message === 'string') return val.extra.error.message;
+    if (typeof val.error === 'string') return val.error;
+    if (typeof val.error?.message === 'string') return val.error.message;
+    if (typeof val.message === 'string') return val.message;
+    if (typeof val.text === 'string' && (val.event === 'error' || val.status === 'FAILED')) return val.text;
+    if (typeof val.stderr === 'string') return val.stderr;
+    return '';
+  };
+
   const roleNames = {
     chair: 'Chairperson',
     strategist: 'Strategist',
@@ -6399,6 +6416,9 @@ function _derivePipelinePhases(state) {
         if (e.event === 'error' || e.status === 'FAILED') {
           currentPhase.failedOps++;
           globalFailedOps++;
+          if (!currentPhase.failureReason) {
+            currentPhase.failureReason = _extractError(e);
+          }
         }
         _accumulatePhaseTelemetry(currentPhase, e, state, globalChangedFiles);
       }
@@ -6450,6 +6470,9 @@ function _derivePipelinePhases(state) {
     if (e.event === 'error' || e.status === 'FAILED' || (e.exit_code != null && Number(e.exit_code) !== 0) || Boolean(e.extra?.error)) {
       currentPhase.failedOps++;
       globalFailedOps++;
+      if (!currentPhase.failureReason) {
+        currentPhase.failureReason = _extractError(e);
+      }
     }
     _accumulatePhaseTelemetry(currentPhase, e, state, globalChangedFiles);
   });
@@ -6500,7 +6523,37 @@ function _derivePipelinePhases(state) {
       phases.push(currentPhase);
     }
   } else if (state?.status === 'FAILED') {
-    if (currentPhase) currentPhase.status = 'failed';
+    if (currentPhase) {
+      currentPhase.status = 'failed';
+      if (!currentPhase.failureReason) {
+        currentPhase.failureReason = _extractError(state.error) || 'Execution failed';
+      }
+    } else {
+      const failReason = _extractError(state.error) || 'Execution failed';
+      currentPhase = {
+        id: 'phase-0',
+        index: 0,
+        agentKey: 'system',
+        roleName: 'System',
+        labelSuffix: '',
+        startTs: new Date().toISOString(),
+        endTs: new Date().toISOString(),
+        status: 'failed',
+        failureReason: failReason,
+        duration: '',
+        files: new Map(),
+        outputs: [],
+        failedOps: 1,
+        activeDuration: 0,
+        waitingDuration: 0,
+        tasks: new Map(),
+        summaryInfo: {},
+        firstLogIndex: 0,
+        prevInvocations: 0
+      };
+      phases.push(currentPhase);
+      globalFailedOps++;
+    }
   } else if (state?.status === 'BLOCKED') {
     if (currentPhase) currentPhase.status = 'blocked';
   }

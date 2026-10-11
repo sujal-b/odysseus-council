@@ -43538,6 +43538,16 @@ body.theme-frosted .modal {
   opacity: 0.9;
 }
 
+.pipeline-drawer-metric-line--failed {
+  color: var(--council-danger, #ef4444);
+  font-weight: 600;
+}
+
+.pipeline-drawer-metric-line--blocked {
+  color: var(--council-warning, #f59e0b);
+  font-weight: 600;
+}
+
 /* Task branches in Implementer / Work Stage */
 .pipeline-task-branch-list {
   display: flex;
