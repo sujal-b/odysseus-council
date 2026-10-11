@@ -42457,28 +42457,39 @@ body.theme-frosted .modal {
   display: none !important;
 }
 .council-ctx-session-group {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 4px;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-shrink: 0;
+  min-width: 0;
+  max-width: calc(100% - 110px);
 }
 .council-log-copy-btn {
   display: none !important;
 }
 .council-log-sid {
-  max-width: 140px;
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  max-width: 130px;
+  min-width: 0;
+  flex-shrink: 1;
   overflow: hidden;
-  color: var(--council-subtle, var(--dim));
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 10px;
-  font-family: var(--code-font, monospace);
-  padding: 3px 8px;
+  color: var(--council-subtle, var(--dim));
+  font-size: 10.5px;
+  font-family: var(--code-font, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace);
+  line-height: 1;
+  padding: 0 8px;
   border-radius: 5px;
   background: var(--council-surface-raised, rgba(255, 255, 255, 0.04));
   border: 1px solid var(--council-line, rgba(255, 255, 255, 0.08));
   cursor: pointer;
   user-select: none;
-  transition: color .15s, border-color .15s, background .15s;
+  box-sizing: border-box;
+  transition: color .15s ease, border-color .15s ease, background .15s ease, transform .1s ease;
 }
 .council-log-sid:hover {
   color: var(--fg);
@@ -42486,6 +42497,39 @@ body.theme-frosted .modal {
   background: color-mix(in srgb, var(--fg) 6%, transparent);
 }
 .council-log-sid:active {
+  transform: scale(0.96);
+}
+.council-log-sid.is-copied {
+  color: var(--council-success, #4eb870);
+  border-color: var(--council-success, #4eb870);
+  background: color-mix(in srgb, var(--council-success, #4eb870) 10%, transparent);
+}
+
+.council-log-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--fg) 45%, transparent);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: color .15s ease, background .15s ease, transform .1s ease;
+}
+.council-log-close:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.council-log-close:active {
   transform: scale(0.96);
 }
 

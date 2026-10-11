@@ -3949,17 +3949,25 @@ class CouncilUI {
       if (sidEl) {
         const fullId = state.sessionId || 'PENDING';
         const shortId = fullId.length > 12 ? `${fullId.slice(0, 8)}…` : fullId;
-        sidEl.textContent = `ID: ${shortId}`;
+        if (!sidEl._isCopied) {
+          sidEl.textContent = `ID: ${shortId}`;
+        }
         sidEl.title = `Session ID: ${fullId} (click to copy)`;
-        sidEl.style.cursor = 'pointer';
         if (!sidEl.dataset.hasCopyListener) {
           sidEl.dataset.hasCopyListener = 'true';
           sidEl.addEventListener('click', () => {
-            if (state.sessionId) {
-              _copyToClipboard(state.sessionId).then(() => {
-                const orig = sidEl.textContent;
-                sidEl.textContent = 'COPIED!';
-                setTimeout(() => { if (sidEl.isConnected) sidEl.textContent = orig; }, 1200);
+            const currentId = this._state?.sessionId || state.sessionId;
+            if (currentId) {
+              _copyToClipboard(currentId).then(() => {
+                sidEl._isCopied = true;
+                const orig = `ID: ${shortId}`;
+                sidEl.textContent = '✓ Copied';
+                sidEl.classList.add('is-copied');
+                setTimeout(() => {
+                  sidEl._isCopied = false;
+                  sidEl.classList.remove('is-copied');
+                  if (sidEl.isConnected) sidEl.textContent = orig;
+                }, 1200);
               });
             }
           });
