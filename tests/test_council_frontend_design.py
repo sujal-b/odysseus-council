@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 
 
 ROOT = Path(__file__).parents[1]
@@ -80,9 +81,12 @@ def test_execution_stream_cockpit_invariants():
     assert "computeLineDiff(orig, curr)" in JS
     assert "diffMemo" in JS
 
-    # Monotonic step numbering
-    assert "let rowIndex = 1;" in JS
-    assert "const _nextStep = () => String(rowIndex++).padStart(2, '0');" in JS
+    # Clean numberless execution stream (no row number column)
+    assert "_nextStep" not in JS
+    assert "rowIndex" not in JS
+    assert '<span class="id">' not in JS
+    assert "--stream-grid: var(--stream-ag-w) minmax(0, 1fr);" in CSS
+    assert "--stream-st-w: 0px;" in CSS
 
     # Vector SVG status & tool icons
     assert "const _statusIcon = (status) =>" in JS
@@ -926,6 +930,141 @@ def test_council_diff_viewer_toggle_and_canvas_removal():
     assert '&#x2261;' not in html
     assert '&#x25C8;' not in html
     assert "svg.council-tab-icon {" in css
+
+
+def test_antigravity_execution_stream_ux_design_and_dynamic_aggregation():
+    """Verify borderless floating text hover illumination, dynamic aggregator titles,
+    tree guide line hierarchy, copy button, and non-consecutive agent isolation."""
+    js = (ROOT / "static" / "js" / "council" / "council.js").read_text(encoding="utf-8")
+    css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
+
+    # 1. Antigravity IDE & Codex borderless floating text hover illumination in CSS (clean lighten-up without glossy bloom)
+    assert "text-shadow: none;" in css
+    assert "rgba(255, 255, 255, 0.45)" not in css
+    assert ".ghost-editor-stream .tool-cmd-icon" in css
+    assert ".ghost-editor-stream .tree-icon" in css
+    assert ".ghost-editor-stream .ghost-tool-copy-btn" in css
+
+    # 2. Tree guide line hierarchy styling in CSS
+    assert "border-left: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);" in css
+
+    # 3. Dynamic title synthesizer function and logic in JS
+    assert "function synthesizeAggregatorTitle(items, agent)" in js
+    assert "Explored files" in js
+    assert "Ran commands" in js
+    assert "Edited files" in js
+    assert "Reviewed plan, approved issues" in js
+
+    # 4. Copy button in tool body drawer in JS
+    assert 'class="ghost-tool-copy-btn"' in js
+    assert 'data-copy-text=' in js
+
+    # 5. Node simulation verifying dynamic aggregator logic, cross-agent isolation, and drawer
+    node_script = r"""
+    const fs = require('fs');
+    const jsContent = fs.readFileSync('static/js/council/council.js', 'utf8');
+
+    global.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+    global.cancelAnimationFrame = (id) => clearTimeout(id);
+    global.window = global;
+
+    let elements = {};
+    function mockElement(id) {
+        return {
+            id, textContent: '', innerHTML: '', title: '', hidden: false, style: {}, dataset: {},
+            classList: {
+                classes: new Set(),
+                add(c) { this.classes.add(c); },
+                remove(c) { this.classes.delete(c); },
+                contains(c) { return this.classes.has(c); },
+                toggle(c, v) { if (v !== undefined) { if (v) this.add(c); else this.remove(c); } else { if (this.contains(c)) this.remove(c); else this.add(c); } }
+            },
+            querySelectorAll(sel) { return []; },
+            querySelector(sel) { return null; },
+            addEventListener(ev, fn) {},
+            setAttribute(k, v) {}, getAttribute(k) { return null; }, removeAttribute(k) {},
+            scrollHeight: 500, scrollTop: 0, clientHeight: 300
+        };
+    }
+
+    global.document = {
+        getElementById(id) {
+            if (!elements[id]) elements[id] = mockElement(id);
+            return elements[id];
+        },
+        querySelector(sel) {
+            return { dataset: { tab: 'files' }, style: {}, classList: { contains: () => false, add: () => {}, remove: () => {} } };
+        },
+        querySelectorAll() { return []; },
+        addEventListener() {}
+    };
+
+    const cleanJs = jsContent
+        .replace(/^import\s+.*$/gm, '')
+        .replace(/^export\s+default\s+.*$/gm, '')
+        .replace(/export\s+/g, '');
+    eval(cleanJs + '; global.CouncilUI = CouncilUI; global.synthesizeAggregatorTitle = synthesizeAggregatorTitle;');
+
+    // 1. Verify synthesizeAggregatorTitle dynamic titles
+    const title1 = synthesizeAggregatorTitle([
+        { type: 'tool_call', tool: 'read_file' },
+        { type: 'tool_call', tool: 'bash' }
+    ], 'implementer');
+    if (title1 !== 'Explored files, ran commands') throw new Error('Expected Explored files, ran commands, got ' + title1);
+
+    const title2 = synthesizeAggregatorTitle([
+        { type: 'tool_call', tool: 'read_file' },
+        { type: 'tool_call', tool: 'bash' },
+        { type: 'tool_call', tool: 'write_file' }
+    ], 'implementer');
+    if (title2 !== 'Explored files, ran commands, edited files') throw new Error('Expected Explored files, ran commands, edited files, got ' + title2);
+
+    const title3 = synthesizeAggregatorTitle([
+        { type: 'think' },
+        { type: 'tool_call', tool: 'write_file' }
+    ], 'implementer');
+    if (title3 !== 'Thought, edited files') throw new Error('Expected Thought, edited files, got ' + title3);
+
+    // 2. Verify non-consecutive steps across different agents DO NOT merge
+    const ui = new CouncilUI({}, {});
+    const crossAgentState = {
+        sessionId: 'sess-cross',
+        status: 'COMPLETE',
+        log: [
+            { event: 'thought', agent: 'strategist', text: 'Strat step 1' },
+            { event: 'tool_start', agent: 'implementer', extra: { tool: 'bash', command: 'ls' } },
+            { event: 'tool_output', agent: 'implementer', exit_code: 0, extra: { tool: 'bash', output: 'ok' } },
+            { event: 'thought', agent: 'strategist', text: 'Strat step 2' }
+        ]
+    };
+    ui._renderGhostEditor(crossAgentState);
+    const crossHtml = document.getElementById('council-ghost-stream-ledger').innerHTML;
+    if (crossHtml.includes('ghost-burst-group') && !crossHtml.includes('Strat step 2')) {
+        throw new Error('Non-consecutive steps across agents were improperly merged');
+    }
+
+    // 3. Verify Copy button rendered in tool result drawer
+    const toolState = {
+        sessionId: 'sess-tool',
+        status: 'COMPLETE',
+        log: [
+            { event: 'tool_start', agent: 'implementer', extra: { tool: 'bash', command: 'pytest tests/test_core.py' } },
+            { event: 'tool_output', agent: 'implementer', exit_code: 0, extra: { tool: 'bash', output: 'all passed', duration_ms: 250 } }
+        ]
+    };
+    ui._renderGhostEditor(toolState);
+    const toolHtml = document.getElementById('council-ghost-stream-ledger').innerHTML;
+    if (!toolHtml.includes('ghost-tool-copy-btn') || !toolHtml.includes('data-copy-text')) {
+        throw new Error('Tool drawer must contain ghost-tool-copy-btn with data-copy-text');
+    }
+
+    console.log('ANTIGRAVITY_UX_DESIGN_OK');
+    process.exit(0);
+    """
+
+    proc = subprocess.run(["node"], input=node_script, capture_output=True, text=True, encoding="utf-8", check=True)
+    assert "ANTIGRAVITY_UX_DESIGN_OK" in proc.stdout
+
 
 
 

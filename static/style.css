@@ -37191,11 +37191,12 @@ body.theme-frosted .modal {
 
 /* Ghost Editor Unified Stream Workspace styling */
 .ghost-editor-stream {
+  --text-bright: #ffffff;
   --bg-highlight: color-mix(in srgb, var(--fg) 8%, var(--panel));
   --border: var(--border);
   --text: var(--fg);
-  --dim: color-mix(in srgb, var(--fg) 78%, transparent);
-  --muted: color-mix(in srgb, var(--fg) 68%, transparent);
+  --dim: color-mix(in srgb, var(--fg) 72%, transparent);
+  --muted: color-mix(in srgb, var(--fg) 55%, transparent);
   --chair: var(--council-copper, #c27d38);
   --strat: #38bdf8;
   --impl: #34d399;
@@ -37206,12 +37207,12 @@ body.theme-frosted .modal {
   --warn: var(--color-warning, #fbbf24);
   --fail: var(--color-error, #f87171);
   --font: var(--code-font, 'Fira Code', monospace);
-  --stream-id-w: 32px;
-  --stream-st-w: 24px;
+  --stream-id-w: 0px;
+  --stream-st-w: 0px;
   --stream-ag-w: 54px;
-  --stream-grid: var(--stream-id-w) var(--stream-st-w) var(--stream-ag-w) minmax(0, 1fr);
+  --stream-grid: var(--stream-ag-w) minmax(0, 1fr);
   --stream-divider: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
-  --stream-indent: calc(var(--stream-id-w) + var(--stream-st-w) + var(--stream-ag-w) + 16px);
+  --stream-indent: calc(var(--stream-ag-w) + 16px);
 
   flex: 1;
   margin: 0;
@@ -37223,7 +37224,7 @@ body.theme-frosted .modal {
   position: relative;
   font-family: var(--font);
   color: var(--text);
-  font-size: 11px;
+  font-size: 12.5px;
   contain: layout;
 }
 
@@ -37731,25 +37732,27 @@ body.theme-frosted .modal {
 .ghost-md .ghost-typing-cursor { vertical-align: baseline; }
 
 .ghost-editor-stream .row {
-  display: grid;
-  grid-template-columns: var(--stream-grid);
+  display: flex;
   align-items: center;
-  gap: 0;
-  padding: 4px 8px;
+  gap: 8px;
+  padding: 4px 12px;
   background: transparent;
-  border: 1px solid transparent;
-  border-bottom: 1px solid color-mix(in srgb, var(--fg) 14%, transparent);
-  border-radius: 3px;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 4px;
   margin: 1px 0;
   min-height: 28px;
-  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: color 0.12s ease, background 0.12s ease;
   box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 
 .ghost-editor-stream .row:hover {
-  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
-  border-color: color-mix(in srgb, var(--chair, #c27d38) 35%, transparent);
-  box-shadow: 0 0 8px color-mix(in srgb, var(--chair, #c27d38) 12%, transparent);
+  background: color-mix(in srgb, var(--fg, #ffffff) 4%, transparent);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .ghost-editor-stream .row:focus-visible {
@@ -37758,30 +37761,59 @@ body.theme-frosted .modal {
 }
 
 .ghost-editor-stream .id {
-  color: color-mix(in srgb, var(--fg) 55%, transparent);
-  font-size: 11px;
-  font-family: var(--font);
-  width: var(--stream-id-w);
-  box-sizing: border-box;
+  display: none !important;
+  width: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+}
+
+/* Universal Stream Expander Slot (Slot 1) */
+.ghost-editor-stream .stream-expander {
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex-shrink: 0;
-  text-align: right;
-  padding-right: 6px;
-  border-right: var(--stream-divider);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--muted, #736b63);
   user-select: none;
-  line-height: 20px;
+  cursor: pointer;
+  transition: color 0.15s ease;
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+.ghost-editor-stream .stream-expander:hover {
+  color: var(--text-bright, var(--fg, #ffffff));
+}
+.ghost-editor-stream .stream-expander--empty {
+  visibility: hidden;
+  pointer-events: none;
+  cursor: default;
 }
 
 .ghost-editor-stream .st {
-  width: var(--stream-st-w);
+  width: var(--stream-st-w, 0px);
   flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 4px;
-  border-right: var(--stream-divider);
+  padding: 0;
+  border-right: none;
   user-select: none;
   min-height: 20px;
   box-sizing: border-box;
+}
+.ghost-editor-stream .st:empty {
+  display: none !important;
+  width: 0 !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 .ghost-editor-stream .st .st-icon {
   width: 12px;
@@ -37791,8 +37823,7 @@ body.theme-frosted .modal {
 }
 .ghost-editor-stream .st.st--done,
 .ghost-editor-stream .st .st-icon--done {
-  color: var(--impl, #4eb870);
-  opacity: 0.95;
+  display: none !important;
 }
 .ghost-editor-stream .st.st--running,
 .ghost-editor-stream .st .st-icon--running {
@@ -37807,6 +37838,22 @@ body.theme-frosted .modal {
 .ghost-editor-stream .st .st-icon--failed { color: var(--fail, #e05858); }
 .ghost-editor-stream .st.st--pending,
 .ghost-editor-stream .st .st-icon--pending { color: var(--muted, #736b63); }
+.ghost-editor-stream .st.st--running,
+.ghost-editor-stream .st.st--failed,
+.ghost-editor-stream .st.st--blocked {
+  width: 16px;
+  min-width: 16px;
+}
+.ghost-editor-stream .ct .st {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
 
 /* ── Perspective Analyzer Audit Telemetry Deck ────────────────────────────── */
 .ghost-editor-stream .ghost-perspective-card {
@@ -37859,6 +37906,10 @@ body.theme-frosted .modal {
   .ghost-editor-stream .persp-chips {
     margin-left: 0;
     padding: 5px 8px 6px;
+  }
+  .ghost-thought-body,
+  .ghost-thought-card.open .ghost-thought-body {
+    padding-left: 10px;
   }
 }
 
@@ -37983,17 +38034,19 @@ body.theme-frosted .modal {
 .ghost-editor-stream .ag {
   color: color-mix(in srgb, var(--fg) 80%, var(--dim, #a09c95));
   font-family: var(--font-mono, 'Consolas', monospace);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  width: var(--stream-ag-w);
+  width: var(--stream-ag-w, 54px);
+  min-width: var(--stream-ag-w, 54px);
+  max-width: var(--stream-ag-w, 54px);
   box-sizing: border-box;
   flex-shrink: 0;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  padding: 0 6px;
-  border-right: var(--stream-divider);
+  padding: 0 4px;
+  border-right: none;
   user-select: none;
-  line-height: 20px;
+  line-height: 22px;
   cursor: help;
   transition: color 0.15s ease, filter 0.15s ease;
   white-space: nowrap;
@@ -38020,11 +38073,14 @@ body.theme-frosted .modal {
   overflow: hidden;
   min-width: 0;
   max-width: 100%;
-  padding-left: 8px;
-  line-height: 20px;
-  font-size: 11px;
+  flex: 1;
+  padding-left: 0;
+  line-height: 22px;
+  font-size: 12.5px;
   font-family: var(--font);
   box-sizing: border-box;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ghost-editor-stream .ct > span:not(.tx) {
@@ -38033,32 +38089,39 @@ body.theme-frosted .modal {
 }
 
 .ghost-editor-stream .row.row--sys-error {
-  box-shadow: inset 3px 0 0 var(--sys);
-  background: rgba(239, 68, 68, 0.06);
+  box-shadow: none;
+  background: color-mix(in srgb, var(--sys) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--sys) 20%, transparent);
 }
 
 .ghost-editor-stream .bd {
-  padding: 1px 5px;
+  padding: 1px 6px;
   border-radius: 3px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--fg, #e2dcd5);
   background: color-mix(in srgb, var(--fg) 8%, var(--panel));
   border: 1px solid color-mix(in srgb, var(--fg) 18%, transparent);
   flex-shrink: 0;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
+  line-height: 18px;
 }
 
 .ghost-editor-stream .tx {
-  color: var(--text, #d2ccc4);
+  color: var(--dim, #a09c95);
+  font-size: 12px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: default;
-  transition: all 0.2s ease;
-  line-height: 20px;
+  transition: color 0.12s ease;
+  line-height: 22px;
   flex: 1;
   min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ghost-editor-stream .tx.tool-target {
@@ -38066,8 +38129,23 @@ body.theme-frosted .modal {
   font-weight: 500;
 }
 
-.ghost-editor-stream .tx.exp { white-space: normal; text-overflow: clip; }
-.ghost-editor-stream .tx:hover { color: #ffffff; }
+.ghost-editor-stream .tx.exp {
+  white-space: normal;
+  text-overflow: clip;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.ghost-editor-stream .tx:hover { color: var(--text-bright, var(--fg, #ffffff)); }
+
+.ghost-editor-stream .ghost-tool-running-cmd {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
 
 /* Active executing cockpit card */
 .ghost-editor-stream .row.row--active,
@@ -38076,8 +38154,8 @@ body.theme-frosted .modal {
   flex-direction: row;
   align-items: flex-start;
   gap: 0;
-  padding: 3px 8px;
-  margin: 1px 6px;
+  padding: 2px 0;
+  margin: 1px 0;
   background: transparent;
   border: none;
   box-shadow: none;
@@ -38086,8 +38164,7 @@ body.theme-frosted .modal {
 
 .ghost-editor-stream .row.row--active .id,
 .ghost-editor-stream .row[data-live-stream] .id {
-  padding-top: 8px;
-  border-right: none;
+  display: none !important;
 }
 
 .ghost-editor-stream .active-cockpit-box {
@@ -38101,7 +38178,7 @@ body.theme-frosted .modal {
   border-radius: 4px;
   box-shadow: 0 0 16px color-mix(in srgb, var(--chair, #df8e45) 16%, transparent),
               inset 0 0 12px color-mix(in srgb, var(--chair, #df8e45) 4%, transparent);
-  margin-left: 6px;
+  margin-left: 0;
   padding: 8px 12px;
   max-height: clamp(160px, 30vh, 280px);
   transition: max-height 220ms cubic-bezier(0.32, 0.72, 0, 1), background 0.2s ease, border-color 0.2s ease;
@@ -38735,7 +38812,26 @@ body.theme-frosted .modal {
   .ghost-editor-stream .ghost-typing-cursor,
   .ghost-editor-stream .active-spinner,
   .ghost-editor-stream .st .st-icon--running,
-  .ghost-burst-group.burst-running .bw {
+  .ghost-burst-group.burst-running .bw,
+  .ghost-tool-running-indicator,
+  .ghost-editor-stream .ghost-tool-copy-btn,
+  .ghost-editor-stream .tool-cmd-icon,
+  .ghost-editor-stream .tree-icon,
+  .ghost-editor-stream .row:hover .tx,
+  .ghost-editor-stream .row:hover .ag,
+  .ghost-editor-stream .row:hover .burst-primary-label,
+  .ghost-editor-stream .row:hover .burst-breakdown,
+  .ghost-editor-stream .row:hover .tool-tag,
+  .ghost-editor-stream .row:hover .tx--file-link,
+  .ghost-editor-stream .row:hover .st,
+  .ghost-editor-stream .row:hover .st-icon,
+  .ghost-editor-stream .row:hover .tool-cmd-icon,
+  .ghost-editor-stream .row:hover .tree-icon,
+  .ghost-editor-stream .row:hover .ghost-burst-count,
+  .ghost-editor-stream .row:hover .ghost-burst-chevron,
+  .ghost-editor-stream .row:hover .ghost-tool-chevron,
+  .ghost-editor-stream .row:hover .tool-duration-badge,
+  .ghost-editor-stream .row:hover .bd {
     animation: none !important;
     transition: none !important;
   }
@@ -38916,34 +39012,42 @@ body.theme-frosted .modal {
 
 /* Tool call card */
 .ghost-tool-card {
-  border: 1px solid var(--border);
+  border: none;
   border-radius: 4px;
   overflow: hidden;
   transition: border-color 0.2s cubic-bezier(0.32, 0.72, 0, 1);
   box-sizing: border-box;
+  background: transparent;
+  max-width: 100%;
+  min-width: 0;
 }
 .ghost-tool-card:hover {
-  border-color: color-mix(in srgb, var(--strat) 40%, transparent);
+  border-color: transparent;
+  box-shadow: none;
 }
 .ghost-editor-stream .row.ghost-tool-header {
-  gap: 0;
-  padding: 0 8px;
-  height: 32px;
-  min-height: 32px;
-  max-height: 32px;
-  line-height: 32px;
-  box-sizing: border-box;
+  display: flex;
   align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  min-height: 28px;
+  box-sizing: border-box;
   cursor: pointer;
   user-select: none;
-  background: rgba(80,160,223,0.03);
-  transition: background 0.15s ease, transform 0.12s cubic-bezier(0.32, 0.72, 0, 1);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 4px;
+  margin: 0;
+  transition: color 0.15s ease;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 .ghost-editor-stream .row.ghost-tool-header:hover {
-  background: rgba(80,160,223,0.06);
-}
-.ghost-editor-stream .row.ghost-tool-header:active {
-  transform: scale(0.97);
+  background: color-mix(in srgb, var(--fg, #ffffff) 4%, transparent);
+  border-color: transparent;
+  box-shadow: none;
 }
 .ghost-tool-chevron {
   font-size: 9px;
@@ -38959,8 +39063,10 @@ body.theme-frosted .modal {
   max-height: 0;
   overflow: hidden;
   border-top: 0px solid var(--border);
-  padding: 0 10px;
+  margin-left: 24px;
+  padding: 0 12px;
   background: color-mix(in srgb, var(--fg) 3%, var(--panel));
+  border-radius: 4px;
   opacity: 0;
   transform: scale(0.96);
   transform-origin: top center;
@@ -38969,19 +39075,34 @@ body.theme-frosted .modal {
               padding 280ms cubic-bezier(0.32, 0.72, 0, 1),
               transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
               border-top-width 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  box-sizing: border-box;
+  max-width: calc(100% - 24px);
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .ghost-tool-card.open .ghost-tool-body {
   max-height: 400px;
   overflow-y: auto;
-  border-top: 1px solid var(--border);
-  padding: 6px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-left: 24px;
+  padding: 8px 12px;
   opacity: 1;
   transform: scale(1);
+  box-sizing: border-box;
+  max-width: calc(100% - 24px);
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .ghost-tool-args {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .ghost-tool-arg {
   display: flex;
@@ -38989,6 +39110,9 @@ body.theme-frosted .modal {
   gap: 8px;
   font-size: 11px;
   font-family: var(--font);
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
 }
 .ghost-tool-arg-key {
   color: var(--muted);
@@ -38998,15 +39122,23 @@ body.theme-frosted .modal {
 }
 .ghost-tool-arg-val {
   color: var(--text);
-  word-break: break-all;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  flex: 1;
 }
 .ghost-tool-section-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--muted);
   margin: 6px 0 3px 0;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .ghost-tool-section-label:first-child {
   margin-top: 0;
@@ -39017,11 +39149,15 @@ body.theme-frosted .modal {
   color: var(--text);
   background: color-mix(in srgb, var(--fg) 4%, var(--panel));
   border: 1px solid var(--border);
-  border-radius: 3px;
+  border-radius: 4px;
   padding: 4px 8px;
   overflow-x: auto;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
   margin: 0;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .ghost-tool-output {
   font-family: var(--font);
@@ -39029,14 +39165,18 @@ body.theme-frosted .modal {
   color: var(--dim);
   background: color-mix(in srgb, var(--fg) 3%, var(--panel));
   border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 4px 8px;
+  border-radius: 4px;
+  padding: 6px 10px;
   max-height: 150px;
   overflow-y: auto;
+  overflow-x: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
   margin: 0;
   line-height: 1.4;
+  box-sizing: border-box;
+  max-width: 100%;
 }
 .ghost-tool-output::-webkit-scrollbar {
   width: 4px;
@@ -39048,54 +39188,72 @@ body.theme-frosted .modal {
 
 /* ── Burst Group (aggregated tool-call card) ──────────────────────────────── */
 .ghost-burst-group {
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  border: none;
+  border-radius: 4px;
   overflow: hidden;
   transition: border-color 0.2s ease;
-  margin: 1px 6px;
+  margin: 1px 0;
+  background: transparent;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
 }
 .ghost-burst-group:hover {
-  border-color: color-mix(in srgb, var(--fg) 20%, transparent);
+  border-color: transparent;
+  box-shadow: none;
 }
 .ghost-editor-stream .row.ghost-burst-header {
-  gap: 0;
-  padding: 3px 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  min-height: 28px;
   cursor: pointer;
   user-select: none;
-  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
+  background: transparent;
   border: none;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid transparent;
   margin: 0;
-  border-radius: 4px 4px 0 0;
-  transition: background 0.15s ease;
+  border-radius: 4px;
+  transition: color 0.15s ease;
+  color: inherit;
+  --header-bg: var(--panel);
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 .ghost-editor-stream .row.ghost-burst-header:hover {
-  background: color-mix(in srgb, var(--fg) 6%, var(--panel));
+  background: color-mix(in srgb, var(--fg, #ffffff) 4%, transparent);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 /* Burst Semantic Telemetry */
 .ghost-editor-stream .burst-primary-label {
   font-weight: 600;
-  font-size: 11px;
-  color: var(--fg, #e2dcd5);
+  font-size: 12.5px;
+  color: var(--dim, #a69f95);
   letter-spacing: 0.02em;
   white-space: nowrap;
   flex-shrink: 0;
   min-width: 0;
+  transition: color 0.12s ease;
 }
 .ghost-editor-stream .burst-primary-label.is-mutation {
   color: var(--impl, #4eb870);
 }
 .ghost-editor-stream .burst-divider-dot {
   color: var(--muted, #736b63);
-  font-size: 11px;
+  font-size: 12px;
   user-select: none;
   flex-shrink: 0;
 }
 .ghost-editor-stream .burst-breakdown {
-  color: var(--dim, #a09c95);
-  font-size: 10.5px;
+  color: var(--muted, #736b63);
+  font-size: 12px;
   font-family: var(--font);
+  transition: color 0.12s ease;
 }
 @media (max-width: 480px) {
   .ghost-editor-stream .burst-breakdown,
@@ -39158,27 +39316,42 @@ body.theme-frosted .modal {
 /* Chevron */
 .ghost-burst-chevron {
   flex-shrink: 0;
-  font-size: 9px;
+  font-size: 11px;
   color: var(--muted);
-  opacity: 0.6;
-  transition: transform 240ms cubic-bezier(0.32, 0.72, 0, 1);
+  opacity: 0.75;
+  margin: 0;
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  user-select: none;
+  transition: color 0.15s ease;
 }
 .ghost-burst-group.burst-open .ghost-burst-chevron {
-  transform: rotate(90deg);
+  color: var(--text);
+  opacity: 0.95;
 }
-/* Collapsible body */
+/* Collapsible body with strict hairline tree guide */
 .ghost-burst-body {
   max-height: 0;
   overflow: hidden;
-  background: color-mix(in srgb, var(--fg) 3%, var(--panel));
-  border-top: 0px solid var(--border);
+  background: transparent;
+  border-top: none;
   opacity: 0;
-  transform: scale(0.96);
+  transform: scale(0.98);
   transform-origin: top center;
   transition: max-height 280ms cubic-bezier(0.32, 0.72, 0, 1),
               opacity 240ms cubic-bezier(0.32, 0.72, 0, 1),
-              transform 280ms cubic-bezier(0.32, 0.72, 0, 1),
-              border-top-width 240ms cubic-bezier(0.32, 0.72, 0, 1);
+              transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
+  margin-left: 20px;
+  padding-left: 15px;
+  border-left: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  box-sizing: border-box;
+  max-width: calc(100% - 20px);
+  min-width: 0;
 }
 .ghost-burst-group:not(.burst-open) .ghost-burst-body .st-icon--running {
   animation: none !important;
@@ -39186,40 +39359,48 @@ body.theme-frosted .modal {
 .ghost-burst-group.burst-open .ghost-burst-body {
   max-height: 2000px;
   overflow-y: auto;
-  border-top: 1px solid var(--border);
+  border-top: none;
   opacity: 1;
   transform: scale(1);
 }
 
-/* Individual item rows inside the body - aligned to cockpit 4-column row metrics */
+/* Individual item rows inside the body - aligned to strict vertical left edge */
 .ghost-editor-stream .row.row--burst-item {
-  border-bottom: 1px solid color-mix(in srgb, var(--fg) 5%, transparent);
-  background: color-mix(in srgb, var(--fg) 2%, transparent);
-  margin: 0;
-  border-radius: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+  border: none;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  margin: 1px 0;
+  border-radius: 4px;
   min-height: 24px;
   border-left: none;
   border-right: none;
   border-top: none;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
 }
 .ghost-editor-stream .row.row--burst-item:last-child {
   border-bottom: none;
 }
 .ghost-editor-stream .row.row--burst-item:hover {
-  background: color-mix(in srgb, var(--fg) 5%, transparent);
+  background: color-mix(in srgb, var(--fg, #ffffff) 4%, transparent);
+  box-shadow: none;
 }
 .ghost-editor-stream .row.row--burst-item .id--sub {
-  color: var(--muted);
-  opacity: 0.35;
-  font-size: 9px;
-  font-family: var(--font-mono, 'Consolas', monospace);
+  display: none !important;
 }
 .ghost-editor-stream .row.row--burst-item .tool-tag {
   margin: 0;
-  width: var(--stream-ag-w);
+  width: var(--stream-ag-w, 54px);
+  min-width: var(--stream-ag-w, 54px);
+  max-width: var(--stream-ag-w, 54px);
   box-sizing: border-box;
   border: none;
-  border-right: var(--stream-divider);
+  border-right: none;
   border-radius: 0;
   background: transparent;
   color: var(--dim, #a09c95);
@@ -39227,12 +39408,95 @@ body.theme-frosted .modal {
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.07em;
-  padding: 0 6px;
+  padding: 0 4px;
   line-height: 20px;
   display: flex;
   align-items: center;
   justify-content: flex-start;
   text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+/* Antigravity IDE & Codex borderless floating text hover illumination */
+.ghost-editor-stream .row:hover .tx,
+.ghost-editor-stream .row:hover .ag,
+.ghost-editor-stream .row:hover .burst-primary-label,
+.ghost-editor-stream .row:hover .burst-breakdown,
+.ghost-editor-stream .row:hover .tool-tag,
+.ghost-editor-stream .row:hover .tx--file-link,
+.ghost-editor-stream .row:hover .st,
+.ghost-editor-stream .row:hover .st-icon,
+.ghost-editor-stream .row:hover .tool-cmd-icon,
+.ghost-editor-stream .row:hover .tree-icon,
+.ghost-editor-stream .row:hover .ghost-burst-count,
+.ghost-editor-stream .row:hover .stream-expander,
+.ghost-editor-stream .row:hover .ghost-burst-chevron,
+.ghost-editor-stream .row:hover .ghost-tool-chevron,
+.ghost-editor-stream .row:hover .tool-duration-badge,
+.ghost-editor-stream .row:hover .bd,
+.ghost-editor-stream .row.ghost-tool-header:hover .tx,
+.ghost-editor-stream .row.ghost-tool-header:hover .tool-tag,
+.ghost-editor-stream .row.ghost-tool-header:hover .tool-cmd-icon,
+.ghost-editor-stream .row.ghost-burst-header:hover .burst-primary-label,
+.ghost-editor-stream .row.ghost-burst-header:hover .burst-breakdown,
+.ghost-editor-stream .row.ghost-burst-header:hover .ghost-burst-chevron,
+.ghost-editor-stream .row.row--burst-item:hover .tx,
+.ghost-editor-stream .row.row--burst-item:hover .tool-tag,
+.ghost-editor-stream .row.row--burst-item:hover .tool-cmd-icon,
+.ghost-editor-stream .row.row--burst-item:hover .tree-icon {
+  color: var(--text-bright, #ffffff) !important;
+  text-shadow: none;
+  transition: color 0.12s ease;
+}
+
+.ghost-editor-stream .row:hover .burst-breakdown,
+.ghost-editor-stream .row.ghost-burst-header:hover .burst-breakdown {
+  color: color-mix(in srgb, var(--text-bright, #ffffff) 82%, transparent) !important;
+}
+
+.ghost-editor-stream .tool-cmd-icon,
+.ghost-editor-stream .tree-icon {
+  width: 16px;
+  min-width: 16px;
+  max-width: 16px;
+  height: 16px;
+  font-size: 11px;
+  line-height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+  opacity: 0.65;
+  color: var(--dim, #a09c95);
+  transition: color 0.12s ease, opacity 0.12s ease;
+}
+.ghost-editor-stream .row:hover .tool-cmd-icon,
+.ghost-editor-stream .row:hover .tree-icon,
+.ghost-editor-stream .tool-cmd-icon:hover,
+.ghost-editor-stream .tree-icon:hover {
+  opacity: 1;
+  color: var(--text-bright, #ffffff);
+}
+
+.ghost-editor-stream .ghost-tool-copy-btn {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--fg) 12%, transparent);
+  border-radius: 4px;
+  color: var(--dim, #a09c95);
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  padding: 1px 7px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: auto;
+  line-height: 16px;
+}
+.ghost-editor-stream .ghost-tool-copy-btn:hover {
+  color: var(--text-bright, var(--fg, #ffffff));
+  border-color: color-mix(in srgb, var(--fg) 28%, transparent);
+  background: color-mix(in srgb, var(--fg) 14%, transparent);
 }
 
 /* Fixed-width Monospace Tool Badge - Monochrome IDE Palette */
@@ -39248,7 +39512,7 @@ body.theme-frosted .modal {
   align-items: center;
   justify-content: center;
   font-family: var(--font-mono, 'Consolas', monospace);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   line-height: 18px;
   padding: 0 4px;
@@ -43349,10 +43613,18 @@ svg.council-tab-icon {
 .ghost-tool-card.open .ghost-tool-body {
   max-height: 400px;
   overflow-y: auto;
-  border-top: 1px solid var(--border);
-  padding: 6px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-left: 24px;
+  padding: 8px 12px;
   opacity: 1;
   transform: scale(1);
+  box-sizing: border-box;
+  max-width: calc(100% - 24px);
+  min-width: 0;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .ghost-tool-card.open .ghost-tool-chevron {

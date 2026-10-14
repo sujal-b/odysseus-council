@@ -1024,9 +1024,12 @@ class CouncilUI {
     // is deliberately excluded because it changes while a burst is running.
     this._openBurstKeys = new Set();
     this._burstStatus = new Map();
+    this._currentSessionId = null;
+    this._listenersWired = false;
     this._manuallyOpenedTools = new Set();
     this._manuallyClosedTools = new Set();
     this._manuallyClosedBursts = new Set();
+    this._manuallyOpenedThoughts = new Set();
     this._peekDrawers = new Set();
     this._attentionShelfCollapsed = false;
     this._logSearchQuery = '';
@@ -1109,12 +1112,13 @@ class CouncilUI {
     // Cancel any in-flight scroll rAF from the previous session so it cannot
     // fire against the freshly-cleared ledger after innerHTML is replaced.
     if (this._scrollRaf) { cancelAnimationFrame(this._scrollRaf); this._scrollRaf = null; }
-    // Clear per-session open burst state so the new run starts fully collapsed.
+    this._currentSessionId = null;
     this._openBurstKeys.clear();
     this._burstStatus.clear();
     this._manuallyOpenedTools.clear();
     this._manuallyClosedTools.clear();
     this._manuallyClosedBursts.clear();
+    if (this._manuallyOpenedThoughts) this._manuallyOpenedThoughts.clear();
     this._peekDrawers.clear();
     if (this._expandedCriteriaIds) this._expandedCriteriaIds.clear();
     this._completenessListCollapsed = true;
@@ -1179,6 +1183,7 @@ class CouncilUI {
     this._manuallyOpenedTools.clear();
     this._manuallyClosedTools.clear();
     this._manuallyClosedBursts.clear();
+    if (this._manuallyOpenedThoughts) this._manuallyOpenedThoughts.clear();
     this._peekDrawers.clear();
     this._logSearchQuery = '';
     this._currentPhaseCount = 0;
@@ -1735,6 +1740,16 @@ class CouncilUI {
     if (!state) return;
     try {
       const diffMemo = new Map();
+      const activeSessionId = state.sessionId || this._state?.sessionId || null;
+      if (activeSessionId && this._currentSessionId && this._currentSessionId !== activeSessionId) {
+        this._openBurstKeys.clear();
+        this._burstStatus.clear();
+        this._manuallyOpenedTools.clear();
+        this._manuallyClosedTools.clear();
+        this._manuallyClosedBursts.clear();
+        if (this._manuallyOpenedThoughts) this._manuallyOpenedThoughts.clear();
+      }
+      this._currentSessionId = activeSessionId;
       const el = document.getElementById('council-ghost-editor');
       const ledger = document.getElementById('council-ghost-stream-ledger');
       if (!el) return;
@@ -1860,7 +1875,9 @@ class CouncilUI {
           type: 'chair',
           complexity: e.complexity || 'SIMPLE',
           reason: compactAgentActivity('chair'),
-          duration: dur
+          duration: dur,
+          agent: 'chair',
+          sourceIndex: eventIndex
         });
       }
       else if (e.event === 'thought') {
@@ -1876,7 +1893,8 @@ class CouncilUI {
           if (e.duration_ms) return _fmtElapsed(e.duration_ms);
           const curTime = Date.parse(e.timestamp || e.ts);
           if (Number.isFinite(curTime)) {
-            for (let prevIdx = eventIndex - 1; prevIdx >= 0; prevIdx--) {
+            const maxLookback = Math.max(0, eventIndex - 5);
+            for (let prevIdx = eventIndex - 1; prevIdx >= maxLookback; prevIdx--) {
               const pe = rawLog[prevIdx];
               const pt = Date.parse(pe?.timestamp || pe?.ts);
               if (Number.isFinite(pt) && curTime >= pt) {
@@ -1894,11 +1912,12 @@ class CouncilUI {
           thoughtText: typeof e.text === 'string' ? e.text : (typeof e.extra?.thoughts === 'string' ? e.extra.thoughts : ''),
           outcome: outcome,
           duration: dur,
-          perspective: (agent === 'perspective_analyzer' && e.extra?.perspective) ? e.extra.perspective : null
+          perspective: (agent === 'perspective_analyzer' && e.extra?.perspective) ? e.extra.perspective : null,
+          sourceIndex: eventIndex
         });
       }
       else if (e.event === 'dag_update' || e.event === 'task_status_update') {
-        const tasks = (e.extra?.dag?.nodes || []).map(n => ({
+        const tasks = (e.extra?.dag?.nodes || []).filter(Boolean).map(n => ({
           i: n.id,
           t: n.summary || compactTaskLabel(n.description, n.id),
           dp: n.depends_on || []
@@ -1906,17 +1925,17 @@ class CouncilUI {
         if (latestStratBlock) {
           latestStratBlock.tasks = tasks;
         } else {
-          latestStratBlock = { type: 'strat', tasks };
+          latestStratBlock = { type: 'strat', tasks, agent: 'strategist', sourceIndex: eventIndex };
           blocks.push(latestStratBlock);
         }
 
-        const doneNodes = (e.extra?.dag?.nodes || []).filter(n => n.status === 'DONE');
+        const doneNodes = (e.extra?.dag?.nodes || []).filter(n => n && n.status === 'DONE');
         if (doneNodes.length > 0) {
           const files = this._compileImplementerFiles(state);
           if (latestImplBlock) {
             latestImplBlock.files = files;
           } else {
-            latestImplBlock = { type: 'impl', files };
+            latestImplBlock = { type: 'impl', files, agent: 'implementer', sourceIndex: eventIndex };
             blocks.push(latestImplBlock);
           }
         }
@@ -1927,7 +1946,9 @@ class CouncilUI {
           type: 'manager_output',
           verdict: review.verdict,
           summary: review.summary,
-          issues: review.issues
+          issues: review.issues,
+          agent: 'manager',
+          sourceIndex: eventIndex
         });
       }
       else if (e.event === 'tool_start') {
@@ -1992,16 +2013,17 @@ class CouncilUI {
           code: compactFailureCode(e.code, e.text),
           msg: compactFailureReason(e.text, 'execution issue'),
           detail: '',
-          count: 1
+          count: 1,
+          agent: 'system',
+          sourceIndex: eventIndex
         });
       }
     });
 
-    // ── Burst-group post-process ────────────────────────────────────────────
-    // Collapse any run of ≥2 consecutive tool_call blocks into a single
-    // burst_group block so the stream stays readable.
-    // Wrapped in try/catch: a malformed log entry must never blank the
-    // entire execution stream; fall through to raw blocks on failure.
+    // ── Consecutive Agent Dynamic Aggregation ────────────────────────────────
+    // Group consecutive actions by the same agent into a clean dynamic aggregator dropdown.
+    // Do NOT merge non-consecutive steps across different agents.
+    // Perspective Analyzer card remains dedicated high-visibility card.
     let finalBlocks = blocks;
     try {
       const _burstCheckpoint = (items) => {
@@ -2009,7 +2031,6 @@ class CouncilUI {
       };
 
       const processedBlocks = [];
-      const _burstScope = (item) => `${item.taskId || ''}|${item.agent || ''}`;
       const live = state.status === 'IN_PROGRESS' || state.status === 'BLOCKED';
       if (!live) {
         blocks.forEach(b => {
@@ -2018,50 +2039,77 @@ class CouncilUI {
           }
         });
       }
+
+      const _normalizeAgent = (rawAgent, rawType) => {
+        const a = String(rawAgent || (rawType === 'chair' ? 'chair' : (rawType === 'strat' ? 'strategist' : (rawType === 'impl' ? 'implementer' : 'system')))).toLowerCase();
+        if (a === 'impl' || a === 'implementer') return 'implementer';
+        if (a === 'strat' || a === 'strategist') return 'strategist';
+        if (a === 'mgr' || a === 'manager') return 'manager';
+        if (a === 'chair' || a === 'chairperson') return 'chair';
+        if (a === 'perspective_analyzer' || a === 'pers') return 'perspective_analyzer';
+        return a;
+      };
+
       let bi = 0;
       while (bi < blocks.length) {
-        if (blocks[bi].type === 'tool_call') {
-          let bj = bi + 1;
-          const scope = _burstScope(blocks[bi]);
-          while (
-            bj < blocks.length &&
-            blocks[bj].type === 'tool_call' &&
-            _burstScope(blocks[bj]) === scope
-          ) bj++;
-          const run = blocks.slice(bi, bj);
-          // If the last item in run is currently RUNNING, separate it out so the
-          // live active tool accordion drawer is expanded and visible!
-          let completedRun = run;
-          let runningItem = null;
-          if (live && run.length > 0 && run[run.length - 1].status === 'RUNNING') {
-            completedRun = run.slice(0, -1);
-            runningItem = run[run.length - 1];
-          }
+        const cur = blocks[bi];
+        const agent = _normalizeAgent(cur.agent, cur.type);
 
-          if (completedRun.length >= 2) {
-            const hasFailure = completedRun.some(r => r.status === 'FAILED');
-            processedBlocks.push({
-              type: 'burst_group',
-              items: completedRun,
-              running: false,
-              hasFailure,
-              checkpoint: _burstCheckpoint(completedRun),
-              taskId: completedRun[0].taskId || '',
-              agent: completedRun[0].agent || 'implementer',
-              sourceIndex: completedRun[0].sourceIndex
-            });
-          } else if (completedRun.length === 1) {
-            processedBlocks.push(completedRun[0]);
-          }
-
-          if (runningItem) {
-            processedBlocks.push(runningItem);
-          }
-          bi = bj;
-        } else {
-          processedBlocks.push(blocks[bi]);
+        // 1. Perspective Analyzer audit card remains its dedicated high-visibility telemetry card
+        // 2. System errors remain system rows
+        if (agent === 'perspective_analyzer' || (cur.type === 'think' && cur.perspective) || cur.type === 'sys') {
+          processedBlocks.push(cur);
           bi++;
+          continue;
         }
+
+        // Find contiguous run of consecutive actions by the exact same agent
+        let bj = bi + 1;
+        while (
+          bj < blocks.length &&
+          blocks[bj].type !== 'sys' &&
+          !(blocks[bj].type === 'think' && blocks[bj].perspective) &&
+          _normalizeAgent(blocks[bj].agent, blocks[bj].type) !== 'perspective_analyzer' &&
+          _normalizeAgent(blocks[bj].agent, blocks[bj].type) === agent
+        ) {
+          bj++;
+        }
+
+        const run = blocks.slice(bi, bj);
+
+        // Auto-focus during live execution: if the last action in the run is
+        // currently RUNNING, separate it out so the live active drawer is expanded in focus.
+        let completedRun = run;
+        let runningItem = null;
+        if (live && run.length > 0 && run[run.length - 1].status === 'RUNNING') {
+          completedRun = run.slice(0, -1);
+          runningItem = run[run.length - 1];
+        }
+
+        if (completedRun.length >= 2) {
+          const hasFailure = completedRun.some(r => r.status === 'FAILED');
+          const dynamicTitle = synthesizeAggregatorTitle(completedRun, agent);
+
+          processedBlocks.push({
+            type: 'burst_group',
+            items: completedRun,
+            running: false,
+            hasFailure: hasFailure,
+            checkpoint: dynamicTitle,
+            dynamicTitle: dynamicTitle,
+            taskId: completedRun[0].taskId || '',
+            agent: agent,
+            sourceIndex: completedRun[0].sourceIndex ?? bi
+          });
+        } else if (completedRun.length === 1) {
+          processedBlocks.push(completedRun[0]);
+        }
+
+        if (runningItem) {
+          processedBlocks.push(runningItem);
+        }
+
+        bi = bj;
       }
       const compactedBlocks = [];
       processedBlocks.forEach(item => {
@@ -2211,6 +2259,7 @@ class CouncilUI {
       const t = (tool || '').toLowerCase();
       let html = '';
       const scrub = value => String(value || '')
+        .slice(0, 2000)
         .replace(/\b[A-Za-z]:[\\/][^\s,;]+/g, '<file>')
         .replace(/\b(?:projects|workspace|data|assets|src)[\\/][^\s,;]+/gi, '<file>')
         .replace(/```/g, '')
@@ -2231,8 +2280,9 @@ class CouncilUI {
       }
       html += '</div>';
       if (output && output.trim()) {
-        html += '<div class="ghost-tool-section-label">result</div>';
-        html += '<pre class="ghost-tool-output">' + _esc(scrub(output)) + '</pre>';
+        const safeOutput = String(output).slice(0, 500000);
+        html += '<div class="ghost-tool-section-label">result <button type="button" class="ghost-tool-copy-btn" data-copy-text="' + _esc(safeOutput) + '" title="Copy output">Copy</button></div>';
+        html += '<pre class="ghost-tool-output">' + _esc(scrub(safeOutput)) + '</pre>';
       }
 
       return html;
@@ -2336,11 +2386,20 @@ class CouncilUI {
     };
 
     // Helper: render tool call card matching cockpit ledger row
-    const _renderToolCard = (b, stepNum, memo) => {
+    const _renderToolCard = (b, memoOrStep, maybeMemo) => {
+      const memo = maybeMemo !== undefined ? maybeMemo : memoOrStep;
       try {
         const args = b.args || {};
       const isRunning = (b.status === 'RUNNING' || b.status === 'IN_PROGRESS');
-      const statusCls = b.status === 'SUCCESS' ? 'st--done' : b.status === 'FAILED' ? 'st--failed' : 'st--running';
+      const isFailed = (b.status === 'FAILED');
+      const isBlocked = (b.status === 'BLOCKED');
+      const statusHtml = isRunning
+        ? `<span class="st st--running" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon('running')}</span>`
+        : (isFailed
+          ? `<span class="st st--failed" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon('failed')}</span>`
+          : (isBlocked
+            ? `<span class="st st--blocked" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon('BLOCKED')}</span>`
+            : ''));
       const target = _extractToolTarget(b.tool, args, b.command);
       const summary = _toolSummary(b.tool, args, b.command);
       const displayLabel = target || summary;
@@ -2354,7 +2413,6 @@ class CouncilUI {
         String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
       ].join(':');
 
-      const isFailed = (b.status === 'FAILED');
       const isUserExpanded = this._manuallyOpenedTools.has(toolKey);
       let isOpen;
       if (isUserExpanded) {
@@ -2393,17 +2451,36 @@ class CouncilUI {
         }
       }
 
+      const tName = String(b.tool || '').toLowerCase();
+      const isEdit = tName === 'write_file' || tName === 'write_to_file' || tName === 'edit_file' || tName === 'replace_file_content' || tName === 'patch_file';
+      const isCmd = tName === 'bash' || tName === 'python' || tName === 'run_command';
+      const isExplore = tName === 'read_file' || tName === 'view_file' || tName === 'glob' || tName === 'grep' || tName === 'ls' || tName === 'list_dir';
+      const iconGlyph = isCmd ? '⚡' : isEdit ? '✏️' : isExplore ? '📄' : '{ }';
+      const toolActionTitle = isEdit ? 'Edited file' : isCmd ? 'Ran command' : isExplore ? 'Explored workspace' : 'Invoked tool';
+
+      let fileTargetHtml = '';
+      if (isEdit) {
+        const rawPath = args.path || args.file || (target && !target.includes(' ') ? target : '');
+        if (rawPath) {
+          fileTargetHtml = `<span class="tx tx--file-link tool-target" data-filepath="${_esc(rawPath)}" title="${_esc(rawPath)} (click to view in Files)">${_esc(displayLabel)}</span>`;
+        }
+      }
+      if (!fileTargetHtml) {
+        fileTargetHtml = `<span class="tx tool-target" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>`;
+      }
+
       const role = _resolveRole(b.agent || 'impl');
 
       return `
         <div class="ghost-tool-card ${isOpen ? 'open' : ''} ${isRunning ? 'is-running' : ''} ${isUserExpanded ? 'is-user-expanded' : ''} ${isFailed ? 'open-error' : ''}" data-tool-key="${_esc(toolKey)}" style="border:none;margin:0;">
           <div class="row ghost-tool-header" tabindex="0">
-            <span class="id">${stepNum}</span>
-            <span class="st ${statusCls}" title="${_esc(b.status)}" aria-label="${_esc(b.status)}">${_statusIcon(b.status)}</span>
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <span class="stream-expander ${body ? 'ghost-tool-chevron' : 'stream-expander--empty'}">${body ? (isOpen ? '▾' : '›') : ''}</span>
+            <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
             <div class="ct">
-              <span class="tool-tag tool-tag--${_esc(b.tool)}" title="${_esc(b.tool)}">${_esc(_shortToolName(b.tool))}</span>
-              <span class="tx" title="${_esc(displayLabel)}">${_esc(displayLabel)}</span>
+              <span class="burst-primary-label">${toolActionTitle}</span>
+              ${statusHtml}
+              <span class="tool-tag tool-tag--${_esc(b.tool)}" title="${_esc(b.tool)}"><span class="tool-cmd-icon">${iconGlyph}</span> ${_esc(_shortToolName(b.tool))}</span>
+              ${fileTargetHtml}
               ${diffHtml}
               ${durHtml}
               ${body ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
@@ -2416,8 +2493,7 @@ class CouncilUI {
         return `
           <div class="ghost-tool-card" style="border:none;margin:0;">
             <div class="row ghost-tool-header">
-              <span class="id">${stepNum}</span>
-              <span class="st st--done">✓</span>
+              <span class="stream-expander stream-expander--empty"></span>
               <span class="ag ag--impl">IMPL</span>
               <div class="ct">
                 <span class="tx">${_esc(b.command || b.tool || 'tool')}</span>
@@ -2427,26 +2503,21 @@ class CouncilUI {
       }
     };
 
-    let rowIndex = 1;
-    const _nextStep = () => String(rowIndex++).padStart(2, '0');
-
     finalBlocks.forEach((b) => {
       if (b.text) totalChars += b.text.length;
       if (b.code) totalChars += b.code.length;
 
       if (b.streaming) {
-        const stepNum = _nextStep();
         const role = _resolveRole(b.agent || (b.type === 'chair' ? 'chair' : 'impl'));
         const durText = b.duration ? `<span class="active-cockpit-timer">${_esc(b.duration)}</span>` : '';
         const titleText = b.type === 'chair' ? 'Chair Evaluation' : 'Thought streaming...';
         const isExp = this._activeThoughtExpanded ? 'is-expanded' : '';
         html += `
           <div class="row row--active" data-live-stream aria-live="off">
-            <span class="id">${stepNum}</span>
             <div class="active-cockpit-box role--${role.cls} ${isExp}">
               <div class="active-cockpit-header">
                 <span class="active-spinner" aria-hidden="true"></span>
-                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
                 <span class="active-cockpit-title">${titleText}</span>
                 ${durText}
                 <button type="button" class="active-cockpit-toggle" title="Toggle drawer expansion (E)" aria-label="Toggle drawer expansion">
@@ -2460,23 +2531,21 @@ class CouncilUI {
             </div>
           </div>`;
       } else if (b.type === 'chair') {
-        const stepNum = _nextStep();
         const role = _resolveRole('chair');
         const cl = b.complexity === 'COMPLEX' ? 'var(--fail)' : b.complexity === 'MEDIUM' ? 'var(--warn)' : 'var(--muted)';
         const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
         html += `
           <div class="row">
-            <span class="id">${stepNum}</span>
-            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <span class="stream-expander stream-expander--empty"></span>
+            <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
             <div class="ct">
-              <span>assessed <span class="bd" style="color:${cl}">${_esc(b.complexity)}</span> complexity</span>
+              <span class="burst-primary-label">Assessed complexity</span>
+              <span class="bd" style="color:${cl}">${_esc(b.complexity)}</span>
               <span class="tx" title="${_esc(b.reason)}">${_esc(b.reason)}</span>
               ${durBadge}
             </div>
           </div>`;
       } else if (b.type === 'think') {
-        const stepNum = _nextStep();
         const role = _resolveRole(b.agent);
         const durBadge = b.duration ? `<span style="font-size:9px;color:var(--muted);background:var(--bg-highlight,#1c1510);padding:1px 5px;border-radius:3px;border:1px solid var(--border);margin-left:auto;">${_esc(b.duration)}</span>` : '';
         const _p = b.perspective;
@@ -2484,7 +2553,7 @@ class CouncilUI {
         const _pTitle = _pClear ? 'Analysis clear' : 'Blocked approval';
         const statusCell = _p
           ? `<span class="st ${_pClear ? 'st--done' : 'st--blocked'}" title="${_pTitle}" aria-label="${_pTitle}">${_statusIcon(_pClear ? 'APPROVED' : 'BLOCKED')}</span>`
-          : `<span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>`;
+          : '';
         if (_p) {
           const cardCls = _p.evidence === 'block' ? ' is-blocked' : (_p.evidence === 'must_fix' ? ' is-mustfix' : '');
           const badgeColor = _pClear ? 'var(--dim)' : (_p.evidence === 'block' ? 'var(--fail)' : 'var(--warn)');
@@ -2493,10 +2562,11 @@ class CouncilUI {
           html += `
             <div class="ghost-perspective-card${cardCls}">
               <div class="row">
-                <span class="id">${stepNum}</span>
-                ${statusCell}
-                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <span class="stream-expander stream-expander--empty"></span>
+                <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
                 <div class="ct">
+                  <span class="burst-primary-label">Security & maintainability audit</span>
+                  ${statusCell}
                   <span class="bd" style="color:${badgeColor};background:${badgeBg}">${badgeLabel}</span>
                   <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
                   ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
@@ -2510,10 +2580,11 @@ class CouncilUI {
           html += `
             <div class="ghost-thought-card${hasThought ? ' has-drawer' : ''}">
               <div class="row ghost-thought-header" tabindex="0">
-                <span class="id">${stepNum}</span>
-                ${statusCell}
-                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <span class="stream-expander ${hasThought ? 'ghost-tool-chevron' : 'stream-expander--empty'}">${hasThought ? '›' : ''}</span>
+                <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
                 <div class="ct">
+                  <span class="burst-primary-label">Thought</span>
+                  ${statusCell}
                   <span class="tx" title="${_esc(b.text)}">${_esc(b.text)}</span>
                   ${b.outcome ? `<span style="color:var(--muted);font-size:10px">→ ${_esc(b.outcome)}</span>` : ''}
                   ${durBadge}
@@ -2524,7 +2595,6 @@ class CouncilUI {
             </div>`;
         }
       } else if (b.type === 'strat') {
-        const stepNum = _nextStep();
         const role = _resolveRole('strat');
         const _taskCount = b.tasks.length;
         const _waves = executionWaveCount(b.tasks);
@@ -2534,11 +2604,11 @@ class CouncilUI {
           : `${b.tasks.slice(0, 4).map(t => `${t.i} ${t.t}`).join(' · ')} · +${_taskCount - 4} more`;
         html += `
           <div class="row">
-            <span class="id">${stepNum}</span>
-            <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <span class="stream-expander stream-expander--empty"></span>
+            <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
             <div class="ct">
-              <span>planned <strong>${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'} in <strong>${_waves}</strong> wave${_waves === 1 ? '' : 's'}</span>
+              <span class="burst-primary-label">Planned ${_taskCount} task${_taskCount === 1 ? '' : 's'} in ${_waves} wave${_waves === 1 ? '' : 's'}</span>
+              <span class="burst-divider-dot">·</span>
               <span class="tx" title="${_esc(_allLabels)}">${_esc(_labels)}</span>
             </div>
           </div>`;
@@ -2546,7 +2616,6 @@ class CouncilUI {
         const role = _resolveRole('impl');
         if (b.files && b.files.length > 0) {
           b.files.forEach(f => {
-            const stepNum = _nextStep();
             const diffSpan = (f.added || f.removed) ? `
               <span class="payload-diff">
                 <span class="diff-add">+${f.added || 0}</span>
@@ -2555,10 +2624,10 @@ class CouncilUI {
               </span>` : (f.lines ? `<span style="color:var(--muted);font-size:10px">${f.lines} lines</span>` : '');
             html += `
               <div class="row">
-                <span class="id">${stepNum}</span>
-                <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
-                <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+                <span class="stream-expander stream-expander--empty"></span>
+                <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
                 <div class="ct">
+                  <span class="burst-primary-label">Edited file</span>
                   <span class="bd">${_esc((f.action || 'updated').toUpperCase())}</span>
                   <span class="tx tx--file-link" data-filepath="${_esc(f.name)}" title="${_esc(f.name)} (click to view in Files)">${_esc(f.name)}</span>
                   ${diffSpan}
@@ -2566,19 +2635,17 @@ class CouncilUI {
               </div>`;
           });
         } else {
-          const stepNum = _nextStep();
           html += `
             <div class="row">
-              <span class="id">${stepNum}</span>
-              <span class="st st--done" title="Completed" aria-label="Completed">${_statusIcon('done')}</span>
-              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+              <span class="stream-expander stream-expander--empty"></span>
+              <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
               <div class="ct">
+                <span class="burst-primary-label">Executed task</span>
                 <span class="tx" style="color:var(--muted)">Implementation step recorded</span>
               </div>
             </div>`;
         }
       } else if (b.type === 'manager_output') {
-        const stepNum = _nextStep();
         const role = _resolveRole('mgr');
         const m = b.verdict === 'APPROVED'
           ? { c: 'var(--impl)', b: 'rgba(78,184,112,0.1)' }
@@ -2590,22 +2657,25 @@ class CouncilUI {
         const issueThemes = b.issues
           ? b.issues.slice(0, 3).map(iss => compactIssueTheme(iss)).filter((v, i, a) => a.indexOf(v) === i).join(' · ')
           : '';
+        const statusHtml = b.verdict !== 'APPROVED'
+          ? `<span class="st st--blocked" title="${_esc(b.verdict)}" aria-label="${_esc(b.verdict)}">${_statusIcon(b.verdict || 'BLOCKED')}</span>`
+          : '';
         html += `
           <div class="row">
-            <span class="id">${stepNum}</span>
-            <span class="st ${b.verdict === 'APPROVED' ? 'st--done' : 'st--blocked'}" title="${_esc(b.verdict)}" aria-label="${_esc(b.verdict)}">${_statusIcon(b.verdict)}</span>
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <span class="stream-expander stream-expander--empty"></span>
+            <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
             <div class="ct">
+              <span class="burst-primary-label">Reviewed plan</span>
+              ${statusHtml}
               <span class="bd" style="color:${m.c};background:${m.b}">${_esc(b.verdict)}</span>
               <span class="tx" title="${_esc(issueThemes || 'Review complete')}">${_esc(issueCount ? `${issueCount} issue${issueCount === 1 ? '' : 's'}${criticalCount ? ` · ${criticalCount} critical` : ''}` : 'No issues reported')}</span>
               ${issueThemes ? `<span style="color:var(--muted);font-size:10px">(${_esc(issueThemes)})</span>` : ''}
             </div>
           </div>`;
       } else if (b.type === 'burst_group') {
-        const stepNum = _nextStep();
         const _burstKey = [
           'burst',
-          encodeURIComponent(this._state.sessionId || 'session'),
+          encodeURIComponent(state.sessionId || this._state?.sessionId || 'session'),
           encodeURIComponent(b.agent || 'implementer'),
           encodeURIComponent(b.taskId || 'phase'),
           String(Number.isFinite(b.sourceIndex) ? b.sourceIndex : 0)
@@ -2627,10 +2697,88 @@ class CouncilUI {
         const _mutationCls = _telemetry.isMutation ? ' is-mutation' : '';
 
         const _itemsHtml = b.items.map((item, itemIdx) => {
+          if (item.type === 'think') {
+            const hasThought = Boolean(item.thoughtText && item.thoughtText.trim() && item.thoughtText !== item.text);
+            const thinkKey = [
+              'think',
+              encodeURIComponent(b.agent || 'impl'),
+              String(Number.isFinite(item.sourceIndex) ? item.sourceIndex : itemIdx)
+            ].join(':');
+            const isThoughtOpen = this._manuallyOpenedThoughts?.has(thinkKey);
+            const thinkDur = item.duration ? `Thought for ${_esc(item.duration)}` : 'Thought';
+            return `<div class="ghost-thought-card${hasThought ? ' has-drawer' : ''}${isThoughtOpen ? ' open' : ''}" data-thought-key="${_esc(thinkKey)}" style="border:none;margin:0;">
+              <div class="row row--burst-item ghost-thought-header" tabindex="0" style="cursor:pointer;">
+                <span class="tool-tag tool-tag--think" title="Thought"><span class="tool-cmd-icon">💭</span> think</span>
+                <div class="ct">
+                  <span class="tx ghost-thought-summary">${_esc(thinkDur)}</span>
+                  ${item.text && item.text !== thinkDur ? `<span style="color:var(--muted);font-size:11px;margin-left:6px;" class="tx" title="${_esc(item.text)}">${_esc(item.text)}</span>` : ''}
+                  ${hasThought ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isThoughtOpen ? '▼' : '▶'}</span>` : ''}
+                </div>
+              </div>
+              ${hasThought && isThoughtOpen ? `<div class="ghost-thought-body"><div class="ghost-md ghost-think-text">${_ghostMd(item.thoughtText, b.agent)}</div></div>` : ''}
+            </div>`;
+          }
+
+          if (item.type === 'strat') {
+            const _taskCount = (item.tasks || []).length;
+            const _allLabels = (item.tasks || []).map(t => `${t.i} ${t.t}`).join(' · ');
+            return `<div class="ghost-tool-card" style="border:none;margin:0;">
+              <div class="row row--burst-item" tabindex="0">
+                <span class="tool-tag tool-tag--strat" title="Plan"><span class="tool-cmd-icon">📋</span> plan</span>
+                <div class="ct">
+                  <span>planned <strong>${_taskCount}</strong> task${_taskCount === 1 ? '' : 's'}</span>
+                  <span class="tx" title="${_esc(_allLabels)}">${_esc(_allLabels)}</span>
+                </div>
+              </div>
+            </div>`;
+          }
+
+          if (item.type === 'impl') {
+            const files = item.files || [];
+            if (files.length > 0) {
+              return files.map(f => {
+                const diffSpan = (f.added || f.removed) ? `
+                  <span class="payload-diff">
+                    <span class="diff-add">+${f.added || 0}</span>
+                    <span class="diff-del">-${f.removed || 0}</span>
+                    <span class="diff-lines-label">lines</span>
+                  </span>` : (f.lines ? `<span style="color:var(--muted);font-size:10px">${f.lines} lines</span>` : '');
+                return `<div class="ghost-tool-card" style="border:none;margin:0;">
+                  <div class="row row--burst-item" tabindex="0">
+                    <span class="tool-tag tool-tag--edit" title="Edit"><span class="tool-cmd-icon">✏️</span> edit</span>
+                    <div class="ct">
+                      <span class="tx tx--file-link tool-target" data-filepath="${_esc(f.name)}" title="${_esc(f.name)} (click to view in Files)">${_esc(f.name)}</span>
+                      ${diffSpan}
+                    </div>
+                  </div>
+                </div>`;
+              }).join('');
+            }
+          }
+
+          if (item.type === 'manager_output') {
+            const isApproved = item.verdict === 'APPROVED';
+            return `<div class="ghost-tool-card" style="border:none;margin:0;">
+              <div class="row row--burst-item" tabindex="0">
+                <span class="tool-tag tool-tag--mgr" title="Review"><span class="tool-cmd-icon">⚖️</span> review</span>
+                <div class="ct">
+                  ${!isApproved ? `<span class="st st--blocked">${_statusIcon(item.verdict || 'BLOCKED')}</span>` : ''}
+                  <span class="bd">${_esc(item.verdict)}</span>
+                  <span class="tx">${_esc(isApproved ? 'Approved plan' : 'Review feedback')}</span>
+                </div>
+              </div>
+            </div>`;
+          }
+
           const _target = _extractToolTarget(item.tool, item.args || {}, item.command);
           const _is = _toolSummary(item.tool, item.args || {}, item.command);
-          const _itemStatusCls = item.status === 'SUCCESS' ? 'st--done' : item.status === 'FAILED' ? 'st--failed' : 'st--running';
-          const _isi = _statusIcon(item.status);
+          const isItemRunning = (item.status === 'RUNNING' || item.status === 'IN_PROGRESS');
+          const isItemFailed = (item.status === 'FAILED');
+          const itemStatusHtml = isItemRunning
+            ? `<span class="st st--running">${_statusIcon('running')}</span>`
+            : (isItemFailed
+              ? `<span class="st st--failed">${_statusIcon('failed')}</span>`
+              : '');
           const _display = _target ? `${_target}` : _is;
           const _itemDur = _fmtDuration(item.durationMs);
           const _itemDurHtml = _itemDur ? `<span class="tool-duration-badge">— ${_esc(_itemDur)}</span>` : '';
@@ -2643,15 +2791,35 @@ class CouncilUI {
           ].join(':');
           const isItemOpen = this._manuallyOpenedTools.has(itemKey);
           let itemBody = _toolBody(item.tool, item.args || {}, item.command, item.output);
+
+          const tName = String(item.tool || '').toLowerCase();
+          const isEdit = tName === 'write_file' || tName === 'write_to_file' || tName === 'edit_file' || tName === 'replace_file_content' || tName === 'patch_file';
+          const isCmd = tName === 'bash' || tName === 'python' || tName === 'run_command';
+          const isExplore = tName === 'read_file' || tName === 'view_file' || tName === 'glob' || tName === 'grep' || tName === 'ls' || tName === 'list_dir';
+          const iconGlyph = isCmd ? '⚡' : isEdit ? '✏️' : isExplore ? '📄' : '{ }';
+
+          let editDetails = '';
+          if (isEdit) {
+            const rawPath = item.args?.path || item.args?.file || item.args?.TargetFile || (_target && !_target.includes(' ') ? _target : '');
+            const stats = this._getFileStats(rawPath, state, diffMemo);
+            let diffSpan = '';
+            if (stats.added > 0 || stats.removed > 0) {
+              diffSpan = `<span class="payload-diff"><span class="diff-add">+${stats.added}</span> <span class="diff-del">-${stats.removed}</span> <span class="diff-lines-label">lines</span></span>`;
+            } else if (item.args?.content || item.args?.CodeContent) {
+              const lCount = String(item.args.content || item.args.CodeContent).split('\n').length;
+              diffSpan = `<span class="payload-diff"><span class="diff-add">+${lCount}</span> <span class="diff-del">-0</span> <span class="diff-lines-label">lines</span></span>`;
+            }
+            editDetails = `<span class="tx tx--file-link tool-target" data-filepath="${_esc(rawPath)}" title="${_esc(rawPath)} (click to view in Files)">${_esc(_shortPath(rawPath) || _display)}</span>${diffSpan}`;
+          }
+
           return `<div class="ghost-tool-card ${isItemOpen ? 'open' : ''}" data-tool-key="${_esc(itemKey)}" style="border:none;margin:0;">
             <div class="row row--burst-item ghost-tool-header" tabindex="0" style="cursor:pointer;">
-              <span class="id id--sub" style="color:var(--muted);opacity:0.35;font-size:9px;font-family:var(--font-mono, monospace);">··</span>
-              <span class="st ${_itemStatusCls}">${_isi}</span>
-              <span class="tool-tag tool-tag--${_esc(item.tool)}" title="${_esc(item.tool)}">${_esc(_shortToolName(item.tool))}</span>
+              <span class="tool-tag tool-tag--${_esc(item.tool)}" title="${_esc(item.tool)}"><span class="tool-cmd-icon">${iconGlyph}</span> ${_esc(_shortToolName(item.tool))}</span>
               <div class="ct">
-                <span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>
+                ${itemStatusHtml}
+                ${editDetails ? editDetails : `<span class="tx tool-target" title="${_esc(_display)}">${_esc(_display)}</span>`}
                 ${_itemDurHtml}
-                ${itemBody ? '<span class="ghost-tool-chevron" style="margin-left:auto;">▶</span>' : ''}
+                ${itemBody ? `<span class="ghost-tool-chevron" style="margin-left:auto;">${isItemOpen ? '▼' : '▶'}</span>` : ''}
               </div>
             </div>
             ${itemBody ? '<div class="ghost-tool-body">' + itemBody + '</div>' : ''}
@@ -2671,45 +2839,49 @@ class CouncilUI {
               ? Math.max(_minGap, (_wordDur * 0.85) / (_cpWords.length - 1))
               : 0;
             _cpHtml = _cpWords.map((w, idx) =>
-              `<span class="bw" style="animation-duration:${_wordDur.toFixed(2)}s;animation-delay:${(idx * _peakGap).toFixed(2)}s">${w}</span>`
+              `<span class="bw" style="animation-duration:${_wordDur.toFixed(2)}s;animation-delay:${(idx * _peakGap).toFixed(2)}s">${_esc(w)}</span>`
             ).join(' ');
           }
         } else {
-          _cpHtml = _burstBreakdownText || '';
+          _cpHtml = _esc(_burstBreakdownText || '');
         }
+
+        const burstStatusHtml = b.running
+          ? `<span class="st st--running" title="Running" aria-label="Running">${_statusIcon('running')}</span>`
+          : (b.hasFailure
+            ? `<span class="st st--failed" title="Failed" aria-label="Failed">${_statusIcon('failed')}</span>`
+            : '');
 
         html += `
           <div class="ghost-burst-group${b.running ? ' burst-running' : ''}${_isOpen ? ' burst-open' : ''}"
                data-burst-open="${_isOpen ? '1' : '0'}"
                data-burst-key="${_esc(_burstKey)}"
-               style="margin: 1px 6px;">
+               style="margin: 1px 0;">
             <div class="row ghost-burst-header" tabindex="0">
-              <span class="id">${stepNum}</span>
-              <span class="st ${statusCls}" title="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}" aria-label="${b.running ? 'Running' : b.hasFailure ? 'Failed' : 'Completed'}">${_bss}</span>
-              <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+              <span class="stream-expander ghost-burst-chevron">${_isOpen ? '▾' : '›'}</span>
+              <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
               <div class="ct">
-                <span class="burst-primary-label${_mutationCls}">${_esc(_telemetry.category)}</span>
+                <span class="burst-primary-label${_mutationCls}">${_esc(b.dynamicTitle || _telemetry.category)}</span>
+                ${burstStatusHtml}
                 <span class="burst-divider-dot">·</span>
                 <span class="tx burst-breakdown" title="${_esc(_burstBreakdownText)}">${_cpHtml || _esc(_burstBreakdownText)}</span>
                 <span class="ghost-burst-count" style="margin-left:auto;">${_total}</span>
-                <span class="ghost-burst-chevron" style="margin-left:6px;">${_isOpen ? '▼' : '▶'}</span>
               </div>
             </div>
             <div class="ghost-burst-body">${_itemsHtml}</div>
           </div>`;
       } else if (b.type === 'tool_call') {
-        const stepNum = _nextStep();
-        html += _renderToolCard(b, stepNum, diffMemo);
+        html += _renderToolCard(b, diffMemo);
       } else if (b.type === 'sys') {
-        const stepNum = _nextStep();
         const role = _resolveRole('sys');
         const attemptLabel = b.count > 1 ? ` · ${b.count} attempts` : '';
         html += `
           <div class="row row--sys-error">
-            <span class="id">${stepNum}</span>
-            <span class="st st--failed" title="Failed" aria-label="Failed">${_statusIcon('failed')}</span>
-            <span class="ag ag--${role.cls}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${role.tag}</span>
+            <span class="stream-expander stream-expander--empty"></span>
+            <span class="ag ag--${_esc(role.cls)}" title="${_esc(role.name || role.tag)}" aria-label="${_esc(role.name || role.tag)}">${_esc(role.tag)}</span>
             <div class="ct">
+              <span class="burst-primary-label" style="color:var(--sys)">System error</span>
+              <span class="st st--failed" title="Failed" aria-label="Failed">${_statusIcon('failed')}</span>
               <span class="bd" style="color:var(--sys)">${_esc(b.code)}</span>
               <span class="tx" style="color:var(--dim)" title="${_esc(b.msg)}">${_esc(b.msg + attemptLabel)}</span>
               ${b.detail ? `<span style="color:var(--muted);font-style:italic;font-size:10px">${_esc(b.detail)}</span>` : ''}
@@ -2726,6 +2898,9 @@ class CouncilUI {
     }
     for (const key of _openBursts) {
       if (!_seenBurstKeys.has(key)) _openBursts.delete(key);
+    }
+    for (const key of this._manuallyClosedBursts) {
+      if (!_seenBurstKeys.has(key)) this._manuallyClosedBursts.delete(key);
     }
 
     // Append completeness & acceptance audit card if available (Apple Design)
@@ -3421,7 +3596,11 @@ class CouncilUI {
           if (Array.isArray(state.log)) {
             const errEv = [...state.log].reverse().find(e => e && (e.event === 'error' || e.type === 'error' || e.status === 'FAILED' || (typeof e.text === 'string' && (e.text.toLowerCase().includes('failed') || e.text.toLowerCase().includes('error')))));
             if (errEv && errEv.text) {
-              errorMessage = typeof errEv.text === 'string' ? errEv.text : JSON.stringify(errEv.text);
+              try {
+                errorMessage = typeof errEv.text === 'string' ? errEv.text : JSON.stringify(errEv.text);
+              } catch (_) {
+                errorMessage = String(errEv.text);
+              }
             }
           }
           el.innerHTML = `
@@ -4925,6 +5104,8 @@ class CouncilUI {
 
   /* Wire all interactive listeners */
   wireListeners(session) {
+    if (this._listenersWired) return;
+    this._listenersWired = true;
     // Compass node tactile interactions
     document.querySelectorAll('.compass-node').forEach(node => {
       const body = node.querySelector('.compass-node-body');
@@ -4957,14 +5138,14 @@ class CouncilUI {
     // Click events delegation (Dismiss popover + Retry/Skip tasks + Expand/Collapse cards)
     document.addEventListener('click', e => {
       const p = document.getElementById('council-role-popover');
-      if (p && !p.contains(e.target) && !e.target.closest('.compass-node')) p.hidden = true;
+      if (p && !p.contains(e.target) && !e.target?.closest?.('.compass-node')) p.hidden = true;
 
-      if (e.target.classList.contains('btn-retry-task')) {
-        const taskId = e.target.dataset.task;
+      if (e.target?.classList?.contains?.('btn-retry-task')) {
+        const taskId = e.target.dataset?.task;
         session.respond('retry_task', taskId);
       }
-      if (e.target.classList.contains('btn-skip-task')) {
-        const taskId = e.target.dataset.task;
+      if (e.target?.classList?.contains?.('btn-skip-task')) {
+        const taskId = e.target.dataset?.task;
         session.respond('skip_task', taskId);
       }
 
@@ -5013,12 +5194,71 @@ class CouncilUI {
         return;
       }
 
+      // Copy tool output / command (.ghost-tool-copy-btn)
+      const copyBtn = e.target.closest('.ghost-tool-copy-btn');
+      if (copyBtn) {
+        e.stopPropagation();
+        const textToCopy = copyBtn.getAttribute('data-copy-text') || '';
+        if (!textToCopy) return;
+
+        const showFeedback = (msg) => {
+          const originalText = copyBtn.textContent;
+          copyBtn.textContent = msg;
+          setTimeout(() => { copyBtn.textContent = originalText; }, 1500);
+        };
+
+        const copyFallback = () => {
+          try {
+            const ta = document.createElement('textarea');
+            ta.value = textToCopy;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            ta.readOnly = true;
+            if (typeof ta.setAttribute === 'function') ta.setAttribute('readonly', '');
+            document.body.appendChild(ta);
+            ta.select();
+            const success = document.execCommand('copy');
+            document.body.removeChild(ta);
+            if (success) showFeedback('Copied!');
+            else showFeedback('Failed');
+          } catch (fbErr) {
+            console.warn('[Council] Copy fallback failed:', fbErr);
+            showFeedback('Failed');
+          }
+        };
+
+        if (navigator?.clipboard?.writeText) {
+          try {
+            navigator.clipboard.writeText(textToCopy)
+              .then(() => showFeedback('Copied!'))
+              .catch(err => {
+                console.warn('[Council] Primary clipboard write rejected, attempting fallback:', err);
+                copyFallback();
+              });
+          } catch (syncErr) {
+            console.warn('[Council] Primary clipboard threw synchronously, attempting fallback:', syncErr);
+            copyFallback();
+          }
+        } else {
+          copyFallback();
+        }
+        return;
+      }
+
       // Expand/collapse Completed Thought Card (.ghost-thought-header)
       const thoughtHeader = e.target.closest('.ghost-thought-header');
-      if (thoughtHeader && !e.target.closest('.tx') && !e.target.closest('.ag') && !e.target.closest('.st')) {
+      if (thoughtHeader && !e.target.closest('.tx--file-link') && !e.target.closest('.ag') && !e.target.closest('.st') && !e.target.closest('[data-full]')) {
         const card = thoughtHeader.closest('.ghost-thought-card');
         if (card && card.classList.contains('has-drawer')) {
-          card.classList.toggle('open');
+          const isOpen = card.classList.toggle('open');
+          const tKey = card.getAttribute('data-thought-key');
+          if (tKey && this._manuallyOpenedThoughts) {
+            if (isOpen) this._manuallyOpenedThoughts.add(tKey);
+            else this._manuallyOpenedThoughts.delete(tKey);
+          }
+          const chevron = card.querySelector('.ghost-tool-chevron');
+          if (chevron) chevron.textContent = isOpen ? '▼' : '▶';
         }
       }
 
@@ -5030,7 +5270,7 @@ class CouncilUI {
 
       // Expand/collapse Tool call card (.ghost-tool-header)
       const toolHeader = e.target.closest('.ghost-tool-header');
-      if (toolHeader) {
+      if (toolHeader && !e.target.closest('.tx--file-link') && !e.target.closest('.ghost-tool-copy-btn')) {
         const card = toolHeader.closest('.ghost-tool-card');
         if (card) {
           const key = card.getAttribute('data-tool-key') || '';
@@ -5041,7 +5281,7 @@ class CouncilUI {
           card.classList.toggle('open', nowOpen);
           card.classList.toggle('is-user-expanded', nowOpen);
           const chevron = card.querySelector('.ghost-tool-chevron');
-          if (chevron) chevron.textContent = '▶';
+          if (chevron) chevron.textContent = nowOpen ? '▼' : '▶';
           if (key) {
             if (nowOpen) {
               this._manuallyOpenedTools.add(key);
@@ -5065,7 +5305,7 @@ class CouncilUI {
           group.setAttribute('data-burst-open', nowOpen ? '1' : '0');
           group.classList.toggle('burst-open', nowOpen);
           const chevron = group.querySelector('.ghost-burst-chevron');
-          if (chevron) chevron.textContent = nowOpen ? '▼' : '▶';
+          if (chevron) chevron.textContent = nowOpen ? '▾' : '›';
           // Mirror state into the instance Set so the next innerHTML
           // re-render can restore the open state without a DOM query.
           if (key) {
@@ -5340,7 +5580,7 @@ class CouncilUI {
     });
 
     // Enable button based on active/complete state
-    this._state.subscribe(s => {
+    this._state?.subscribe?.(s => {
       const revert = document.getElementById('council-revert-btn');
       if (revert) {
         revert.disabled = (s.status !== 'IN_PROGRESS' && s.status !== 'BLOCKED' && s.status !== 'COMPLETE');
@@ -5682,6 +5922,76 @@ function compactFailureCode(code, text) {
   return 'ERROR';
 }
 
+function synthesizeAggregatorTitle(items, agent) {
+  const actions = [];
+  const seen = new Set();
+  const addAction = (act) => {
+    if (!seen.has(act)) {
+      seen.add(act);
+      actions.push(act);
+    }
+  };
+
+  (items || []).forEach(item => {
+    if (!item) return;
+    if (item.type === 'think') {
+      addAction('thought');
+    } else if (item.type === 'strat') {
+      addAction('plan');
+    } else if (item.type === 'manager_output') {
+      if (item.verdict === 'APPROVED') {
+        addAction('approved');
+      } else if (item.verdict === 'REVISE') {
+        addAction('revised');
+      } else {
+        addAction('review');
+      }
+    } else if (item.type === 'impl') {
+      addAction('edit');
+    } else if (item.type === 'chair') {
+      addAction('chair');
+    } else if (item.type === 'tool_call') {
+      const t = String(item.tool || '').toLowerCase();
+      if (t === 'write_file' || t === 'write_to_file' || t === 'edit_file' || t === 'replace_file_content' || t === 'patch_file') {
+        addAction('edit');
+      } else if (t === 'read_file' || t === 'view_file' || t === 'glob' || t === 'grep' || t === 'ls' || t === 'list_dir') {
+        addAction('explore');
+      } else if (t === 'bash' || t === 'python' || t === 'run_command') {
+        addAction('command');
+      } else {
+        addAction('tool');
+      }
+    }
+  });
+
+  if (seen.has('approved') && (seen.has('review') || seen.has('thought') || (items || []).some(it => it.type === 'manager_output'))) {
+    return 'Reviewed plan, approved issues';
+  }
+  if (seen.has('revised')) {
+    return 'Reviewed plan, requested revisions';
+  }
+
+  const phraseMap = {
+    explore: { head: 'Explored files', sub: 'explored files' },
+    command: { head: 'Ran commands', sub: 'ran commands' },
+    edit: { head: 'Edited files', sub: 'edited files' },
+    thought: { head: 'Thought', sub: 'thought' },
+    plan: { head: 'Reviewed plan', sub: 'planned tasks' },
+    review: { head: 'Reviewed plan', sub: 'reviewed plan' },
+    approved: { head: 'Approved issues', sub: 'approved issues' },
+    chair: { head: 'Assessed complexity', sub: 'assessed complexity' },
+    tool: { head: 'Invoked tools', sub: 'invoked tools' }
+  };
+
+  if (actions.length === 0) return 'Agent execution';
+  const phrases = actions.map((act, idx) => {
+    const entry = phraseMap[act] || { head: act, sub: act };
+    return idx === 0 ? entry.head : entry.sub;
+  });
+
+  return phrases.join(', ');
+}
+
 function formatBurstTelemetry(items, isRunning = false) {
   let edits = 0;
   let reads = 0;
@@ -5798,11 +6108,11 @@ function _computeTaskWaves(nodes) {
 function compactAgentActivity(agent, tool = '') {
   const role = String(agent || 'agent').toLowerCase();
   if (tool) return `${role.charAt(0).toUpperCase() + role.slice(1)} is using a tool`;
-  if (role === 'strategist') return 'Constructing execution plan';
-  if (role === 'manager') return 'Reviewing execution plan';
-  if (role === 'implementer') return 'Executing assigned task';
-  if (role === 'chair') return 'Assessing request';
-  if (role === 'perspective_analyzer') return 'Auditing security, performance, maintainability';
+  if (role === 'strategist' || role === 'strat') return 'Constructing execution plan';
+  if (role === 'manager' || role === 'mgr') return 'Reviewing execution plan';
+  if (role === 'implementer' || role === 'impl') return 'Executing assigned task';
+  if (role === 'chair' || role === 'chairperson') return 'Assessing request';
+  if (role === 'perspective_analyzer' || role === 'pers') return 'Auditing security, performance, maintainability';
   return 'Council is working';
 }
 
