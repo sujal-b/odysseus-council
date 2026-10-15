@@ -219,6 +219,8 @@ def reconnaissance_plan_error(tasks, facts: dict | None) -> str | None:
         if len(selected) > 1 and mutation and not re.search(r"\b(select|selection|criteria|inspect|evidence)\b", combined):
             return "ambiguous repository matches require explicit selection criteria"
         return None
+    if facts.get("is_greenfield"):
+        return None
     if not facts.get("discovery_required"):
         return "repository reconnaissance did not produce a safe target"
     if not ids:

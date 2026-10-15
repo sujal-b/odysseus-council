@@ -6,6 +6,7 @@ import asyncio
 import ast
 import hashlib
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -36,7 +37,8 @@ class VerificationPolicy:
     max_timeout_seconds: float = 600.0
     output_limit_bytes: int = DEFAULT_OUTPUT_LIMIT
     inherited_environment: frozenset[str] = field(default_factory=lambda: frozenset({
-        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE"
+        "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "HOME", "USERPROFILE",
+        "VIRTUAL_ENV", "PYTHONPATH", "APPDATA", "LOCALAPPDATA"
     }))
 
 
@@ -239,8 +241,10 @@ class VerificationEngine:
         if timeout <= 0 or timeout > self.policy.max_timeout_seconds:
             raise VerificationPolicyError("verification timeout exceeds policy")
         env = {key: value for key, value in os.environ.items() if key in self.policy.inherited_environment}
+        exec_path = shutil.which(argv[0]) if os.name == "nt" else argv[0]
+        cmd_argv = [exec_path or argv[0], *argv[1:]]
         proc = await asyncio.create_subprocess_exec(
-            *argv,
+            *cmd_argv,
             cwd=str(self.workspace),
             env=env,
             stdout=asyncio.subprocess.PIPE,

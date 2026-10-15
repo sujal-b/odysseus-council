@@ -80,10 +80,22 @@ _RECON_MAX_FILE_BYTES = 32 * 1024
 _RECON_MAX_BYTES = 256 * 1024
 _RECON_EXCLUDED_PARTS = {".git", "data", "graphify-out", "node_modules", "__pycache__", "build", "dist", "benchmarks", "prompts", "fragments"}
 _RECON_BINARY_SUFFIXES = {".bmp", ".gif", ".ico", ".jpeg", ".jpg", ".pdf", ".png", ".pyc", ".webp", ".zip"}
-_RECON_SOURCE_SUFFIXES = {".js", ".jsx", ".py", ".ts", ".tsx"}
+_RECON_SOURCE_SUFFIXES = {".css", ".html", ".js", ".jsx", ".json", ".md", ".py", ".sql", ".ts", ".tsx", ".yaml", ".yml"}
 _RECON_SECRET = re.compile(r"(?i)(api[_-]?key|credential|password|secret|token|\.env)")
 _RECON_WORDS = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 _RECON_SKIP_WORDS = {"add", "after", "and", "before", "bug", "code", "council", "existing", "file", "fix", "for", "from", "hides", "into", "new", "regression", "test", "tests", "that", "the", "their", "this", "when", "with"}
+
+
+def _is_greenfield_request(files: list[str], selected: list[str], user_task: str) -> bool:
+    """Return True if the task is building a new deliverable rather than modifying existing code."""
+    if not files:
+        return True
+    if selected:
+        return False
+    task_lower = str(user_task or "").lower()
+    if any(re.search(r"\b" + kw + r"\b", task_lower) for kw in ("fix", "bug", "patch", "refactor", "debug", "repair", "modify", "update")):
+        return False
+    return True
 
 
 def _recon_relative(path: str) -> str | None:
@@ -185,16 +197,17 @@ def build_repository_capsule(workspace: str | os.PathLike, user_task: str) -> di
             scopes.append(scope)
             code_scopes += 1
     scopes.sort()
-    discovery_required = not selected
+    is_greenfield = _is_greenfield_request(files, selected, user_task)
+    discovery_required = (not selected) and (not is_greenfield)
     if discovery_required:
         scopes = sorted({f"{Path(path).parts[0]}/" for path in candidates if len(Path(path).parts) > 1 and not path.startswith("tests/")})[:2]
         if any(path.startswith("tests/") for path in candidates):
             scopes = sorted(set(scopes + ["tests/"]))
         if not scopes and (candidates or not files):
             scopes = ["./"]
-    elif not scopes and selected:
+    elif not scopes and (selected or is_greenfield):
         scopes = ["./"]
-    status = "ok" if (selected or not files) else ("discovery_required" if scopes else "blocked")
+    status = "ok" if (selected or not files or is_greenfield) else ("discovery_required" if scopes else "blocked")
     symbols = _recon_symbols(root, [path for path in selected if not path.startswith("tests/")])
     commands = [f"python -m pytest -q {path}" for path in tests[:3]] or (["python -m pytest -q tests/"] if "tests/" in scopes else [])
     facts = {
@@ -202,6 +215,7 @@ def build_repository_capsule(workspace: str | os.PathLike, user_task: str) -> di
         "matching_symbols": symbols, "regression_tests": tests, "test_commands": commands,
         "frameworks": ["pytest"] if (root / "pyproject.toml").is_file() or (root / "pytest.ini").is_file() else [],
         "allowed_workspace_scope": scopes, "discovery_required": discovery_required,
+        "is_greenfield": is_greenfield,
         "truncated": len(files) > _RECON_MAX_FILES or len(scores) > _RECON_MAX_RESULTS,
         "limits": {"files": _RECON_MAX_FILES, "results": _RECON_MAX_RESULTS, "bytes": _RECON_MAX_BYTES},
     }
@@ -210,6 +224,11 @@ def build_repository_capsule(workspace: str | os.PathLike, user_task: str) -> di
         lines.append(f"{key}:")
         lines.extend(f"- {value}" for value in facts[key]) if facts[key] else lines.append("- none")
     lines.append(f"discovery_required: {str(discovery_required).lower()}")
+    if is_greenfield:
+        lines.append("greenfield_task: true")
+        ambient = [path for path in files if path not in selected]
+        if ambient:
+            lines.append(f"ambient_files: {', '.join(ambient[:8])} (unrelated to task; do not adopt conventions)")
     lines.append("Discovery, if required, must be read-only; dependent writes must use its output.")
     facts["capsule"] = "\n".join(lines)
     facts["sha256"] = hashlib.sha256(facts["capsule"].encode("utf-8")).hexdigest()

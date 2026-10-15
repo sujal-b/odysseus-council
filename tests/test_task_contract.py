@@ -460,3 +460,33 @@ def test_real_session_contracts_demote_inspection_t1_and_preserve_root_mutation_
     assert "write scope = the workspace root" in t2_contract_line
 
 
+def test_extract_code_does_not_invent_fake_paths_and_verifies_disk(tmp_path):
+    orchestrator = CouncilOrchestrator.__new__(CouncilOrchestrator)
+
+    # Conversational text matching old regex 'file for' or 'file in' must not return fake paths
+    conversational_text = "Then write the file for the sorting visualizer:\n```js\nfunction sort(){}\n```\nDone with file in workspace."
+    code, file_path = orchestrator._extract_code(conversational_text, workspace=str(tmp_path))
+    assert code == ""
+    assert file_path == ""
+
+    # Real file physically on disk must be found and read
+    test_file = tmp_path / "index.html"
+    test_file.write_text("<!DOCTYPE html><html><body>Sort Race</body></html>", encoding="utf-8")
+
+    # Mentioning index.html in text or JSON summary returns the real on-disk content
+    summary_text = 'Finished.\n```json\n{"status": "DONE", "files_created": ["index.html"]}\n```'
+    code, file_path = orchestrator._extract_code(summary_text, workspace=str(tmp_path))
+    assert "Sort Race" in code
+    assert file_path == "index.html"
+
+
+def test_reply_has_file_code_block_rejects_conversational_slash_words():
+    # Conversational phrases with slashes (e.g. Pause/Resume, swap/write) must NOT qualify as file paths
+    conversational = "Pause/Resume buttons, swap/write colors, and merge/quick algorithms.\n```js\ncode\n```"
+    assert CouncilOrchestrator._reply_has_file_code_block(conversational) is False
+
+    # Real file paths with extensions must qualify
+    with_file_path = "Modified src/app.js for race controls:\n```js\ncode\n```"
+    assert CouncilOrchestrator._reply_has_file_code_block(with_file_path) is True
+
+

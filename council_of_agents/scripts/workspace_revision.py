@@ -119,6 +119,9 @@ class WorkspaceWriteGuard:
         self.expected[rel] = self._current_hash(target)
 
 
+_SNAPSHOT_SKIP_PARTS = {".git", "node_modules", "venv", ".venv", "__pycache__", "build", "dist", ".tox", ".idea", ".vscode"}
+
+
 def snapshot_workspace(
     workspace: str | Path,
     scopes: list[str],
@@ -138,7 +141,8 @@ def snapshot_workspace(
             files[rel] = "<missing>"
             continue
         candidates = [candidate] if candidate.is_file() else sorted(
-            path for path in candidate.rglob("*") if path.is_file()
+            path for path in candidate.rglob("*")
+            if path.is_file() and not any(part in _SNAPSHOT_SKIP_PARTS for part in path.parts)
         )
         for path in candidates:
             resolved = path.resolve()
@@ -146,7 +150,10 @@ def snapshot_workspace(
                 rel = resolved.relative_to(root).as_posix()
             except ValueError as exc:
                 raise WorkspaceScopeError(f"workspace symlink escapes root: {path}") from exc
-            files[rel] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+            try:
+                files[rel] = hashlib.sha256(resolved.read_bytes()).hexdigest()
+            except (PermissionError, OSError):
+                continue
             if len(files) > max_files:
                 raise WorkspaceScopeError(
                     f"workspace revision exceeds {max_files} files; narrow the task scope"

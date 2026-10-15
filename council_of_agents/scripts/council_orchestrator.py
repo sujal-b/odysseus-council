@@ -644,6 +644,12 @@ Report what you FIND, not what you think might exist."""
                         "description: 'Inspect workspace files and environment.'). "
                         "All subsequent implementation tasks MUST include 'T1' in depends_on.\n"
                     )
+                elif getattr(self, "_reconnaissance", {}).get("is_greenfield"):
+                    discovery_note = (
+                        "\nTASK DIRECTIVE: Greenfield creation task. Plan direct implementation and verification tasks "
+                        "for the requested deliverable without requiring a root inspection task. "
+                        "Do not adopt conventions from any unrelated ambient files in the workspace.\n"
+                    )
 
                 try:
                     strat_reply = (
@@ -1386,6 +1392,18 @@ Report what you FIND, not what you think might exist."""
                                                 raise evidence_error
                                         raise Exception(f"Manager rejected task {t_node.id}: {task_review}")
 
+                            impl_json = self._extract_json_dict(impl_reply, target_keys=("status",))
+                            if isinstance(impl_json, dict) and str(impl_json.get("status", "")).strip().upper() == "FAILED":
+                                failure_notes = impl_json.get("notes") or impl_json.get("verification_details") or "Task reported status: FAILED"
+                                raise Exception(f"Task {t_node.id} failed: {failure_notes}")
+
+                            # A mutation task cannot be marked DONE if no writes were recorded on disk
+                            if TaskDAG.requires_mutation(t_node) and not t_node.accumulated_writes:
+                                raise TaskExecutionEvidenceError(
+                                    TaskFailureCategory.ZERO_EVIDENCE,
+                                    f"Task {t_node.id} required an attributable scoped file diff on disk, but no files were written",
+                                )
+
                             code, file_path = self._extract_code(impl_reply, getattr(state, "workspace", None))
                             dag.mark_done(t_node.id, output=impl_reply)
                             if deterministic_evidence and t_node.result:
@@ -1599,6 +1617,16 @@ Report what you FIND, not what you think might exist."""
                 state.dag = dag.to_dict()
                 all_code = "\n\n".join(f"# === {tid} ===\n{out}" for tid, out in completed_outputs.items())
                 code, file_path = self._extract_code(all_code, getattr(state, "workspace", None))
+                if not file_path and written_paths:
+                    for wp in sorted(written_paths):
+                        if os.path.exists(wp) and os.path.isfile(wp):
+                            try:
+                                with open(wp, "r", encoding="utf-8") as f:
+                                    code = f.read()
+                                file_path = os.path.relpath(wp, getattr(state, "workspace", None)).replace("\\", "/")
+                                break
+                            except Exception:
+                                pass
                 await emit(event="code_update", agent="implementer", status="IN_PROGRESS",
                            text=f"All {len(completed_outputs)} tasks complete.", code=code, file_path=file_path)
                 impl_reply = all_code
@@ -3128,12 +3156,12 @@ Report what you FIND, not what you think might exist."""
 
     @staticmethod
     def _reply_has_file_code_block(reply) -> bool:
-        """Detect a concrete code-and-path reply, excluding the required JSON summary."""
+        """Detect a concrete code-and-path reply with a valid file extension, excluding the required JSON summary."""
         text = str(reply or "")
         non_json = re.sub(r"```json\s*\n.*?```", "", text, flags=re.IGNORECASE | re.DOTALL)
         return bool(
             re.search(r"```[^\n]*\n.*?```", non_json, flags=re.DOTALL)
-            and re.search(r"(?:^|[\s`])(?:[\w.-]+/)+[\w.-]+", non_json)
+            and re.search(r"(?:^|[\s`])(?:[\w.-]+/)+[\w.-]+\.[a-zA-Z0-9]+", non_json)
         )
 
     @staticmethod
@@ -3154,9 +3182,6 @@ Report what you FIND, not what you think might exist."""
             if before.get(path, "<missing>") != after.get(path, "<missing>")
         )
         recorded_write = bool(task_written_paths)
-        # A code-and-path response can expose a failed tool invocation to the
-        # auditor. The auditor sees that diagnostic instead of treating it as
-        # a silent refusal to execute.
         if not recorded_write and CouncilOrchestrator._reply_has_file_code_block(impl_reply):
             return None
         if changed_paths and recorded_write:
@@ -3950,34 +3975,51 @@ Report what you FIND, not what you think might exist."""
 
     def _extract_code(self, text: str, workspace: Optional[str] = None):
         try:
+            if not workspace:
+                from src.constants import DATA_DIR
+                workspace = os.path.abspath(os.path.join(DATA_DIR, "council_workspace"))
+            workspace_abs = os.path.abspath(workspace)
+
+            # 1. Try files reported in JSON summary
             data = self._extract_json_dict(text, target_keys=("files_created", "files_modified"))
             if isinstance(data, dict):
                 files = data.get("files_created", []) + data.get("files_modified", [])
                 if files and isinstance(files, list):
-                    if not workspace:
-                        from src.constants import DATA_DIR
-                        workspace = os.path.abspath(os.path.join(DATA_DIR, "council_workspace"))
-                    target_file = files[0]
-                    target_path = os.path.abspath(os.path.join(workspace, target_file))
-                    if os.path.exists(target_path) and os.path.isfile(target_path):
-                        try:
-                            workspace_abs = os.path.abspath(workspace)
+                    for target_file in files:
+                        if not isinstance(target_file, str):
+                            continue
+                        target_path = os.path.abspath(os.path.join(workspace_abs, target_file))
+                        if os.path.exists(target_path) and os.path.isfile(target_path):
                             try:
                                 rel = os.path.relpath(target_path, workspace_abs).replace("\\", "/")
                             except ValueError:
-                                rel = target_file  # on Windows, relpath fails across drives
+                                rel = target_file
                             with open(target_path, "r", encoding="utf-8") as f:
                                 return f.read(), rel
-                        except Exception:
-                            pass
+
+            # 2. Check for real filenames mentioned in text that physically exist on disk
+            matches = re.findall(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:html|css|js|jsx|ts|tsx|py|json|md|yaml|yml|txt)\b", text)
+            for cand in matches:
+                cand_clean = cand.strip().lstrip("./")
+                cand_path = os.path.abspath(os.path.join(workspace_abs, cand_clean))
+                if os.path.exists(cand_path) and os.path.isfile(cand_path):
+                    try:
+                        rel = os.path.relpath(cand_path, workspace_abs).replace("\\", "/")
+                    except ValueError:
+                        rel = cand_clean
+                    with open(cand_path, "r", encoding="utf-8") as f:
+                        return f.read(), rel
         except Exception:
             pass
 
+        # 3. Explicit code block fallback when path is explicitly declared with extension (e.g. 'file: test.py')
         blocks = re.findall(r"```(?:\w+)?\n(.*?)```", text, re.DOTALL)
-        code = "\n\n".join(b.strip() for b in blocks) if blocks else text.strip()
-        fn_match = re.search(r"(?:file|filename|path)[:\s]+([^\s\n]+)", text, re.I)
-        file_path = fn_match.group(1) if fn_match else "output.txt"
-        return code, file_path
+        fn_match = re.search(r"(?:file|filename|path)\s*:\s*([a-zA-Z0-9_./-]+\.[a-zA-Z0-9]+)", text, re.I)
+        if blocks and fn_match:
+            code = "\n\n".join(b.strip() for b in blocks)
+            return code, fn_match.group(1).strip()
+
+        return "", ""
 
     async def _execute_direct(self, state, chair_reply, emit, owner, written_paths, run_start_ms, action, target, workspace, tool_results_out=None, enhanced_prompt=None):
         """Execute a DIRECT route: invoke Implementer with implementer_direct.md prompt."""

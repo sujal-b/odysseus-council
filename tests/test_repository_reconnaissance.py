@@ -99,3 +99,37 @@ def test_invented_or_unsafe_target_is_blocked_before_manager():
     plan = json.dumps({"tasks": [{"id": "T1", "description": "Modify invented routes/ghost.py.", "acceptance": "done", "read_scope": ["routes/"], "write_scope": ["routes/"]}]})
     with pytest.raises(ValueError, match="outside repository reconnaissance evidence"):
         CouncilOrchestrator._task_dag_from_plan(plan, "Fix session.", reconnaissance=facts)
+
+
+def test_greenfield_unrelated_workspace_files_are_ambient_and_discovery_not_required(tmp_path):
+    _write(tmp_path, "lava-lamp.html", "<html><script>/* Three.js metaballs WebGL */</script></html>")
+    task = "Build 'Sort Race', a side-by-side sorting algorithm visualizer. Deliverable: One index.html file."
+    facts = build_repository_capsule(tmp_path, task)
+    assert facts["is_greenfield"] is True
+    assert facts["discovery_required"] is False
+    assert facts["status"] == "ok"
+    assert facts["allowed_workspace_scope"] == ["./"]
+    assert "greenfield_task: true" in facts["capsule"]
+    assert "ambient_files: lava-lamp.html" in facts["capsule"]
+
+    plan = [
+        {
+            "id": "T1",
+            "description": "Create index.html with sort race visualizer.",
+            "acceptance": "index.html exists and animates sorting algorithms.",
+            "read_scope": ["./"],
+            "write_scope": [],
+            "workspace_root": True,
+            "verification": {"type": "shell", "command": "python -c \"import os; assert os.path.exists('index.html')\""},
+        }
+    ]
+    assert reconnaissance_plan_error(plan, facts) is None
+
+
+def test_empty_workspace_is_greenfield_without_discovery_required(tmp_path):
+    facts = build_repository_capsule(tmp_path, "Build a new calculator app in index.html.")
+    assert facts["is_greenfield"] is True
+    assert facts["discovery_required"] is False
+    assert facts["status"] == "ok"
+    assert facts["allowed_workspace_scope"] == ["./"]
+    assert "greenfield_task: true" in facts["capsule"]
